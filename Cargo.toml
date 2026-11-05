@@ -1,0 +1,100 @@
+[package]
+name = "tauri-delta-updater"
+version = "0.1.0"
+edition = "2021"
+# 实际下限由依赖决定：reqwest 0.13 → url → idna → icu_* 系列声明要求 1.88。
+# 声明低版本会让 `cargo +1.81 check` 直接失败，是虚假的兼容承诺；
+# 这里按真实依赖链的下限声明，并由 CI 的 MSRV job 验证。
+rust-version = "1.88"
+description = "A high-performance Rust library for delta (incremental) updates in Tauri v2."
+license = "MIT"
+authors = ["丘屿知宁 (zuoqiuning)"]
+repository = "https://github.com/zuoqiuning/tauri-delta-updater"
+keywords = ["tauri", "updater", "delta", "patch", "incremental"]
+categories = ["development-tools", "gui"]
+readme = "README.md"
+
+[features]
+# 默认不启用发布工具：库使用者不该为 clap / minisign / walkdir 付出编译成本。
+# 构建 `generate` 需要 `--features generator`。
+default = []
+# `generate` 工具所需的签名、版本解析、目录遍历与命令行解析能力。
+generator = [
+    "dep:minisign",
+    "dep:regex",
+    "dep:walkdir",
+    "dep:chrono",
+    "dep:clap",
+    "dep:windows-sys",
+]
+# 可选的结构化事件：宿主可桥接到 tracing / 日志 / 监控。
+# 不启用时零依赖、零开销。
+tracing = ["dep:tracing"]
+
+[dependencies]
+# 差分算法的正确性对更新安全至关重要，1.0→1.4 之间存在行为差异
+# （补丁格式兼容性、panic 条件），约束收窄到实际验证过的次版本。
+qbsdiff = "1.4"
+sha2 = "0.10"
+thiserror = "1.0"
+# 版本比较（拒绝降级重放）必须按语义化版本处理，字符串比较会把 0.10 判成低于 0.9。
+semver = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 补丁文件用 zstd 二次压缩：bsdiff 的原始输出（控制/差异/额外流）含大量
+# 可压缩字节，不压缩时补丁可能接近甚至超过全量包体积。
+# 压缩比接近 bzip2、解压快 2-3 倍；解压只发生在通过哈希校验的数据上。
+zstd = "0.13"
+# 旧文件与补丁都用只读内存映射替代全量 fs::read：操作系统按需分页，
+# 峰值 RSS 显著低于一次性分配。
+memmap2 = "0.9"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "time"] }
+# 0.13 起 `rustls-tls` feature 更名为 `rustls`；约束收窄到 0.13+，
+# 与宿主工程的 reqwest 统一解析，彻底消灭双版本共存。
+#
+# TLS 后端固定用 ring：reqwest 的 `rustls` feature 会拉入 aws-lc-sys，
+# 它需要 cmake + C 工具链，在部分 Windows 环境会出现构建长时间挂起。
+# 这里用 `rustls-no-provider` 不指定后端，再由下面的 rustls 依赖显式启用 ring。
+reqwest = { version = ">=0.13, <0.14", default-features = false, features = ["rustls-no-provider", "stream", "json"] }
+# 显式启用 ring 作为 rustls 的加密后端，避免引入 aws-lc-sys 及其 C 工具链依赖。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+futures-util = "0.3"
+# 跨进程更新互斥锁。fs2 已 unmaintained（2020 年停更），
+# fs4 是其活跃维护分支，API 兼容；sync feature 对应 fs2 的阻塞式 FileExt。
+fs4 = { version = "0.13", default-features = false, features = ["sync"] }
+minisign-verify = "0.2"
+base64 = "0.21"
+
+# 精确锁版本：generate 依赖 minisign 内部的 payload 布局判断
+# （is_unencrypted_payload 的行为依赖未公开的实现细节），
+# 0.7.x 内的任何升级都可能悄悄改变行为，必须由人工验证后再显式升级。
+minisign = { version = "=0.7.9", optional = true }
+regex = { version = "1.10", optional = true }
+walkdir = { version = "2.4", optional = true }
+chrono = { version = "0.4", optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
+# 可选可观测性：默认不引入，启用 `tracing` feature 后才编译。
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+# 让命令行输出在中文 Windows 环境下也正确显示
+windows-sys = { version = "0.60", features = ["Win32_System_Console"], optional = true }
+
+[[bin]]
+name = "generate"
+path = "src/bin/generate.rs"
+required-features = ["generator"]
+
+[dev-dependencies]
+tempfile = "3.8"
+# 与主依赖保持同一精确版本，保证测试与生成工具行为一致
+minisign = "=0.7.9"
+base64 = "0.21"
+sha2 = "0.10"
+serde_json = "1.0"
+semver = "1"
+reqwest = { version = ">=0.13, <0.14", default-features = false, features = ["rustls-no-provider", "stream"] }
+# 兼容性测试：直接用 qbsdiff 生成"历史未压缩补丁"，验证新引擎仍能应用
+qbsdiff = "1.4"
+# 结构化事件测试：捕获 tracing 输出，断言"增量路径命中且未回退"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

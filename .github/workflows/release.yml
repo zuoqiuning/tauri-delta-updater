@@ -1,0 +1,86 @@
+name: Release (manual)
+
+# 发布策略见 VERSIONING.md：
+# - 禁止 tag push 自动发布
+# - 只允许人工 workflow_dispatch，且 crates.io 发布需 environment 审批
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "目标版本号（必须与 Cargo.toml 一致，不带 v）"
+        required: true
+        type: string
+      publish:
+        description: "确认发布到 crates.io（需 environment 审批）"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify release gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Verify version matches input
+        run: |
+          CRATE_VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          if [ "${{ inputs.version }}" != "$CRATE_VERSION" ]; then
+            echo "输入版本 (${{ inputs.version }}) 与 Cargo.toml ($CRATE_VERSION) 不一致"
+            exit 1
+          fi
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets --all-features --locked
+
+      - name: Doc tests
+        run: cargo test --doc --all-features --locked
+
+      - name: Library-only build
+        run: cargo check --no-default-features --locked
+
+      - name: Tracing feature build
+        run: cargo check --features tracing --locked
+
+      - name: Package dry-run
+        run: cargo publish --dry-run --locked
+
+  publish:
+    name: Publish to crates.io
+    needs: verify
+    if: ${{ inputs.publish }}
+    # 需要在 GitHub 仓库设置中为 release environment 配置审批人；
+    # 未配置时该 job 会直接运行，因此不要把 publish 默认设为 true。
+    environment: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "未配置 CARGO_REGISTRY_TOKEN，拒绝发布"
+            exit 1
+          fi
+          cargo publish --locked

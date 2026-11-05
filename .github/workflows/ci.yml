@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # core 与 platform 的 Linux/macOS 代码路径是独立编译单元，
+        # 只跑 Windows 的话，三平台上任何一处编译失败都要等用户才发现。
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    # clippy 是文档承诺的"零告警"，必须在 CI 里真的执行
+    - name: Clippy
+      run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+    - name: Run cargo check
+      run: cargo check --all-targets --all-features --locked
+
+    # 纯库构建：默认 feature 为空，验证关闭 generator 后仍然可用
+    - name: Check library-only build
+      run: cargo check --no-default-features --locked
+
+    - name: Run cargo test
+      run: cargo test --all-targets --all-features --locked
+
+    - name: Run cargo test (doc)
+      run: cargo test --doc --all-features --locked
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    # Cargo.toml 声明的 rust-version 必须真的能编译，否则是虚假的兼容承诺
+    - name: Setup Rust 1.88
+      uses: dtolnay/rust-toolchain@1.88
+
+    - name: Check on minimum supported Rust
+      run: cargo check --all-features --locked
+
+  release-build:
+    name: Release build
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    # 发布模式下才走的那条代码路径（例如条件编译的生成器）必须在 CI 里也编译一次，
+    # 否则只有真正发布时才会暴露编译错误。
+    - name: Build release
+      run: cargo build --release --all-targets --all-features --locked

@@ -1,0 +1,21 @@
+/target
+/mock_release
+/test_env
+/test_env_uac
+/test_run
+/real_test
+/.update.lock
+/update_failures.txt
+*.log
+*.patch
+*.json
+!Cargo.json
+!package.json
+
+# 导出脚本与其产物不入库；docs 下只有源码导出是产物，设计文档要进版本库
+/scripts/
+/docs/项目源码导出.md
+/项目源码导出.md
+# 内部草稿/评审稿不入库（VERSIONING.md 为唯一发布权威）
+/docs/发布.md
+/docs/深度评审报告-*.md
