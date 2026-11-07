@@ -109,3 +109,34 @@ jobs:
         run: |
           sleep 30
           cargo publish --manifest-path plugin/Cargo.toml
+
+  # 前端类型包：与 crate 同版本。未配置 NPM_TOKEN 时跳过，避免首次发版被卡住。
+  publish-npm:
+    name: Publish npm package
+    needs: publish
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Build
+        working-directory: plugin
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Publish
+        working-directory: plugin
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "未配置 NPM_TOKEN，跳过 npm 发布"
+            exit 0
+          fi
+          npm publish --access public

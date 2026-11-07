@@ -3,6 +3,8 @@
 /target-doctest
 /tools/zucchini-ab/target
 /plugin/target
+# 前端类型包：只提交构建产物（dist-js）与 lockfile，不提交 node_modules
+/plugin/node_modules
 /examples/tauri-app/src-tauri/target
 /examples/tauri-app/src-tauri/Cargo.lock
 /examples/tauri-app/src-tauri/gen
@@ -18,6 +20,8 @@
 *.json
 !Cargo.json
 !package.json
+# npm lockfile 必须入库（CI 用 `npm ci`）；上面的 *.json 规则会误伤
+!/plugin/package-lock.json
 # 插件权限 schema 由 build.rs 生成，发布包必须带它
 !/plugin/permissions/schemas/schema.json
 # 示例应用只需要两份手写的配置 JSON

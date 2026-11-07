@@ -34,6 +34,12 @@ cargo test --manifest-path plugin/Cargo.toml
 
 # public API path guard (compile-time)
 cargo test --all-features --test public_api
+
+# frontend type package (source in plugin/guest-js, output in plugin/dist-js)
+cd plugin
+npm ci
+npm run check   # tsc --noEmit
+npm run build   # regenerate dist-js; CI fails if it drifts from sources
 ```
 
 Low-memory machines can hit `os error 1455` with parallel rustc; use `-j 1`.

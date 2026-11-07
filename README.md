@@ -159,6 +159,12 @@ The plugin confirms startup before any window opens, streams stage events, and
 exits the process once the swap is ready. Errors arrive as
 `{ code, message, retryable, security }` — branch on `code`, never on `message`.
 
+Typed bindings (optional) live in `plugin/guest-js` and build to `plugin/dist-js`:
+`check`, `install`, `prepare`, `launch`, `downloadFull`, `installFull`,
+`diagnose`, `cancel`, `resetSafety`, plus `UpdateEvent` / `UpdateResult` /
+`ErrorDto` types. The npm package is **not published yet**; until it is, install
+it from a checkout (`npm install /path/to/repo/plugin`) or copy `dist-js`.
+
 > [!WARNING]
 > **Single-instance apps: test the exit path once per platform.** The plugin
 > exits with `app.exit(0)` after a short delay so the replacement script can

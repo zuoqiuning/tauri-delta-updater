@@ -1,0 +1,35 @@
+{
+  "name": "tauri-plugin-delta-updater",
+  "version": "0.2.0",
+  "description": "Typed frontend bindings for tauri-plugin-delta-updater: delta updates, full-installer fallback, stage events and diagnostics.",
+  "license": "MIT",
+  "author": "丘屿知宁 (zuoqiuning)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zuoqiuning/tauri-delta-updater"
+  },
+  "type": "module",
+  "files": [
+    "dist-js"
+  ],
+  "main": "./dist-js/index.js",
+  "module": "./dist-js/index.js",
+  "types": "./dist-js/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist-js/index.d.ts",
+      "import": "./dist-js/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "typescript": "^5.6.0"
+  }
+}

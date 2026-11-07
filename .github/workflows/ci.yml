@@ -173,6 +173,11 @@ jobs:
           echo "::error::核心 crate ($CORE) 与插件 crate ($PLUGIN) 版本不一致"
           exit 1
         fi
+        JS=$(python3 -c "import json; print(json.load(open('plugin/package.json'))['version'])")
+        if [ "$CORE" != "$JS" ]; then
+          echo "::error::核心 crate ($CORE) 与前端包 ($JS) 版本不一致"
+          exit 1
+        fi
         echo "版本一致: $CORE"
 
   plugin:
@@ -231,6 +236,31 @@ jobs:
     - name: Check example app
       if: runner.os == 'Windows'
       run: cargo check --manifest-path examples/tauri-app/src-tauri/Cargo.toml
+
+  # 前端类型包与 Rust 契约必须同步：TS 源码在 plugin/guest-js，
+  # 构建产物 dist-js 入库，CI 验证它可以重新生成（防止手改产物）。
+  guest-js:
+    name: Guest JS types
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: plugin/package-lock.json
+
+    - name: Install
+      working-directory: plugin
+      run: npm ci --no-audit --no-fund
+
+    - name: Type-check and build
+      working-directory: plugin
+      run: npm run build
+
+    - name: Ensure dist-js matches sources
+      run: git diff --exit-code -- plugin/dist-js
 
   release-build:
     name: Release build
