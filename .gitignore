@@ -22,6 +22,7 @@
 !package.json
 # npm lockfile 必须入库（CI 用 `npm ci`）；上面的 *.json 规则会误伤
 !/plugin/package-lock.json
+!/plugin/tsconfig.json
 # 插件权限 schema 由 build.rs 生成，发布包必须带它
 !/plugin/permissions/schemas/schema.json
 # 示例应用只需要两份手写的配置 JSON
