@@ -43,9 +43,16 @@ impl DeltaUpdater {
             None
         };
         let deferred_by_rollout = is_newer && self.deferred_by_rollout(&manifest)?;
+        // 系统版本门槛：不满足时连全量地址都不返回，避免宿主绕过检查
+        // 下载一个装不上的安装包。
+        let unsupported_os = if is_newer {
+            self.unsupported_os(&manifest)
+        } else {
+            None
+        };
 
-        // 灰度未命中时连全量地址都不返回：否则宿主可能绕过比例直接下载安装包。
-        let full_download_url = if deferred_by_rollout {
+        // 灰度未命中或系统版本不足时连全量地址都不返回。
+        let full_download_url = if deferred_by_rollout || unsupported_os.is_some() {
             None
         } else {
             manifest
@@ -54,7 +61,7 @@ impl DeltaUpdater {
                 .map(|p| p.url.clone())
         };
         // 配置了整包清单时以整包为准；否则沿用原来的单文件补丁。
-        let bundle = if is_newer && !deferred_by_rollout {
+        let bundle = if is_newer && !deferred_by_rollout && unsupported_os.is_none() {
             self.resolve_bundle_patch(&manifest.version).await?
         } else {
             BundleResolution::NotConfigured
@@ -63,6 +70,7 @@ impl DeltaUpdater {
         // 整包命中时 macOS `.app` 通过目录切换更新。
         let environment = if is_newer
             && !deferred_by_rollout
+            && unsupported_os.is_none()
             && !matches!(bundle, BundleResolution::Ready { .. })
         {
             crate::platform::target::incremental_fallback_reason(&self.executable_path)
@@ -71,7 +79,7 @@ impl DeltaUpdater {
         };
         // 单文件补丁路径：直达优先，其次最多 MAX_CHAIN_HOPS 跳；
         // 链的总成本超过安装包预算时视为"没有补丁"。
-        let single_chain = if is_newer && !deferred_by_rollout {
+        let single_chain = if is_newer && !deferred_by_rollout && unsupported_os.is_none() {
             super::plan::plan_single(
                 &manifest,
                 &self.config.platform,
@@ -98,6 +106,12 @@ impl DeltaUpdater {
         // 单文件补丁存在时仍应报告 has_patch，而 update() 也会走单文件路径。
         let fallback_reason = if !is_newer || deferred_by_rollout {
             None
+        } else if unsupported_os.is_some() {
+            // `FallbackReason::EnvironmentUnsupported` 持有静态文案；
+            // 具体版本号由 `update()` 的 `UnsupportedOs` 返回。
+            Some(FallbackReason::EnvironmentUnsupported(
+                "本机系统版本低于清单要求，已拒绝下载",
+            ))
         } else {
             let no_matching = || FallbackReason::NoMatchingPatch {
                 from: self.config.current_version.clone(),

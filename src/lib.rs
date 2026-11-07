@@ -276,6 +276,7 @@ pub use core::verify::{
     verify_manifest_signature_with, TrustPolicy,
 };
 pub use platform::full_install::InstallMode;
+pub use platform::os_version::current_os_version;
 pub use platform::target::{
     current_platform, detect_arch, incremental_fallback_reason, normalize_version,
 };

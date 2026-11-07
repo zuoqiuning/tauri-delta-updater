@@ -37,6 +37,11 @@
 
 ### 新增
 
+- 最低系统版本门槛：`generate --min-os` 写入受签名保护的
+  `platforms[].min_os`；`check()` 隐藏补丁与全量地址，`update()` 在**任何下载前**
+  返回 `UpdateOutcome::UnsupportedOs`（含要求版本与本机版本）。本机版本探测
+  失败时不阻断（未知 ≠ 不满足）；Windows 用 `RtlGetVersion`，macOS 用
+  `sw_vers`，Linux 用内核 release。新增 `current_os_version()` 公开接口。
 - 多密钥信任：`UpdateConfig::additional_public_keys` + `TrustPolicy`
   （`AnyOf` 默认 / `AllOf` 要求全部签名），插件配置 `additional_pubkeys` / `trust_policy`；
   `.sig` 与 `platforms[].signature` 支持多个 minisign 签名块，

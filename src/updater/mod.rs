@@ -262,6 +262,24 @@ impl DeltaUpdater {
         self.config.install_on_next_launch
     }
 
+    /// 清单为该平台声明的最低系统版本是否低于本机。
+    ///
+    /// 返回 `None` 表示未声明、或本机版本无法探测——未知不阻断。
+    pub(super) fn unsupported_os(
+        &self,
+        manifest: &crate::models::UpdateManifest,
+    ) -> Option<(String, String)> {
+        let required = manifest
+            .platforms
+            .get(&self.config.platform)?
+            .min_os
+            .as_deref()?;
+        let current = crate::platform::os_version::current_os_version()?;
+        let below =
+            crate::platform::os_version::compare(&current, required)? == std::cmp::Ordering::Less;
+        below.then(|| (required.to_string(), current))
+    }
+
     /// 配置里的脚本等待时长，生成替换脚本时写入。
     pub(super) fn script_timings(&self) -> crate::platform::ScriptTimings {
         crate::platform::ScriptTimings {

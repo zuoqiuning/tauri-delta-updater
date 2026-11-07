@@ -194,6 +194,16 @@ pub enum UpdateOutcome {
         /// 发布端声明的放量比例（0–100）。
         percentage: u8,
     },
+    /// 本机系统版本低于清单要求，更新被拒绝。
+    ///
+    /// 在**任何下载之前**终止：继续下载只会得到装不上、或替换后无法启动的版本。
+    /// 系统版本无法探测时不会走到这里（未知不阻断，见 `platforms[].min_os`）。
+    UnsupportedOs {
+        /// 清单声明的最低系统版本。
+        required: String,
+        /// 本机探测到的系统版本。
+        current: String,
+    },
     /// 增量不可用，调用方应回退到全量下载（交回官方 updater）。
     ///
     /// 这不是错误，是本库"完整更新引擎"定位的正常分支：
@@ -290,6 +300,13 @@ pub enum UpdateResult {
         /// 回退原因。
         reason: FallbackReason,
     },
+    /// 本机系统版本低于清单要求，更新被拒绝（不会下载任何内容）。
+    UnsupportedOs {
+        /// 清单声明的最低系统版本。
+        required: String,
+        /// 本机探测到的系统版本。
+        current: String,
+    },
     /// 连续失败已达上限，已进入安全模式。
     SafeMode,
 }
@@ -315,6 +332,9 @@ impl From<UpdateOutcome> for UpdateResult {
                 version,
                 percentage,
             },
+            UpdateOutcome::UnsupportedOs { required, current } => {
+                UpdateResult::UnsupportedOs { required, current }
+            }
             UpdateOutcome::FallbackToFullDownload {
                 full_download_url,
                 reason,

@@ -1204,6 +1204,50 @@ fn test_generate_cli_dual_signs_with_secondary_key() {
     );
 }
 
+/// `--min-os` 写入受签名保护的最低系统版本；非法格式必须在写文件前失败。
+#[test]
+fn test_generate_cli_writes_min_os() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let base_args = |min_os: &str| {
+        vec![
+            "--old-dir".to_string(),
+            s(&old_versions),
+            "--app-binary".to_string(),
+            s(&new_exe),
+            "--version".to_string(),
+            "0.1.1".to_string(),
+            "--base-url".to_string(),
+            "https://cdn.example.com".to_string(),
+            "--private-key".to_string(),
+            s(&key_file),
+            "--min-os".to_string(),
+            min_os.to_string(),
+        ]
+    };
+
+    let (code, _stdout, stderr) = run_generate(&base_args("10.0.19045"), &dir);
+    assert_eq!(code, 0, "合法 --min-os 必须成功\nstderr: {stderr}");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["platforms"]["windows-x86_64"]["min_os"],
+        "10.0.19045"
+    );
+
+    let (code, _stdout, stderr) = run_generate(&base_args("10.x"), &dir);
+    assert_ne!(code, 0, "非法 --min-os 必须在写清单前失败");
+    assert!(stderr.contains("--min-os"), "错误必须说明字段: {stderr}");
+}
+
 /// 计算字节的 SHA-256（小写十六进制）。
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

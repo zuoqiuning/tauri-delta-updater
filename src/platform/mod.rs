@@ -17,6 +17,8 @@ pub mod linux;
 /// macOS 平台适配。
 #[cfg(target_os = "macos")]
 pub mod macos;
+/// 系统版本探测与最低版本比较。
+pub mod os_version;
 /// 各平台共用的辅助逻辑。
 pub mod shared;
 /// 平台标识（Tauri updater 的 target 名称）。

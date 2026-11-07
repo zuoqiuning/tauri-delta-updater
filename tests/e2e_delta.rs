@@ -116,6 +116,70 @@ async fn test_multi_key_all_of_is_enforced() {
     );
 }
 
+/// 最低系统版本：低于清单要求时，在任何下载之前就被拒绝。
+#[tokio::test]
+async fn test_min_os_blocks_update_before_download() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app.exe");
+    let work_dir = dir.path().join("work");
+    std::fs::write(&exe, b"app").unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+
+    let (sk, pk) = signing_keypair();
+    let server = MockServer::start(HashMap::new());
+    let platform = tauri_delta_updater::current_platform();
+    let (manifest_bytes, _) = build_manifest(
+        &sk,
+        &server.base_url,
+        "0.2.0",
+        platform,
+        "patch-hash",
+        "target-hash",
+        None,
+    );
+    // 夸张的最低版本：任何真实系统都应判为过低。
+    let mut value: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
+    value["platforms"][platform]["min_os"] = "999999.0".into();
+    let bytes = serde_json::to_vec_pretty(&value).unwrap();
+    server.set("/latest.json", bytes.clone());
+    server.set("/latest.json.sig", sign(&sk, &bytes).into_bytes());
+
+    let updater = DeltaUpdater::new(
+        UpdateConfig::new(server.url("/latest.json"), pk)
+            .current_version("0.1.0")
+            .executable_path(&exe)
+            .work_dir(&work_dir),
+    )
+    .unwrap();
+
+    let check = updater.check().await.unwrap();
+    assert!(
+        !check.has_patch && check.full_download_url.is_none(),
+        "系统不满足时必须隐藏补丁与全量地址"
+    );
+    assert!(
+        matches!(
+            check.fallback_reason,
+            Some(tauri_delta_updater::FallbackReason::EnvironmentUnsupported(
+                _
+            ))
+        ),
+        "check() 必须说明环境不支持"
+    );
+
+    match updater.update().await.unwrap() {
+        UpdateOutcome::UnsupportedOs { required, current } => {
+            assert_eq!(required, "999999.0");
+            assert!(!current.is_empty(), "必须回报本机版本");
+        }
+        other => panic!("系统版本过低应返回 UnsupportedOs，实际: {other:?}"),
+    }
+    assert!(
+        !server.was_requested("/update.patch"),
+        "系统版本不足时不得下载补丁"
+    );
+}
+
 /// 端点切换策略：只有策略允许时才回退到备用清单，验签失败永远终止。
 #[tokio::test]
 async fn test_manifest_endpoint_falls_back_only_when_policy_allows() {

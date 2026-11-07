@@ -142,6 +142,12 @@ pub struct PlatformInfo {
     /// 客户端据此计算补丁的真实收益比（`patch_size / size`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// 该平台要求的最低系统版本（如 `10.0.19045` / `13.0` / `5.15`）。
+    ///
+    /// 受清单签名保护。客户端无法确定本机版本时**不阻断**（宁可放行也不误伤）；
+    /// 能确定且低于该值时拒绝下载，并返回 `UpdateOutcome::UnsupportedOs`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_os: Option<String>,
     /// 可选灰度配置；缺省表示全量发布（旧清单天然全量）。
     ///
     /// 由 `generate --rollout <0-100>` 写入，受清单签名保护。

@@ -350,12 +350,23 @@ async fn run(args: Args) -> Result<(), String> {
     // 平台条目始终指向本次发布的新安装包（其它平台条目保留）。
     // 安装包体积写进清单（受清单签名保护），客户端据此计算补丁的真实收益比。
     let installer_size = std::fs::metadata(installer).map(|m| m.len()).unwrap_or(0);
+    if let Some(min_os) = &args.min_os {
+        if min_os
+            .split('.')
+            .any(|part| !part.starts_with(|c: char| c.is_ascii_digit()))
+        {
+            return Err(format!(
+                "--min-os 必须是点分数字版本（如 10.0.19045 / 13.0 / 5.15）: {min_os}"
+            ));
+        }
+    }
     manifest.platforms.insert(
         platform_key.clone(),
         PlatformInfo {
             signature: String::new(),
             url: format!("{}/{installer_name}", args.base_url.trim_end_matches('/')),
             size: (installer_size > 0).then_some(installer_size),
+            min_os: args.min_os.clone(),
             // 100 即全量：不写字段，让旧客户端与旧清单保持字节级兼容。
             rollout: (args.rollout < 100).then_some(Rollout {
                 percentage: args.rollout,

@@ -67,6 +67,12 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) secondary_password: Option<String>,
 
+    /// 目标平台的最低系统版本（如 Windows `10.0.19045`、macOS `13.0`、Linux 内核 `5.15`）。
+    ///
+    /// 写入受清单签名保护的 `platforms[].min_os`；省略即清除该平台的门槛。
+    #[arg(long, value_name = "VERSION")]
+    pub(crate) min_os: Option<String>,
+
     /// 上一版 latest.json，用于保留其它平台的补丁与条目。
     #[arg(long)]
     pub(crate) existing: Option<PathBuf>,

@@ -48,6 +48,18 @@ impl DeltaUpdater {
             });
         }
 
+        // 系统版本门槛：低于清单要求时在**任何下载之前**终止，
+        // 继续下载只会得到装不上、或替换后无法启动的版本。
+        if let Some((required, current)) = self.unsupported_os(&manifest) {
+            crate::core::events::check(
+                &manifest.version,
+                true,
+                false,
+                self.config.uses_insecure_transport(),
+            );
+            return Ok(UpdateOutcome::UnsupportedOs { required, current });
+        }
+
         // 灰度：未命中的安装不进入任何下载/合并路径。
         // 同一版本的桶位稳定，下一次检查会得到同样结果，直到发布端放量。
         if self.deferred_by_rollout(&manifest)? {

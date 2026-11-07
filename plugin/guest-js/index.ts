@@ -33,6 +33,8 @@ export type UpdateResult =
   | { kind: 'up_to_date'; version: string }
   | { kind: 'deferred'; version: string; percentage: number }
   | { kind: 'requires_full_download'; url: string | null; reason: FallbackReason }
+  /** The running OS is below `platforms[].min_os`; nothing was downloaded. */
+  | { kind: 'unsupported_os'; required: string; current: string }
   | { kind: 'safe_mode' };
 
 /** 命令失败时插件返回的结构（`code` 是稳定契约，`message` 仅用于展示）。 */
@@ -72,6 +74,8 @@ export interface PlatformInfo {
   signature: string;
   url: string;
   size?: number;
+  /** 该平台要求的最低系统版本（如 `10.0.19045`）；旧清单没有该字段。 */
+  min_os?: string;
   rollout?: { percentage: number };
 }
 

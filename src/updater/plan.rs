@@ -166,6 +166,7 @@ mod tests {
                 signature: "sig".into(),
                 url: "https://cdn.example.com/app.exe".into(),
                 size: installer_size,
+                min_os: None,
                 rollout: None,
             },
         );
