@@ -1,8 +1,8 @@
 //! 把本次主程序归档为下一次发布的补丁基线。
 
-use crate::files::extract_version;
+use super::files::extract_version;
+use crate::{detect_arch, normalize_version};
 use std::path::Path;
-use tauri_delta_updater::{detect_arch, normalize_version};
 
 /// 把本次主程序归档为下一次发布的补丁基线。
 ///

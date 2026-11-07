@@ -1,14 +1,14 @@
 //! 单文件补丁生成：扫描基线、生成、验证并汇总。
 
-use crate::files::{extract_version, infer_os, is_app_binary_candidate};
-use crate::SkipRecord;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
-use tauri_delta_updater::{
+use super::files::{extract_version, infer_os, is_app_binary_candidate};
+use super::SkipRecord;
+use crate::{
     apply_patch, calculate_hash, create_patch_uncompressed, create_patch_with_level, detect_arch,
     normalize_version, DeltaError, PatchInfo, PatchScope, MAX_DELTA_CHAIN_HOPS,
 };
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use walkdir::WalkDir;
 
 /// 补丁验证目录的计数器，保证同一进程内多次调用不冲突。
@@ -18,8 +18,8 @@ static VERIFY_COUNTER: AtomicU32 = AtomicU32::new(0);
 #[derive(Clone, Copy)]
 pub(crate) struct PatchContext<'a> {
     pub(crate) app_binary: &'a Path,
-    pub(crate) old_dir: Option<&'a Path>,
-    pub(crate) old_binary: &'a [PathBuf],
+    pub(crate) old_dirs: &'a [PathBuf],
+    pub(crate) old_binaries: &'a [PathBuf],
     pub(crate) new_version: &'a str,
     pub(crate) target_os: &'a str,
     pub(crate) target_arch: &'a str,
@@ -40,8 +40,8 @@ pub(crate) async fn generate_single_patches(
 ) -> Result<(Vec<PatchInfo>, Vec<SkipRecord>), String> {
     let PatchContext {
         app_binary,
-        old_dir,
-        old_binary,
+        old_dirs,
+        old_binaries,
         new_version,
         target_os,
         target_arch,
@@ -57,9 +57,9 @@ pub(crate) async fn generate_single_patches(
     let mut platform_patches: Vec<PatchInfo> = Vec::new();
     let mut skipped: Vec<SkipRecord> = Vec::new();
 
-    // 基线来源：--old-dir 扫描 + 显式 --old-binary。后者校验失败会直接报错。
+    // 基线来源：基线目录扫描 + 显式基线文件。后者校验失败会直接报错。
     let mut candidates: Vec<(PathBuf, bool)> = Vec::new();
-    if let Some(dir) = old_dir {
+    for dir in old_dirs {
         for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
             if path.is_file() {
@@ -67,7 +67,7 @@ pub(crate) async fn generate_single_patches(
             }
         }
     }
-    for path in old_binary {
+    for path in old_binaries {
         candidates.push((path.clone(), true));
     }
 
@@ -91,7 +91,7 @@ pub(crate) async fn generate_single_patches(
             continue;
         }
 
-        // 同一文件只处理一次（--old-dir 与 --old-binary 可能重叠）
+        // 同一文件只处理一次（目录扫描与显式文件可能重叠）
         if let Ok(canonical) = std::fs::canonicalize(path) {
             if !seen.insert(canonical) {
                 continue;
@@ -346,8 +346,8 @@ pub(crate) fn retain_chain_patches(
 #[cfg(test)]
 mod tests {
     use super::retain_chain_patches;
+    use crate::{PatchInfo, PatchScope};
     use std::collections::HashMap;
-    use tauri_delta_updater::{PatchInfo, PatchScope};
 
     fn patch(from: &str, to: &str, url: &str) -> PatchInfo {
         PatchInfo {

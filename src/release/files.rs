@@ -1,8 +1,8 @@
 //! 文件名解析：版本、平台与产物类型推断。
 
+use crate::detect_arch;
 use regex::Regex;
 use std::path::Path;
-use tauri_delta_updater::detect_arch;
 
 /// 从文件名提取版本号，支持 `Sereno_0.1.0_x64-setup.exe` / `Sereno-v0.1.2-arm64.exe` 等格式。
 pub(crate) fn extract_version(file_name: &str) -> Option<String> {

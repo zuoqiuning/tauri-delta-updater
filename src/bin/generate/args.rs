@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use std::path::PathBuf;
+use tauri_delta_updater::release::ReleaseOptions;
 
 #[derive(Parser)]
 #[command(
@@ -182,4 +183,42 @@ pub(crate) struct Args {
     /// 只打印将要执行的操作，不写文件。
     #[arg(long)]
     pub(crate) dry_run: bool,
+}
+
+impl Args {
+    /// 映射为库的发布选项。CLI 只做参数解析，发布逻辑统一在库中实现。
+    pub(crate) fn into_options(self) -> ReleaseOptions {
+        let mut options = ReleaseOptions::new(
+            self.app_binary,
+            self.version,
+            self.base_url,
+            self.private_key,
+        );
+        options.old_dirs = self.old_dir.into_iter().collect();
+        options.old_binaries = self.old_binary;
+        options.installer = self.installer;
+        options.password = self.password;
+        options.secondary_private_key = self.secondary_private_key;
+        options.secondary_password = self.secondary_password;
+        options.notes_i18n = self.notes_i18n;
+        options.min_os = self.min_os;
+        options.existing = self.existing;
+        options.platform = self.platform;
+        options.rollout = self.rollout;
+        options.min_version = self.min_version;
+        options.channel = self.channel;
+        options.notes = self.notes;
+        options.max_patch_ratio = self.max_patch_ratio;
+        options.zstd_level = self.zstd_level;
+        options.output_dir = self.output_dir;
+        options.archive_dir = self.archive_dir;
+        options.new_app_dir = self.new_app_dir;
+        options.old_app_dirs = self.old_app_dirs;
+        options.report = self.report;
+        options.sha256sums = self.sha256sums;
+        options.legacy_patch = self.legacy_patch;
+        options.fail_on_empty = self.fail_on_empty;
+        options.dry_run = self.dry_run;
+        options
+    }
 }

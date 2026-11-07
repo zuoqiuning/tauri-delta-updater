@@ -1,16 +1,16 @@
 //! 整包补丁生成与 `latest.bundle.json`。
 
-use crate::args::Args;
-use crate::files::old_app_version;
+use super::files::old_app_version;
+use super::ReleaseOptions;
+use crate::{create_bundle_patch, normalize_version, BundleManifest, BundlePatch};
 use std::path::Path;
-use tauri_delta_updater::{create_bundle_patch, normalize_version, BundleManifest, BundlePatch};
 
 /// 生成整包（多文件）补丁，并写出独立签名的 `latest.bundle.json`。
 ///
 /// 未提供 `--new-app-dir` 时是零操作。整包补丁与单文件补丁互不影响：
 /// 客户端可以只消费 `latest.bundle.json`，旧客户端继续使用 `latest.json`。
 pub(crate) async fn generate_bundles(
-    args: &Args,
+    options: &ReleaseOptions,
     new_version: &str,
     platform_key: &str,
     output_dir: &Path,
@@ -18,20 +18,20 @@ pub(crate) async fn generate_bundles(
     manifest_file: &str,
     signing_keys: &[minisign::SecretKey],
 ) -> Result<usize, String> {
-    let Some(new_dir) = &args.new_app_dir else {
+    let Some(new_dir) = &options.new_app_dir else {
         return Ok(0);
     };
 
     let canonical_new =
         std::fs::canonicalize(new_dir).map_err(|e| format!("解析 --new-app-dir 失败: {e}"))?;
-    let canonical_app = std::fs::canonicalize(&args.app_binary)
+    let canonical_app = std::fs::canonicalize(&options.app_binary)
         .map_err(|e| format!("解析 --app-binary 失败: {e}"))?;
     if !canonical_app.starts_with(&canonical_new) {
         return Err("--app-binary 必须位于 --new-app-dir 内".into());
     }
 
     let mut bundles: Vec<BundlePatch> = Vec::new();
-    for dir in &args.old_app_dirs {
+    for dir in &options.old_app_dirs {
         let from_version = old_app_version(dir)
             .map(|v| normalize_version(&v).to_string())
             .ok_or_else(|| {
@@ -49,7 +49,7 @@ pub(crate) async fn generate_bundles(
 
         let patch_name = format!("{from_version}_to_{new_version}.bundle.patch");
         let patch_path = patch_dir.join(&patch_name);
-        let patch_url = format!("{}/{patch_name}", args.base_url.trim_end_matches('/'));
+        let patch_url = format!("{}/{patch_name}", options.base_url.trim_end_matches('/'));
 
         println!("[INFO] 生成整包补丁: {from_version} -> {new_version}");
         let bundle = create_bundle_patch(
@@ -79,7 +79,7 @@ pub(crate) async fn generate_bundles(
     });
     bundles.dedup_by(|a, b| a.from_version == b.from_version);
 
-    if bundles.is_empty() && args.fail_on_empty {
+    if bundles.is_empty() && options.fail_on_empty {
         return Err("没有生成任何整包补丁：检查 --old-app-dir 的目录名是否包含版本号".into());
     }
 
@@ -97,7 +97,7 @@ pub(crate) async fn generate_bundles(
     std::fs::write(output_dir.join(manifest_file), &json)
         .map_err(|e| format!("写入 {manifest_file} 失败: {e}"))?;
     let signature =
-        crate::sign_with_keys(signing_keys, &json, Some(&format!("tdu:v={new_version}")))
+        super::sign_with_keys(signing_keys, &json, Some(&format!("tdu:v={new_version}")))
             .map_err(|e| format!("签名整包清单失败: {e}"))?;
     std::fs::write(output_dir.join(format!("{manifest_file}.sig")), signature)
         .map_err(|e| format!("写入 {manifest_file}.sig 失败: {e}"))?;

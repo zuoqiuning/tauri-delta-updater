@@ -227,6 +227,9 @@ pub mod error;
 pub mod models;
 /// 各平台适配。
 pub mod platform;
+/// 发布期工具：生成签名的清单、补丁与发布报告（需启用 `generator`）。
+#[cfg(feature = "generator")]
+pub mod release;
 /// 可观察、可取消的更新会话。
 pub mod session;
 /// 高层更新流程。
