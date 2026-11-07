@@ -14,8 +14,8 @@
 ### 1.1 版本号可用
 
 1. 访问 `https://crates.io/api/v1/crates/tauri-delta-updater`，确认目标版本不存在；
-2. `0.2.1` 已发布且不可覆盖；`0.3.0` 尚未发布；
-3. 插件与 npm 包已发布 `0.2.1`，`0.3.0` 随核心同步。
+2. `0.3.0` 已发布且不可覆盖；下一版本必须尚未发布；
+3. 插件与 npm 包已发布 `0.3.0`，后续版本随核心同步。
 
 ### 1.2 元数据
 
@@ -225,10 +225,10 @@ cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.3.0
 
 | 项 | 状态 |
 |---|---|
-| `Cargo.toml` 版本 | `0.3.0`（本地已准备，尚未上传） |
-| crates.io | 核心 `0.1.0` / `0.2.0` / `0.2.1`；插件 `0.2.1` |
-| npm | `tauri-plugin-delta-updater@0.2.1` |
-| git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1` |
+| `Cargo.toml` 版本 | `0.3.0`（已发布，不可覆盖） |
+| crates.io | 核心 `0.1.0` / `0.2.0` / `0.2.1` / `0.3.0`；插件 `0.2.1` / `0.3.0` |
+| npm | `tauri-plugin-delta-updater@0.2.1` / `0.3.0` |
+| git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1`、`v0.3.0` |
 | 测试 | 核心 231 项 + 1 ignored（需真实子进程持锁）+ 22 文档测试；插件 16 项 + 2 个 ignored rustdoc 示例，全绿 |
 | clippy / fmt | 两个 crate `-D warnings` 全绿 |
 | MSRV | 1.88 |
