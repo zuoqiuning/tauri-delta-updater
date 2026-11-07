@@ -997,6 +997,11 @@ next release can reuse the same `--old-dir` without any manual file shuffling.
 skip reason), and `--fail-on-empty` turns "no patch was produced" into a CI
 failure instead of a silently full-download-only release.
 
+During a cross-generation transition, `--legacy-patch` writes uncompressed
+`BSDIFF40` patches: clients on the old engine reject zstd containers with
+`not a valid patch`. Patch size grows noticeably; switch back once the old
+clients have been replaced.
+
 `generate` also **retains chainable history**: patch entries from previous
 manifests are kept when they form a path to the new version within
 `MAX_DELTA_CHAIN_HOPS` (default 3), and everything else is pruned. That lets a
@@ -1063,6 +1068,7 @@ Key arguments:
 | `--platform` | Optional platform key; otherwise inferred from the filename (`windows-x86_64`, `linux-x86_64`, `darwin-aarch64`...). Inference failure is an error, never a silent `windows-x86_64` default. |
 | `--max-patch-ratio` | Skip patches larger than this fraction of the installer (default `1.0`: only skip when the patch has no benefit). |
 | `--zstd-level` | Patch compression level, 1–22 (default 19). Lower it to 15–17 when CI time matters for large patches. |
+| `--legacy-patch` | Write uncompressed `BSDIFF40` patches for clients still running an older engine that rejects zstd containers. Larger patches; use only during the transition. |
 | `--existing` | Previous `latest.json`, to preserve other platforms' entries and patches. |
 | `--password` | Private-key password (or `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). |
 | `--secondary-private-key` | Second minisign key; signs the manifest **and** the installer with both keys (`.sig` gets two blocks). Use during key rotation. |
@@ -1269,6 +1275,16 @@ fallback, this library is the deeper option.
 
 ## Upgrading
 
+- **Between engine generations (e.g. 0.2.3 → 0.2.4)**: the swap is driven by the
+  **old** engine's script, which does not write the new `tdx_update_dir` marker.
+  The first release of the new engine must call the **unconditional**
+  `confirm_startup_success()` (or `PlatformUpdater::confirm_startup_success()`)
+  at startup. `*_if_pending` now also detects leftover legacy scripts, but the
+  unconditional form is the safe default for the transition.
+- **Manifests consumed by old clients**: old clients reject zstd patches
+  (`not a valid patch`). Publish one transition release with
+  `generate --legacy-patch` (uncompressed `BSDIFF40`), then switch back once the
+  old clients have been replaced.
 - **0.1 → 0.2**: several public structs gained fields (`UpdateManifest`,
   `PlatformInfo`, `CheckOutcome`, `UpdateConfig`, `Diagnosis`) and three enums
   gained `Deferred` (`UpdateOutcome`, `UpdateResult`, `UpdateEvent`). All enums

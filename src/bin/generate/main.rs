@@ -405,6 +405,7 @@ async fn run(args: Args) -> Result<(), String> {
         patch_dir: &patch_dir,
         base_url: &args.base_url,
         zstd_level: args.zstd_level,
+        legacy_patch: args.legacy_patch,
         max_patch_ratio: args.max_patch_ratio,
         dry_run: args.dry_run,
     })

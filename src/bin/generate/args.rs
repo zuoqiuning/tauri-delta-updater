@@ -163,6 +163,13 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) report: Option<PathBuf>,
 
+    /// 生成**未压缩**的补丁（`BSDIFF40` 原始输出），供仍使用旧引擎的客户端。
+    ///
+    /// 旧客户端不认 zstd 容器，会把补丁判成 "not a valid patch"；跨代际过渡期
+    /// 用本开关，等旧客户端都被替换后关掉。未压缩补丁体积明显更大。
+    #[arg(long)]
+    pub(crate) legacy_patch: bool,
+
     /// 一个补丁都没生成时以非零状态退出（防止 CI 静默发布空清单）。
     #[arg(long)]
     pub(crate) fail_on_empty: bool,

@@ -445,6 +445,10 @@ impl DeltaUpdater {
 
     /// 仅在本次启动来自一次替换时确认成功；普通启动是零写入的空操作。
     ///
+    /// 替换证据包括新脚本的工作目录指针**和旧引擎脚本文件**：跨代际升级
+    /// （例如 0.2.3 → 0.2.4）由旧脚本执行替换，它不写新指针，只留下旧脚本。
+    /// 只检查指针会让新版本不确认启动，旧脚本等到超时后回滚。
+    ///
     /// 建议无条件下放在应用启动早期：
     ///
     /// ```no_run
@@ -458,7 +462,7 @@ impl DeltaUpdater {
         let Some(dir) = self.executable_path.parent() else {
             return Ok(false);
         };
-        if !dir.join(crate::core::artifacts::WORK_DIR_MARKER).is_file() {
+        if !crate::platform::shared::has_replacement_evidence(dir) {
             return Ok(false);
         }
         self.confirm_startup_success()?;

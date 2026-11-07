@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tauri_delta_updater::{
-    apply_patch, calculate_hash, create_patch_with_level, detect_arch, normalize_version,
-    DeltaError, PatchInfo, PatchScope, MAX_DELTA_CHAIN_HOPS,
+    apply_patch, calculate_hash, create_patch_uncompressed, create_patch_with_level, detect_arch,
+    normalize_version, DeltaError, PatchInfo, PatchScope, MAX_DELTA_CHAIN_HOPS,
 };
 use walkdir::WalkDir;
 
@@ -28,6 +28,8 @@ pub(crate) struct PatchContext<'a> {
     pub(crate) patch_dir: &'a Path,
     pub(crate) base_url: &'a str,
     pub(crate) zstd_level: i32,
+    /// 生成未压缩补丁，兼容不认 zstd 容器的旧客户端。
+    pub(crate) legacy_patch: bool,
     pub(crate) max_patch_ratio: f64,
     pub(crate) dry_run: bool,
 }
@@ -48,6 +50,7 @@ pub(crate) async fn generate_single_patches(
         patch_dir,
         base_url,
         zstd_level,
+        legacy_patch,
         max_patch_ratio,
         dry_run,
     } = *ctx;
@@ -171,7 +174,12 @@ pub(crate) async fn generate_single_patches(
         }
 
         println!("[INFO] 生成补丁: {old_version} -> {new_version}");
-        if let Err(err) = create_patch_with_level(path, app_binary, &patch_path, zstd_level).await {
+        let created = if legacy_patch {
+            create_patch_uncompressed(path, app_binary, &patch_path).await
+        } else {
+            create_patch_with_level(path, app_binary, &patch_path, zstd_level).await
+        };
+        if let Err(err) = created {
             match err {
                 // 体积/内存超出增量适用范围：跳过该基线，走全量分发，
                 // 而不是让发布流水线在分配失败时直接 abort。

@@ -122,12 +122,25 @@ fn resolve_work_dir() -> Result<(PathBuf, Option<PathBuf>)> {
     Ok((work_dir, Some(marker)))
 }
 
+/// 本次启动是否来自一次替换。
+///
+/// 新引擎的替换脚本会写 [`artifacts::WORK_DIR_MARKER`]；**旧引擎（0.2.3 及更早）**
+/// 驱动的替换不会写这个标记，只会在 exe 目录留下旧脚本文件。跨代际升级时
+/// 必须把旧脚本也当作替换证据，否则新版本不会确认启动，旧脚本会等到超时回滚。
+///
+/// 旧脚本在确认成功后由 [`confirm_startup_success_in`] 清理，因此普通启动不会
+/// 一直命中；新脚本不自删，但它会写 marker，marker 被确认流程删除后即不再命中。
+pub(crate) fn has_replacement_evidence(exe_dir: &Path) -> bool {
+    exe_dir.join(artifacts::WORK_DIR_MARKER).is_file()
+        || artifacts::LEGACY_SCRIPTS
+            .iter()
+            .any(|name| exe_dir.join(name).is_file())
+}
+
 /// 仅当本次启动确实来自一次替换时才确认成功。
 ///
-/// 替换脚本会在启动新版本前写入工作目录指针（[`artifacts::WORK_DIR_MARKER`]）。
-/// 该指针不存在，说明这不是更新后的首次启动，函数直接返回 `Ok(false)`，
-/// **不做任何写入**。因此可以无条件下放在 `main` / `setup` 开头，
-/// 不会污染普通启动，也不会在只读安装目录里报错。
+/// 替换证据 = 工作目录指针（新脚本）或旧脚本文件（跨代际升级）。两者都不存在时
+/// 函数直接返回 `Ok(false)`，**不做任何写入**，可以无条件下放在 `main` / `setup` 开头。
 ///
 /// ```no_run
 /// # fn main() -> tauri_delta_updater::Result<()> {
@@ -141,7 +154,7 @@ pub fn confirm_startup_success_if_pending() -> Result<bool> {
     let Some(dir) = exe.parent() else {
         return Ok(false);
     };
-    if !dir.join(artifacts::WORK_DIR_MARKER).is_file() {
+    if !has_replacement_evidence(dir) {
         return Ok(false);
     }
     // 新进程已经执行到宿主代码：先把状态推进到 booting，再等待宿主的确认。
@@ -183,7 +196,37 @@ pub fn confirm_startup_success_in(work_dir: &Path) -> Result<()> {
     if let Ok(exe) = crate::platform::target::runtime_executable() {
         if let Some(dir) = exe.parent() {
             let _ = std::fs::write(dir.join(artifacts::LEGACY_SUCCESS_FLAG), "ok");
+            // 旧脚本不自删；确认成功后清掉，避免后续普通启动把残留脚本误判成
+            // "本次来自替换"。删除正在运行的脚本是安全的：解释器已加载内容，
+            // 且脚本自身只等待成功/回滚标志，不会重新读取文件。
+            for name in artifacts::LEGACY_SCRIPTS {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_replacement_evidence;
+    use crate::core::artifacts;
+    use tempfile::tempdir;
+
+    /// 跨代际升级的证据必须被识别：旧脚本不留新指针。
+    #[test]
+    fn detects_new_marker_and_legacy_scripts() {
+        let dir = tempdir().unwrap();
+        assert!(!has_replacement_evidence(dir.path()), "空目录不是替换");
+
+        std::fs::write(dir.path().join(artifacts::WORK_DIR_MARKER), "x").unwrap();
+        assert!(has_replacement_evidence(dir.path()), "新指针是替换证据");
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(artifacts::LEGACY_SCRIPTS[0]), "x").unwrap();
+        assert!(
+            has_replacement_evidence(dir.path()),
+            "旧脚本文件必须被当作替换证据"
+        );
+    }
 }

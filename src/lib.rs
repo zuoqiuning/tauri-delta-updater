@@ -259,8 +259,8 @@ macro_rules! host_version {
 }
 
 pub use core::diff::{
-    apply_patch, create_patch, create_patch_with_level, VerifiedArtifact,
-    MAX_INCREMENTAL_FILE_BYTES,
+    apply_patch, create_patch, create_patch_uncompressed, create_patch_with_level,
+    VerifiedArtifact, MAX_INCREMENTAL_FILE_BYTES,
 };
 pub use core::disk::{check_disk_space, cleanup_previous_updates};
 pub use core::downloader::download_patch_with_progress;

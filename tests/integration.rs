@@ -1028,6 +1028,42 @@ async fn test_create_patch_output_is_zstd_compressed() {
     assert_eq!(std::fs::read(&output).unwrap(), new_data);
 }
 
+/// 发布端必须能原生产出旧客户端认识的未压缩补丁：
+/// 产物以 `BSDIFF40` 开头，且能被 `apply_patch` 应用。
+#[tokio::test]
+async fn test_create_uncompressed_patch_is_legacy_compatible() {
+    let dir = tempdir().unwrap();
+    let old = dir.path().join("old.bin");
+    let new = dir.path().join("new.bin");
+    let patch = dir.path().join("legacy.patch");
+
+    let old_data: Vec<u8> = (0..64 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let mut new_data = old_data.clone();
+    new_data[..1024].copy_from_slice(&[0xAB; 1024]);
+    std::fs::write(&old, &old_data).unwrap();
+    std::fs::write(&new, &new_data).unwrap();
+
+    tauri_delta_updater::create_patch_uncompressed(&old, &new, &patch)
+        .await
+        .unwrap();
+
+    let bytes = std::fs::read(&patch).unwrap();
+    assert_eq!(&bytes[..8], b"BSDIFF40", "未压缩补丁必须是 BSDIFF40");
+    assert_ne!(
+        &bytes[..4],
+        &[0x28, 0xB5, 0x2F, 0xFD],
+        "未压缩补丁不能是 zstd 容器"
+    );
+
+    let output = dir.path().join("output.bin");
+    let patch_hash = calculate_hash(&patch).await.unwrap();
+    let new_hash = calculate_hash(&new).await.unwrap();
+    apply_patch(&old, &patch, &output, &patch_hash, &new_hash)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), new_data);
+}
+
 /// 本地验证闭环：不需要网络与签名密钥，就能确认增量真的生效。
 #[tokio::test]
 async fn test_simulate_update_reports_patch_ratio() {

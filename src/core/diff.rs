@@ -141,7 +141,7 @@ pub async fn create_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     new_file: P2,
     patch_output: P3,
 ) -> Result<()> {
-    create_patch_with_level(old_file, new_file, patch_output, 19).await
+    create_patch_with_compression(old_file, new_file, patch_output, Some(19)).await
 }
 
 /// 与 [`create_patch`] 相同，但允许指定 zstd 压缩级别（1–22）。
@@ -159,6 +159,28 @@ pub async fn create_patch_with_level<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef
             "zstd 压缩级别必须在 1–22 之间，实际 {zstd_level}"
         )));
     }
+    create_patch_with_compression(old_file, new_file, patch_output, Some(zstd_level)).await
+}
+
+/// 生成**未压缩**的 bsdiff 补丁（`BSDIFF40` 原始输出）。
+///
+/// 只用于跨代际过渡：旧引擎客户端不认 zstd 容器，会把补丁判成
+/// "not a valid patch"。未压缩补丁体积明显更大，新客户端应继续用
+/// [`create_patch`]。
+pub async fn create_patch_uncompressed<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
+    old_file: P1,
+    new_file: P2,
+    patch_output: P3,
+) -> Result<()> {
+    create_patch_with_compression(old_file, new_file, patch_output, None).await
+}
+
+async fn create_patch_with_compression<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
+    old_file: P1,
+    new_file: P2,
+    patch_output: P3,
+    compression: Option<i32>,
+) -> Result<()> {
     let old_path = old_file.as_ref().to_path_buf();
     let new_path = new_file.as_ref().to_path_buf();
     let patch_path = patch_output.as_ref().to_path_buf();
@@ -171,7 +193,7 @@ pub async fn create_patch_with_level<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef
         let old = map_file(&old_path).map_err(DeltaError::Io)?;
         let new = map_file(&new_path).map_err(DeltaError::Io)?;
 
-        // 原始补丁先写到临时文件，压缩成功后删除
+        // 原始补丁先写到临时文件；压缩后删除，未压缩时直接改名成最终文件。
         let raw_path = raw_patch_path(&patch_path);
         let raw_file = std::fs::File::create(&raw_path)?;
         let result =
@@ -184,6 +206,14 @@ pub async fn create_patch_with_level<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef
                 return Err(DeltaError::PatchGenFailed(e.to_string()));
             }
         }
+
+        let Some(zstd_level) = compression else {
+            // 未压缩：同目录重命名，不复制字节。
+            return std::fs::rename(&raw_path, &patch_path).map_err(|e| {
+                let _ = std::fs::remove_file(&raw_path);
+                DeltaError::PatchGenFailed(format!("落盘未压缩补丁失败: {e}"))
+            });
+        };
 
         // zstd 流式压缩：raw -> 最终补丁文件
         let compressed = (|| -> std::io::Result<()> {

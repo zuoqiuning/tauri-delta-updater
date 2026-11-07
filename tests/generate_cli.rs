@@ -761,6 +761,49 @@ fn test_generate_cli_fail_on_empty() {
     assert!(!dir.join("latest.json").exists(), "闸门触发时不得写清单");
 }
 
+/// `--legacy-patch` 必须产出未压缩的 BSDIFF40，供不认 zstd 容器的旧客户端。
+#[test]
+fn test_generate_cli_legacy_patch_is_uncompressed() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--legacy-patch".into(),
+        "--fail-on-empty".into(),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let patch = std::fs::read(old_versions.join("0.1.0_to_0.1.1.patch")).unwrap();
+    assert_eq!(&patch[..8], b"BSDIFF40", "legacy 补丁必须是 BSDIFF40");
+    assert_ne!(&patch[..4], &[0x28, 0xB5, 0x2F, 0xFD], "不能是 zstd 容器");
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["patches"]["windows-x86_64"][0]["patch_hash"],
+        sha256_hex(&patch),
+        "清单哈希必须对应未压缩补丁"
+    );
+}
+
 /// 整包模式：目录级差分包 + 独立签名的 `latest.bundle.json`。
 #[test]
 fn test_generate_cli_bundle_mode_emits_signed_manifest() {
