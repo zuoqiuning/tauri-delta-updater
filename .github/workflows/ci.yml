@@ -28,6 +28,9 @@ jobs:
       with:
         components: clippy, rustfmt
 
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
     - name: Check formatting
       run: cargo fmt --all -- --check
 
@@ -46,7 +49,7 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        cargo test --all-targets --all-features --locked 2>&1 | Tee-Object -FilePath test.log
+        cargo test --all-targets --all-features --locked --no-fail-fast 2>&1 | Tee-Object -FilePath test.log
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Run cargo test (Unix)
@@ -54,7 +57,7 @@ jobs:
       shell: bash
       run: |
         set -o pipefail
-        cargo test --all-targets --all-features --locked 2>&1 | tee test.log
+        cargo test --all-targets --all-features --locked --no-fail-fast 2>&1 | tee test.log
 
     # 失败摘要写进 annotation：公开仓库的 Actions 原始日志需要管理员权限下载，
     # annotation 能在页面上直接看到哪个测试失败、为什么失败。
@@ -80,6 +83,12 @@ jobs:
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        # doctest 使用独立 target 目录，缓存键要与之匹配
+        workspaces: ". -> target-doctest"
 
     - name: Run doctests
       run: |
@@ -108,6 +117,9 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
     - name: Run Unix replacement script tests
       shell: bash
       run: |
@@ -134,8 +146,34 @@ jobs:
     - name: Setup Rust 1.88
       uses: dtolnay/rust-toolchain@1.88
 
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
     - name: Check on minimum supported Rust
       run: cargo check --all-features --locked
+
+  # 核心 crate 与插件 crate 必须同版本发布，否则 `cargo delta init` 写出的依赖会指向
+  # 一个不存在的插件版本。这里在 CI 阶段就把漂移暴露出来。
+  versions:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Compare crate versions
+      run: |
+        CORE=$(cargo metadata --no-deps --format-version 1 \
+          | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+        PLUGIN=$(cargo metadata --manifest-path plugin/Cargo.toml --no-deps --format-version 1 \
+          | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+        if [ "$CORE" != "$PLUGIN" ]; then
+          echo "::error::核心 crate ($CORE) 与插件 crate ($PLUGIN) 版本不一致"
+          exit 1
+        fi
+        echo "版本一致: $CORE"
 
   plugin:
     name: Plugin crate (${{ matrix.os }})
@@ -152,6 +190,12 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy, rustfmt
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        # 插件是独立 crate（自带 Cargo.lock 与 target），单独缓存
+        workspaces: "plugin"
 
     # 插件依赖 tauri（Linux 上会编译 gtk/webkit 绑定），runner 默认没有这些开发头文件。
     - name: Install Linux dependencies
@@ -200,6 +244,9 @@ jobs:
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
 
     # 发布模式下才走的那条代码路径（例如条件编译的生成器）必须在 CI 里也编译一次，
     # 否则只有真正发布时才会暴露编译错误。

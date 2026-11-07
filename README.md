@@ -1163,6 +1163,17 @@ fallback, this library is the deeper option.
 | Extra `tdx_update.ps1` / `tdx_update.sh` in the work directory | Normal: scripts don't delete themselves; the next update reclaims them. |
 | `Apps & Features` / `dpkg` still shows the old version | In-place exe replacement bypasses installer/package metadata. Use the full-download path for managed deployments. |
 
+## Upgrading
+
+- **0.1 → 0.2**: several public structs gained fields (`UpdateManifest`,
+  `PlatformInfo`, `CheckOutcome`, `UpdateConfig`, `Diagnosis`) and three enums
+  gained `Deferred` (`UpdateOutcome`, `UpdateResult`, `UpdateEvent`). All enums
+  are `non_exhaustive` — keep a wildcard arm. Manifests without the new fields
+  keep working. Details: [CHANGELOG.md](CHANGELOG.md).
+- **Unreleased**: `UpdateResult` gained `Ready` (returned by the plugin's
+  `prepare` command). The release workflow now publishes both crates; until the
+  plugin appears on crates.io, `cargo delta init` writes a git dependency.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

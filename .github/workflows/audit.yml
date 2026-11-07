@@ -1,0 +1,23 @@
+name: Dependency audit
+
+# 依赖审计独立于主 CI：安全公告是异步出现的，不应该让一次数据库更新把
+# 所有正在开发的 PR 变红。每周跑一次 + 支持手动触发，失败会创建/更新 issue。
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: rustsec/audit-check@v2.0.0
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}

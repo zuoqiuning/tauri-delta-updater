@@ -7,6 +7,53 @@
 
 ## [Unreleased]
 
+### 修复（接入与运行时）
+
+- **`cargo delta init` 写出的插件依赖无法构建**：模板把版本硬编码为 `0.1`，
+  而插件未发布、仓库版本已是 0.2.0。现在默认写可用的 git 依赖，`--registry`
+  才写 `"<CARGO_PKG_VERSION>"`；并新增测试断言版本必须等于工具版本。
+- **插件初始化失败会阻止宿主应用启动**：工作目录只读或配置缺失时，
+  Tauri 会把插件 setup 错误升级为 `PluginInitialization` 并使 `App::build` 失败。
+  现在统一降级为 `updater_unavailable` 状态，应用照常启动，命令返回稳定错误码。
+- **整包不可用时错误地跳过单文件增量**：Linux / 非 `.app` 的 macOS 配置了
+  `bundle_endpoint` 后会直接回退全量。现在先尝试单文件补丁，只有两者都不可用
+  才回退，`check()` 同步报告 `has_patch`。
+- **生成补丁可能 OOM 中止**：新增 4 GiB 工作集上限
+  （`DeltaError::PatchWorkingSetTooLarge`），`generate` 跳过超限基线并写入报告，
+  而不是在分配失败时 abort 整个发布进程。
+- **Windows 提权被拒时可能拉起第二个实例**：回滚路径现在按 PID + 路径确认旧进程
+  已退出，仍在运行时跳过重启。
+- **macOS 全量安装包在切换前被删除**：删除时机移到启动确认之后，切换失败时
+  仍可直接重试。
+- **`cargo delta` 重排 `tauri.conf.json`**：启用 `serde_json/preserve_order`
+  后只插入新键，不再产生整文件 diff。
+- **清单与签名串行下载**：两者改为并行拉取，检查更新少一个 RTT。
+
+### 新增
+
+- 插件新增 `prepare` / `launch` 命令与 `UpdateResult::Ready`：先下载合并、
+  由前端决定退出时机（保存草稿、二次确认），再触发替换。
+- 插件配置新增 `work_dir` / `wait_timeout_secs` / `confirm_timeout_secs` /
+  `proxy`，无需写 Rust 即可覆盖运行时行为。
+- 启动诊断（`diagnose().warnings()`）现在写入 `tdx_update.log` 并发出
+  `delta-updater://diagnosis` 事件；重新发布 `delta-updater://unavailable`
+  事件说明不可用原因。
+- `DeltaUpdater::prepare_with_events`：可观察、可取消的 prepare 路径。
+- CI：cargo 缓存、`--no-fail-fast`、独立依赖审计（每周 `cargo audit`）、
+  核心/插件版本一致性检查；发布流程同时发布插件 crate。
+- `SECURITY.md` 与 `CONTRIBUTING.md`。
+
+### 变更
+
+- `cargo delta init` 默认写 git 依赖（插件发布前唯一可直接构建的安装方式）；
+  发布后可用 `--registry` 切换为版本依赖。
+- 32 位目标下补丁线程栈由 512 MB 下调为 64 MB。
+
+### 升级注意
+
+- `UpdateResult` 新增 `Ready` 变体（`#[non_exhaustive]`，外部 `match` 保留通配分支即可）。
+- 破坏性变更：无。清单格式、签名语义与替换脚本行为保持不变。
+
 ## [0.2.0] - 2026-11-07
 
 ### 修复（三平台 CI 验证发现）

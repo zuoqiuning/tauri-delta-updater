@@ -40,6 +40,17 @@ jobs:
             exit 1
           fi
 
+      - name: Verify plugin version matches core
+        run: |
+          CORE=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          PLUGIN=$(cargo metadata --manifest-path plugin/Cargo.toml --no-deps --format-version 1 \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          if [ "$CORE" != "$PLUGIN" ]; then
+            echo "核心 crate ($CORE) 与插件 crate ($PLUGIN) 版本不一致"
+            exit 1
+          fi
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -47,7 +58,7 @@ jobs:
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test --all-targets --all-features --locked
+        run: cargo test --all-targets --all-features --locked --no-fail-fast
 
       - name: Doc tests
         env:
@@ -87,3 +98,12 @@ jobs:
             exit 1
           fi
           cargo publish --locked
+
+      # 插件依赖核心 crate 的已发布版本：先发核心，等索引可见后再发插件。
+      # 两部分必须同版本，ci.yml 的 Version consistency job 已在合并前守住。
+      - name: Publish plugin
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          sleep 30
+          cargo publish --manifest-path plugin/Cargo.toml
