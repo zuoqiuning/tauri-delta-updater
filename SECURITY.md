@@ -53,8 +53,8 @@ days. Please allow a coordinated disclosure window before publishing details.
 Signed manifests (minisign), version binding in the trusted comment, semantic
 version monotonicity, dual SHA-256 anchoring, bounded responses, path traversal
 rejection, Authenticode downgrade blocking on Windows, and a deterministic
-rollback path. Details and residual risks are documented in the README and
-`docs/设计文档.md` (section 9).
+rollback path. Details and residual risks are documented in the README and this
+file.
 
 ## Key rotation (`additional_public_keys` / `TrustPolicy`)
 
