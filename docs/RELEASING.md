@@ -140,10 +140,10 @@ cargo publish --manifest-path plugin/Cargo.toml --locked
 cd plugin && npm publish --access public
 
 # 6. GitHub Release：发布说明必须含 §2.1 的验证边界段
-#    直接用 CHANGELOG.md 会漏掉它；发布说明来自 docs/release-0.2.1.md
+#    直接用 CHANGELOG.md 会漏掉它；发布说明来自 docs/releases/v0.2.1.md
 gh release create v0.2.1 \
   --title "v0.2.1 — 跨重启待安装、多跳链、多密钥信任" \
-  --notes-file docs/release-0.2.1.md \
+  --notes-file docs/releases/v0.2.1.md \
   --latest
 ```
 
@@ -157,7 +157,7 @@ gh release create v0.2.1 \
 - crates.io / docs.rs 链接；
 - **验证边界声明**：macOS `.app` 的 Gatekeeper / 公证、Windows UAC 提权与
   single-instance 退出、Linux 提权路径均未真机验证；CI 只做静态与合成脚本断言；
-- **真机验证记录**：按 [`docs/真机验证.md`](真机验证.md) 执行，结果写入发布说明；
+- **真机验证记录**：按 [`docs/DEVICE_TESTS.md`](DEVICE_TESTS.md) 执行，结果写入发布说明；
   未执行的项必须标注，不能用 CI 绿替代；
 - “本版本不可覆盖，后续版本须经授权”的声明。
 

@@ -7,7 +7,7 @@
 
 A high-performance, secure, and fault-tolerant delta update engine for Tauri v2 applications.
 
-Version semantics: [VERSIONING.md](VERSIONING.md) · Release gates: [docs/发布.md](docs/发布.md)
+Version semantics: [VERSIONING.md](VERSIONING.md) · Release gates: [docs/RELEASING.md](docs/RELEASING.md) · Docs index: [docs/README.md](docs/README.md)
 
 ### Is this for you?
 

@@ -7,8 +7,7 @@
 `tauri-plugin-hot-update` 已经实现签名 bundle、原子回滚与无计时器的三态指针。
 本设计**不再以“更安全的三态回滚”作为差异化卖点**；必须靠
 “清单签名覆盖 URL + web 版本单调性 + asset scope 隔离 + 保留策略”中的
-至少 2–3 条具体论证成立，才值得进入实现。逐条对照见
-[web-bundle-review-issue.md](web-bundle-review-issue.md#baseline-tauri-plugin-hot-update)。
+至少 2–3 条具体论证成立，才值得进入实现。逐条对照见本文 §0 的基线分析。
 
 ## 1. 范围
 
@@ -192,7 +191,7 @@ bundle 激活后，前端仍可能从网络加载未经签名的脚本。
 
 | 日期 | 来源 | 结论 | 是否修改威胁模型 |
 |---|---|---|---|
-| — | 待创建（本机无 `gh` / token） | 使用 [web-bundle-review-issue.md](web-bundle-review-issue.md) 的正文创建 issue | — |
+| — | 待创建（本机无 `gh` / token） | 按本文的 open questions 创建 issue | — |
 
 Issue 创建后，把链接与每条问题的结论追加到上表；在收到至少一条外部评论前，
 本路径保持“实验性、未评审”状态。

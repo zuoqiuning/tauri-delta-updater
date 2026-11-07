@@ -6,10 +6,10 @@ correctness of the update path than about feature count — a patch that applies
 
 ## Before you start
 
-- Read `docs/源码导航.md` (Chinese) — it maps "what you want to change" to files
+- Read `docs/SOURCE_MAP.md` (Chinese) — it maps "what you want to change" to files
   and the tests that guard them.
 - Before touching `Cargo.toml`, the plugin version, or CI: version semantics are
-  in `VERSIONING.md` and the release gate/checklist is in `docs/发布.md`.
+  in `VERSIONING.md` and the release gate/checklist is in `docs/RELEASING.md`.
 - For anything touching the replacement scripts, read the relevant template in
   `src/platform/` and its real-execution tests first.
 - For security-sensitive changes (signature, hashing, path handling, elevation),

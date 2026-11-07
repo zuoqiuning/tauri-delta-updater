@@ -225,21 +225,20 @@
 - **跨平台真实文件系统 smoke**：新增 `real-fs-smoke` job，在 Ubuntu/macOS
   真实执行 `unix_script` / `macos_bundle` 替换脚本，与 Windows 的 12 项
   PowerShell 真实执行测试对称；签名/公证仍不在覆盖范围。
-- **bsdiff 真实基线**：`docs/bsdiff-baseline-2026-11-07.md` 记录 27 MB PE
-  相邻构建的补丁占比 0.01%，并给出“待采集场景 × 预期范围”矩阵与
-  `old_binaries/` 积累到 5 对后的重采样路径。
+- **bsdiff 真实基线**：27 MB PE 相邻构建的补丁占比 0.01%，
+  并给出“待采集场景 × 预期范围”矩阵与 `old_binaries/` 积累到 5 对后的重采样路径。
 - **Zucchini A/B CI 入口**：`.github/workflows/zucchini-ab.yml`（手动触发，Ubuntu + prebuilt），
   生成“仅版本串变化 / 一个模块重编译”两份真实 ELF，上传
   `zucchini-ab-<date>.md` artifact；本地 Windows 用 `--no-default-features` 从源码构建。
-- **验证记录**：`docs/verification-0.2.0.md` 记录本轮实际执行的测试、
-  未验证的平台与复现命令；doctest 结果以 CI 独立 job 为准。
+- **验证记录**：本轮实际执行的测试、未验证的平台与复现命令已随发布记录归档；
+  doctest 结果以 CI 独立 job 为准。
 - **测试补齐**：语义化版本边界（`0.10.0 > 0.9.0`、预发布）、清单签名地址的
   查询参数、全量安装包后缀推断（带 token / 无扩展名）均有单测；
   新增灰度分桶单测与"0% 灰度不下载补丁"的端到端测试。
 - **Zucchini A/B 工具**：独立的 `tools/zucchini-ab` crate（不进入主依赖），
   真实 PE/ELF 上对比 bsdiff+zstd / Zucchini raw / Zucchini+zstd；
-  采集门槛与数据记录格式见 `docs/zucchini-ab-plan.md`。
-- **Web bundle 威胁模型**：`docs/web-bundle-threat-model.md` 定义准入条件，
+  采集门槛与数据记录格式见 `docs/proposals/zucchini-ab-plan.md`。
+- **Web bundle 威胁模型**：`docs/proposals/web-bundle-threat-model.md` 定义准入条件，
   在签名覆盖 URL、路径穿越、原子激活与独立状态机评审通过前不写替换代码；
   新增 8 个 open questions、Review log 与可直接粘贴的 issue 草稿；
   并加入与 `tauri-plugin-hot-update` 的逐项对照，明确“不再以三态回滚作为差异化卖点”。
