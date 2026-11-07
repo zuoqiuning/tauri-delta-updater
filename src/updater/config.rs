@@ -163,6 +163,10 @@ pub struct UpdateConfig {
     /// [`InstallerKind::Inno`]**：Inno 与 NSIS 的产物都是 `.exe`，
     /// 后缀无法区分；误判为 NSIS 会传入 `/P /UPDATE /R`，Inno 不识别这些
     /// 参数，表现为弹完整 UI 或直接失败，且引擎侧没有任何错误。
+    ///
+    /// 该字段只被本引擎的全量安装路径（[`crate::DeltaUpdater::install_full`]）
+    /// 消费。宿主若继续用官方 `tauri-plugin-updater` 执行全量安装，
+    /// 这里配置什么都不会生效：官方插件只会按 NSIS 参数调用安装包。
     pub installer_kind: Option<InstallerKind>,
     /// 是否允许明文 HTTP 端点，默认 `true`（保持兼容）。
     ///

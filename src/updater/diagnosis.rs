@@ -108,6 +108,9 @@ pub struct Diagnosis {
     ///
     /// 用 Inno Setup 打包的宿主必须显式配置，否则排障时无法从诊断页看出
     /// "为什么 `.exe` 被当成 NSIS 调用"。
+    ///
+    /// 该值只反映本引擎全量路径的配置；宿主若仍由官方 `tauri-plugin-updater`
+    /// 执行全量安装，它不会被消费。
     pub installer_kind: Option<InstallerKind>,
 }
 

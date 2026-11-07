@@ -809,6 +809,12 @@ otherwise the engine calls the installer with NSIS flags (`/P /UPDATE /R`), whic
 Inno ignores: it opens the full wizard or fails, and the engine side sees no
 error.
 
+`installer_kind` only affects **this engine's full-install path**
+(`install_full()`). The official `tauri-plugin-updater` has no Inno support and
+always passes NSIS arguments, so packaging Inno installers while keeping the
+official updater for full downloads still opens the wizard (or fails). Either
+keep NSIS installers or move the full fallback to `install_full`.
+
 ```rust
 use tauri_delta_updater::{InstallerKind, UpdateConfig};
 

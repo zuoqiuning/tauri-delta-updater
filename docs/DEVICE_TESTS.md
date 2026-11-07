@@ -20,8 +20,10 @@ spctl -a -vv /Applications/MyApp.app
 - [ ] UAC 拒绝 → 旧版本被重新拉起（不是应用消失）。
 - [ ] 与 `tauri-plugin-single-instance` 同时使用：更新后重启不被判为第二实例。
 - [ ] 安装目录含空格与特殊字符（如 `C:\Program Files\My App (x86)`）。
-- [ ] Inno Setup 安装包（配置 `installer_kind: "inno"`）：`Passive` 与 `Quiet` 各跑一次，
-      确认没有 "This will install…" 起始确认框、安装过程中系统不会自动重启。
+- [ ] Inno Setup 安装包（配置 `installer_kind: "inno"`）：**先确认全量更新调用的是引擎
+      `install_full`，不是官方 `tauri-plugin-updater`**（官方插件只会传 NSIS 参数，
+      Inno 会弹完整向导）；`Passive` 与 `Quiet` 各跑一次，确认没有
+      "This will install…" 起始确认框、安装过程中系统不会自动重启。
 - [ ] 静默更新完成后应用按 `.iss` 的 `[Run]` 段启动（或按产品约定明确不启动）；
       `skipifsilent` 会跳过静默模式下的启动，添加前先确认这是预期行为。
 - [ ] 从旧 NSIS 版本升级到 Inno：`Apps & Features` 里只有一条卸载记录，卸载仍可用
