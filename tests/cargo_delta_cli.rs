@@ -2,6 +2,8 @@
 
 #![cfg(feature = "generator")]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -347,4 +349,92 @@ fn release_generates_manifest_and_patch() {
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(out.join("latest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], "0.1.1");
+}
+
+/// `cargo delta doctor` 必须能证明线上桶里真的有客户端需要的字节，
+/// 并在补丁被替换后立刻失败。
+#[test]
+fn doctor_validates_published_bucket_and_detects_tampering() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use common::MockServer;
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let server = MockServer::start(HashMap::new());
+    let (sk, pk) = common::signing_keypair();
+
+    let patch_bytes = b"patch payload".to_vec();
+    let installer_bytes = b"installer payload".to_vec();
+    let patch_hash = format!("{:x}", Sha256::digest(&patch_bytes));
+    let target_hash = format!("{:x}", Sha256::digest(b"target executable"));
+    let installer_signature = STANDARD.encode(common::sign(&sk, &installer_bytes).as_bytes());
+
+    let manifest = serde_json::json!({
+        "version": "0.1.1",
+        "notes": "doctor fixture",
+        "pub_date": "2026-01-01T00:00:00Z",
+        "platforms": {
+            "windows-x86_64": {
+                "signature": installer_signature,
+                "url": server.url("/full.exe"),
+                "size": installer_bytes.len()
+            }
+        },
+        "patches": {
+            "windows-x86_64": [{
+                "from_version": "0.1.0",
+                "to_version": "0.1.1",
+                "patch_url": server.url("/0.1.0_to_0.1.1.patch"),
+                "patch_hash": patch_hash,
+                "target_hash": target_hash,
+                "patch_size": patch_bytes.len()
+            }]
+        }
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    let manifest_signature = common::sign_bound(&sk, &manifest_bytes, "tdu:v=0.1.1");
+    server.set("/latest.json", manifest_bytes);
+    server.set("/latest.json.sig", manifest_signature.into_bytes());
+    server.set("/full.exe", installer_bytes);
+    server.set("/0.1.0_to_0.1.1.patch", patch_bytes.clone());
+
+    let report_path = root.join("doctor.json");
+    let endpoint = server.url("/latest.json");
+    let report_arg = report_path.to_string_lossy().to_string();
+    let (code, stdout, stderr) = run(
+        root,
+        &[
+            "doctor",
+            &endpoint,
+            "--pubkey",
+            &pk,
+            "--deep",
+            "--json",
+            &report_arg,
+        ],
+    );
+    assert_eq!(code, 0, "体检必须通过\nstdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("清单签名有效"), "{stdout}");
+    assert!(
+        stdout.contains("安装包签名有效"),
+        "deep 必须校验安装包: {stdout}"
+    );
+    assert!(stdout.contains("哈希匹配"), "{stdout}");
+    assert!(stdout.contains("0 个错误"), "{stdout}");
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["errors"].as_array().unwrap().len(), 0);
+
+    // 线上补丁被替换：清单签名仍然有效，但哈希必须对不上。
+    server.set("/0.1.0_to_0.1.1.patch", b"tampered".to_vec());
+    let (code, stdout, stderr) = run(root, &["doctor", &endpoint, "--pubkey", &pk]);
+    assert_ne!(code, 0, "被篡改的补丁必须让体检失败");
+    assert!(
+        stdout.contains("SHA-256"),
+        "错误必须指出哈希不匹配: {stdout}\n{stderr}"
+    );
 }

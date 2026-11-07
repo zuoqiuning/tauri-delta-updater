@@ -1,6 +1,7 @@
 //! `cargo delta`：把接入步骤压成一条命令，默认只输出 diff。
 
 mod args;
+mod doctor;
 mod project;
 
 use args::{Cli, Command};
@@ -29,6 +30,7 @@ fn run(cli: Cli) -> Result<(), String> {
             tauri_delta_updater::release::run_release_blocking(options)?;
             return Ok(());
         }
+        Command::Doctor(args) => return doctor::run(args),
         Command::Init {
             endpoint,
             pubkey,

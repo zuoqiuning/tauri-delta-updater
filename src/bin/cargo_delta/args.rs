@@ -72,6 +72,40 @@ pub(crate) enum Command {
     },
     /// 生成签名的更新清单、补丁与发布报告。
     Release(Box<ReleaseArgs>),
+    /// 体检已发布的更新源：清单签名、安装包、补丁与补丁链。
+    Doctor(DoctorArgs),
+}
+
+/// `cargo delta doctor` 的参数。
+#[derive(clap::Args, Debug)]
+pub(crate) struct DoctorArgs {
+    /// 清单地址（`latest.json`）。
+    #[arg(value_name = "URL")]
+    pub(crate) endpoint: String,
+
+    /// 受信任公钥（可重复）：base64 或 `.pub` 文件内容。
+    #[arg(long = "pubkey", value_name = "KEY", required = true)]
+    pub(crate) pubkey: Vec<String>,
+
+    /// 可选：整包清单地址（`latest.bundle.json`），校验整包补丁与文件清单。
+    #[arg(long = "bundle-url", value_name = "URL")]
+    pub(crate) bundle_url: Option<String>,
+
+    /// 下载安装包并校验 minisign 签名（较慢，但能证明全量回退真的可用）。
+    #[arg(long)]
+    pub(crate) deep: bool,
+
+    /// 机器可读报告（JSON）的输出路径。
+    #[arg(long, value_name = "PATH")]
+    pub(crate) json: Option<PathBuf>,
+
+    /// 单次请求超时（秒，默认 30）。
+    #[arg(long, default_value_t = 30)]
+    pub(crate) timeout: u64,
+
+    /// 附加请求头（可重复）：`--header Name=Value`，用于私有 CDN Token。
+    #[arg(long = "header", value_name = "NAME=VALUE")]
+    pub(crate) headers: Vec<String>,
 }
 
 /// `cargo delta release` 的参数：与 `generate` 等价，基线用 `--from` 统一表达。
