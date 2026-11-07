@@ -10,6 +10,15 @@ export type FallbackReason =
   | { no_matching_patch: { from: string; to: string } }
   | { environment_unsupported: string };
 
+/** 全量安装器类型（与 `InstallerKind` 一致）。 */
+export type InstallerKind =
+  | 'nsis'
+  | 'msi'
+  | 'mac_app_tar_gz'
+  | 'app_image'
+  | 'inno'
+  | 'other';
+
 /** 更新阶段事件（与 `UpdateEvent` 一致，按 `stage` 区分）。 */
 export type UpdateEvent =
   | { stage: 'checking' }
@@ -147,6 +156,8 @@ export interface Diagnosis {
   privilege_tools_available: boolean | null;
   /** 端点使用明文 HTTP 且非回环（配置降级，建议在 UI/日志中暴露）。 */
   insecure_transport: boolean;
+  /** 显式声明的全量安装器类型；`null` 表示按文件后缀推断。 */
+  installer_kind: InstallerKind | null;
 }
 
 /** 判断 `invoke` 抛出的值是否是插件错误 DTO。 */

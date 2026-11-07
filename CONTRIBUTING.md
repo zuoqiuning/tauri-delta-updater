@@ -68,6 +68,10 @@ cargo run --all-features --bin cargo-delta -- delta init --project <dir> --endpo
   public path should fail CI, not a user's build.
 - Script templates: never hardcode paths or platform branching in Rust; extend
   the template and its real-execution test.
+- Installer semantics (NSIS / MSI / Inno flags, silent-mode behavior) must be
+  checked against the vendor's official documentation, never inferred from
+  another installer. For example, Inno's `skipifsilent` means "do not run this
+  entry in silent mode" — the opposite of NSIS `/R`.
 - Do not add error handling for cases that cannot happen. Do add it at
   boundaries (HTTP responses, archive bytes, user-supplied paths).
 - `minisign` is pinned to 0.7.9 and `generate/keys.rs::is_unencrypted_payload`
