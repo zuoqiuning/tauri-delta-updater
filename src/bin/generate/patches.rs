@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tauri_delta_updater::{
     apply_patch, calculate_hash, create_patch_with_level, detect_arch, normalize_version,
-    PatchInfo, PatchScope,
+    DeltaError, PatchInfo, PatchScope,
 };
 use walkdir::WalkDir;
 
@@ -171,9 +171,23 @@ pub(crate) async fn generate_single_patches(
         }
 
         println!("[INFO] 生成补丁: {old_version} -> {new_version}");
-        create_patch_with_level(path, app_binary, &patch_path, zstd_level)
-            .await
-            .map_err(|e| format!("生成补丁失败: {e}"))?;
+        if let Err(err) = create_patch_with_level(path, app_binary, &patch_path, zstd_level).await {
+            match err {
+                // 体积/内存超出增量适用范围：跳过该基线，走全量分发，
+                // 而不是让发布流水线在分配失败时直接 abort。
+                DeltaError::IncrementalNotApplicable { .. }
+                | DeltaError::PatchWorkingSetTooLarge { .. } => {
+                    let reason = err.to_string();
+                    println!("[SKIP] {file_name}: {reason}");
+                    skipped.push(SkipRecord {
+                        file: file_name,
+                        reason,
+                    });
+                    continue;
+                }
+                other => return Err(format!("生成补丁失败: {other}")),
+            }
+        }
         let patch_hash = calculate_hash(&patch_path)
             .await
             .map_err(|e| format!("计算补丁哈希失败: {e}"))?;

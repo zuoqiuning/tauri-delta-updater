@@ -17,8 +17,14 @@ const MAX_MANIFEST_BYTES: usize = 10 * 1024 * 1024;
 impl DeltaUpdater {
     /// 下载并校验整包清单签名。
     pub(super) async fn fetch_verified_bundle_manifest(&self, url: &str) -> Result<BundleManifest> {
-        let manifest_bytes = fetch_bytes(&self.client, url).await?;
-        let signature = fetch_text(&self.client, &default_signature_url(url)).await?;
+        // 清单与签名并行拉取：两者互不依赖，串行会让每次检查多一个 RTT。
+        let signature_url = default_signature_url(url);
+        let (manifest_bytes, signature) = tokio::join!(
+            fetch_bytes(&self.client, url),
+            fetch_text(&self.client, &signature_url)
+        );
+        let manifest_bytes = manifest_bytes?;
+        let signature = signature?;
 
         verify_manifest_signature(&manifest_bytes, &signature, &self.config.public_key)?;
 
@@ -39,8 +45,12 @@ impl DeltaUpdater {
 
     /// 下载并校验清单签名，返回可信的清单。
     pub(super) async fn fetch_verified_manifest(&self) -> Result<UpdateManifest> {
-        let manifest_bytes = fetch_bytes(&self.client, &self.config.manifest_url).await?;
-        let signature = fetch_text(&self.client, &self.config.signature_url).await?;
+        let (manifest_bytes, signature) = tokio::join!(
+            fetch_bytes(&self.client, &self.config.manifest_url),
+            fetch_text(&self.client, &self.config.signature_url)
+        );
+        let manifest_bytes = manifest_bytes?;
+        let signature = signature?;
 
         verify_manifest_signature(&manifest_bytes, &signature, &self.config.public_key)?;
 

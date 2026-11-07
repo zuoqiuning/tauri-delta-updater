@@ -39,6 +39,39 @@ async fn test_end_to_end_delta_update() {
     }
 }
 
+/// 配置了整包清单、但当前平台不支持整包替换时，仍必须使用单文件补丁。
+///
+/// 多平台应用通常共享一份 `tauri.conf.json`（含 `bundle_endpoint`）；
+/// 如果 Linux / 非 `.app` 的 macOS 因此直接回退全量，用户会无谓地多下几十 MB。
+#[cfg(unix)]
+#[tokio::test]
+async fn test_bundle_unsupported_still_uses_single_file_patch() {
+    let (_dir, updater, server, new_bytes) = delta_fixture_with_bundle().await;
+
+    let check = updater.check().await.unwrap();
+    assert!(check.has_patch, "整包不可用时单文件补丁仍应可用");
+    assert!(
+        check.fallback_reason.is_none(),
+        "有单文件补丁时不应报告回退原因: {:?}",
+        check.fallback_reason
+    );
+
+    match updater.update().await.unwrap() {
+        UpdateOutcome::Patched { staged } => {
+            assert_eq!(std::fs::read(staged.staged_exe()).unwrap(), new_bytes);
+        }
+        other => panic!("整包不可用时应走单文件增量，实际得到: {other:?}"),
+    }
+    assert!(
+        !server.was_requested("/latest.bundle.json"),
+        "平台不支持整包时不应为整包清单消耗流量"
+    );
+    assert!(
+        !server.was_requested("/full.exe"),
+        "单文件增量命中时不得请求全量安装包"
+    );
+}
+
 /// 灰度 0%：更新必须停在 Deferred，且不发起任何补丁下载。
 #[tokio::test]
 async fn test_rollout_defers_update_before_download() {

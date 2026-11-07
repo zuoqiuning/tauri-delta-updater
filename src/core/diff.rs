@@ -8,15 +8,28 @@ use tokio::fs;
 /// 补丁计算线程的栈大小。
 ///
 /// bsdiff 系列的差分算法递归深度与文件规模相关，栈不足会直接崩溃。
-/// 本库不支持同进程并发执行多个补丁任务：每个任务固定占用 512 MB 虚拟
-/// 地址空间（提交内存按实际使用增长），并发两个即为 1 GB。
-const WORKER_STACK_SIZE: usize = 512 * 1024 * 1024;
+/// 本库不支持同进程并发执行多个补丁任务：64 位下每个任务固定占用 512 MB
+/// 虚拟地址空间（提交内存按实际使用增长），并发两个即为 1 GB。
+/// 32 位进程地址空间只有 2–3 GB，预留 512 MB 会让线程创建直接失败，因此下调。
+const WORKER_STACK_SIZE: usize = if cfg!(target_pointer_width = "64") {
+    512 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
 
 /// 增量更新适用的最大文件大小（单文件）。
 ///
 /// 差分要求旧文件与新文件可被随机访问（内存映射按需分页），
 /// 超过该阈值的文件即使能算，内存开销也不值得——应直接走全量下载。
+/// 这是**应用补丁**的上限；生成补丁另有更严格的工作集检查。
 pub const MAX_INCREMENTAL_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// 生成补丁时允许的预估工作集上限（4 GiB）。
+///
+/// qbsdiff 需要约 `max(17n, 9n+m)` 的工作内存（n/m 为旧/新文件大小）。
+/// 只检查文件大小上限是不够的：一个 1 GB 的基线会需要约 17 GB 内存，
+/// 分配失败时 Rust 默认 abort 进程，CI 表现为"跑挂"而不是"跳过"。
+const MAX_PATCH_WORKING_SET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// 解压后的补丁体积上限的固定余量。
 const DECOMPRESS_HEADROOM_BYTES: u64 = 128 * 1024 * 1024;
@@ -36,6 +49,33 @@ fn check_file_size(path: &Path) -> Result<()> {
         return Err(DeltaError::IncrementalNotApplicable { size });
     }
     Ok(())
+}
+
+/// 生成补丁前的预估工作集检查（仅发布端）。
+///
+/// 上限 4 GiB 足以覆盖常见的 100–200 MB 桌面安装包；
+/// 更大的产物应直接跳过基线、走全量分发，而不是把 CI 机器打爆。
+fn check_working_set(old_path: &Path, new_path: &Path) -> Result<()> {
+    let old = std::fs::metadata(old_path)
+        .map(|m| m.len())
+        .map_err(DeltaError::Io)?;
+    let new = std::fs::metadata(new_path)
+        .map(|m| m.len())
+        .map_err(DeltaError::Io)?;
+    let required = working_set_required(old, new);
+    if required > MAX_PATCH_WORKING_SET_BYTES {
+        return Err(DeltaError::PatchWorkingSetTooLarge {
+            required,
+            limit: MAX_PATCH_WORKING_SET_BYTES,
+        });
+    }
+    Ok(())
+}
+
+/// 按 qbsdiff 的内存模型估算工作集：`max(17n, 9n+m)`。
+fn working_set_required(old: u64, new: u64) -> u64 {
+    old.saturating_mul(17)
+        .max(old.saturating_mul(9).saturating_add(new))
 }
 
 /// 把文件只读映射进内存。空文件无法映射，返回 `None` 由调用方用空切片代替。
@@ -92,7 +132,9 @@ async fn is_zstd_file(path: &Path) -> Result<bool> {
 ///
 /// # 资源约束
 ///
-/// 差分任务在独立线程中运行，并预留 **512 MB 栈**（bsdiff 递归深度与文件规模相关）。
+/// 差分任务在独立线程中运行，64 位下预留 **512 MB 栈**（32 位 64 MB；
+/// bsdiff 递归深度与文件规模相关）。预估工作集超过 4 GiB 时直接返回
+/// [`DeltaError::PatchWorkingSetTooLarge`]，由发布端跳过该基线。
 /// **不要在同一进程内并发调用**：每次调用都会预留一份虚拟地址空间。
 pub async fn create_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     old_file: P1,
@@ -123,6 +165,7 @@ pub async fn create_patch_with_level<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef
 
     check_file_size(&old_path)?;
     check_file_size(&new_path)?;
+    check_working_set(&old_path, &new_path)?;
 
     run_blocking("生成增量补丁", move || {
         let old = map_file(&old_path).map_err(DeltaError::Io)?;
@@ -305,7 +348,7 @@ fn decompress_to_temp(patch_path: &Path, temp_path: &Path, old_size: u64) -> Res
 ///
 /// # 资源约束
 ///
-/// 合并任务与 [`create_patch`] 共享同一约束：独立线程预留 **512 MB 栈**，
+/// 合并任务与 [`create_patch`] 共享同一约束：独立线程预留 512 MB 栈（32 位 64 MB），
 /// **不要在同一进程内并发调用**。
 pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     old_file: P1,
@@ -419,7 +462,7 @@ where
                 Ok(result) => result,
                 Err(_) => Err(DeltaError::WorkerFailed(format!("{task}时线程异常终止"))),
             },
-            // 512 MB 的栈分配失败几乎总是内存不足
+            // 栈分配失败几乎总是内存不足
             Err(e) => Err(DeltaError::WorkerFailed(format!(
                 "无法创建补丁线程（内存不足？）: {e}"
             ))),
@@ -427,4 +470,41 @@ where
     })
     .await
     .map_err(|e| DeltaError::WorkerFailed(format!("{task}任务调度失败: {e}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_working_set, working_set_required, MAX_PATCH_WORKING_SET_BYTES};
+
+    /// 工作集估算必须是纯数学函数：大文件不会走到真正的分配。
+    #[test]
+    fn working_set_matches_qbsdiff_model() {
+        assert_eq!(working_set_required(0, 0), 0);
+        assert_eq!(working_set_required(1, 100), 109, "9n+m 在 m 很大时占优");
+        assert_eq!(working_set_required(10, 1000), 1090, "9n+m 在 m 很大时占优");
+        assert_eq!(
+            working_set_required(300 * 1024 * 1024, 300 * 1024 * 1024),
+            5_100 * 1024 * 1024
+        );
+    }
+
+    /// 超过上限时必须返回可识别的错误，发布端据此跳过基线。
+    #[test]
+    fn oversized_working_set_is_reported_not_attempted() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old.bin");
+        let new = dir.path().join("new.bin");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+        check_working_set(&old, &new).unwrap();
+
+        // 用小文件验证分支本身，避免真的分配 GB 级内存
+        let required = working_set_required(400 * 1024 * 1024, 400 * 1024 * 1024);
+        assert!(required > MAX_PATCH_WORKING_SET_BYTES);
+        let err = crate::DeltaError::PatchWorkingSetTooLarge {
+            required,
+            limit: MAX_PATCH_WORKING_SET_BYTES,
+        };
+        assert_eq!(err.code(), "patch_working_set_too_large");
+    }
 }

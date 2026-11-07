@@ -69,27 +69,10 @@ impl DeltaUpdater {
             .get(&self.config.platform)
             .map(|p| p.url.clone());
 
-        // 适用边界：平台/布局不适合增量替换时回退全量（正确性优先）。
-        // 判定发生在下载补丁之前——清单仍会拉取（要知道有无新版本与全量地址），
-        // 但不会为用不上的补丁消耗任何流量。
-        // 配置了整包清单时优先整包：它覆盖 sidecar/resources，单文件补丁做不到。
-        let bundle = self.resolve_bundle_patch(&manifest.version).await?;
-
-        // 只有完全没配置整包时才走单文件适用边界；整包不可用时
-        // 由 `Unsupported` 自带的准确原因直接回退。
-        if matches!(bundle, BundleResolution::NotConfigured) {
-            if let Some(reason) =
-                crate::platform::target::incremental_fallback_reason(&self.executable_path)
-            {
-                return Ok(fallback_to_full(
-                    full_download_url,
-                    FallbackReason::EnvironmentUnsupported(reason),
-                    &mut on_event,
-                ));
-            }
-        }
-
-        match bundle {
+        // 整包优先：它覆盖 sidecar/resources，单文件补丁做不到。
+        // 配置了整包清单但当前平台不支持整包替换时（Linux、非 .app 的 macOS），
+        // 不能直接回退全量——单文件补丁仍然可用，先记下原因继续尝试。
+        let bundle_unsupported = match self.resolve_bundle_patch(&manifest.version).await? {
             BundleResolution::Ready {
                 manifest: bundle_manifest,
                 patch,
@@ -98,13 +81,7 @@ impl DeltaUpdater {
                     .run_bundle_patch(bundle_manifest, patch, launch, &mut on_event, cancel)
                     .await;
             }
-            BundleResolution::Unsupported(detail) => {
-                return Ok(fallback_to_full(
-                    full_download_url,
-                    FallbackReason::EnvironmentUnsupported(detail),
-                    &mut on_event,
-                ));
-            }
+            BundleResolution::Unsupported(detail) => Some(detail),
             BundleResolution::NoPatch => {
                 return Ok(fallback_to_full(
                     full_download_url,
@@ -115,20 +92,34 @@ impl DeltaUpdater {
                     &mut on_event,
                 ));
             }
-            BundleResolution::NotConfigured => {}
+            BundleResolution::NotConfigured => None,
+        };
+
+        // 单文件适用边界：平台/布局不适合原地替换时回退全量（正确性优先）。
+        // 判定发生在下载补丁之前——清单仍会拉取（要知道有无新版本与全量地址），
+        // 但不会为用不上的补丁消耗任何流量。
+        if let Some(reason) =
+            crate::platform::target::incremental_fallback_reason(&self.executable_path)
+        {
+            return Ok(fallback_to_full(
+                full_download_url,
+                FallbackReason::EnvironmentUnsupported(reason),
+                &mut on_event,
+            ));
         }
 
         // 匹配补丁
         let Some(patch) = manifest.find_patch(&self.config.current_version, &self.config.platform)
         else {
-            return Ok(fallback_to_full(
-                full_download_url,
-                FallbackReason::NoMatchingPatch {
+            // 整包不支持且单文件也没补丁时，报整包原因更准确：
+            // 用户会知道"这台机器本来就不支持整包"，而不是"发布端漏了补丁"。
+            let reason = bundle_unsupported
+                .map(FallbackReason::EnvironmentUnsupported)
+                .unwrap_or(FallbackReason::NoMatchingPatch {
                     from: self.config.current_version.clone(),
                     to: manifest.version.clone(),
-                },
-                &mut on_event,
-            ));
+                });
+            return Ok(fallback_to_full(full_download_url, reason, &mut on_event));
         };
 
         crate::core::events::patch_matched(

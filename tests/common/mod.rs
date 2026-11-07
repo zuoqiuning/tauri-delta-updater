@@ -261,11 +261,16 @@ pub async fn delta_fixture() -> (tempfile::TempDir, DeltaUpdater, MockServer, Ve
     delta_fixture_with_rollout(None).await
 }
 
+/// 与 [`delta_fixture`] 相同，但配置了整包清单地址（用于验证整包不可用时的回退路径）。
+pub async fn delta_fixture_with_bundle() -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
+    delta_fixture_with_policy(None, None, true).await
+}
+
 /// 与 [`delta_fixture`] 相同，但清单可带灰度比例。
 pub async fn delta_fixture_with_rollout(
     rollout: Option<u8>,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
-    delta_fixture_with_policy(rollout, None).await
+    delta_fixture_with_policy(rollout, None, false).await
 }
 
 /// 灰度 + 最低版本门槛的夹具。
@@ -273,12 +278,13 @@ pub async fn delta_fixture_with_rollout_and_min(
     percentage: u8,
     min_version: &str,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
-    delta_fixture_with_policy(Some(percentage), Some(min_version)).await
+    delta_fixture_with_policy(Some(percentage), Some(min_version), false).await
 }
 
 async fn delta_fixture_with_policy(
     rollout: Option<u8>,
     min_version: Option<&str>,
+    with_bundle: bool,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
     let dir = tempdir().unwrap();
     let work_dir = dir.path().to_path_buf();
@@ -330,12 +336,17 @@ async fn delta_fixture_with_policy(
     server.set("/latest.json", manifest_bytes);
     server.set("/latest.json.sig", sig.into_bytes());
 
-    let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), pk_b64)
+    let updater = DeltaUpdater::new({
+        let config = UpdateConfig::new(server.url("/latest.json"), pk_b64)
             .current_version("0.1.0")
             .executable_path(&old_exe)
-            .work_dir(&work_dir),
-    )
+            .work_dir(&work_dir);
+        if with_bundle {
+            config.bundle_manifest_url(server.url("/latest.bundle.json"))
+        } else {
+            config
+        }
+    })
     .unwrap();
 
     (dir, updater, server, new_bytes)

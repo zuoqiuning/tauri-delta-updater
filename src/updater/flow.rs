@@ -59,12 +59,11 @@ impl DeltaUpdater {
         } else {
             BundleResolution::NotConfigured
         };
-        // 只有“完全没配置整包”时才需要单文件适用边界：
-        // 整包命中时 macOS `.app` 通过目录切换更新；整包不可用时
-        // 由 `Unsupported` 自带更准确的原因，不要用单文件判定覆盖它。
+        // 只有“整包不可用或未配置”时才需要单文件适用边界：
+        // 整包命中时 macOS `.app` 通过目录切换更新。
         let environment = if is_newer
             && !deferred_by_rollout
-            && matches!(bundle, BundleResolution::NotConfigured)
+            && !matches!(bundle, BundleResolution::Ready { .. })
         {
             crate::platform::target::incremental_fallback_reason(&self.executable_path)
         } else {
@@ -79,32 +78,44 @@ impl DeltaUpdater {
 
         let patch_size = match &bundle {
             BundleResolution::Ready { patch, .. } => patch.patch_size,
-            BundleResolution::NotConfigured => single_patch.and_then(|p| p.patch_size),
-            _ => None,
+            // 整包不可用时单文件补丁仍可用，UI 应展示真实的补丁体积
+            BundleResolution::Unsupported(_) | BundleResolution::NotConfigured => {
+                single_patch.and_then(|p| p.patch_size)
+            }
+            BundleResolution::NoPatch => None,
         };
 
         // 适用边界：平台/布局不适合增量时，UI 不应展示"有补丁可下载"。
-        // 没有匹配补丁同理——两者都让 has_patch 为 false，但原因不同，
-        // 必须都填进 fallback_reason，宿主才能给出准确提示。
+        // 整包不可用（Linux / 非 .app 的 macOS）不代表单文件也不可用：
+        // 单文件补丁存在时仍应报告 has_patch，而 update() 也会走单文件路径。
         let fallback_reason = if !is_newer || deferred_by_rollout {
             None
-        } else if let Some(detail) = environment {
-            Some(FallbackReason::EnvironmentUnsupported(detail))
         } else {
+            let no_matching = || FallbackReason::NoMatchingPatch {
+                from: self.config.current_version.clone(),
+                to: manifest.version.clone(),
+            };
             match &bundle {
                 BundleResolution::Ready { .. } => None,
                 BundleResolution::Unsupported(detail) => {
-                    Some(FallbackReason::EnvironmentUnsupported(detail))
+                    if let Some(detail) = environment {
+                        Some(FallbackReason::EnvironmentUnsupported(detail))
+                    } else if single_patch.is_some() {
+                        None
+                    } else {
+                        Some(FallbackReason::EnvironmentUnsupported(detail))
+                    }
                 }
-                BundleResolution::NoPatch => Some(FallbackReason::NoMatchingPatch {
-                    from: self.config.current_version.clone(),
-                    to: manifest.version.clone(),
-                }),
-                BundleResolution::NotConfigured if single_patch.is_some() => None,
-                BundleResolution::NotConfigured => Some(FallbackReason::NoMatchingPatch {
-                    from: self.config.current_version.clone(),
-                    to: manifest.version.clone(),
-                }),
+                BundleResolution::NoPatch => Some(no_matching()),
+                BundleResolution::NotConfigured => {
+                    if let Some(detail) = environment {
+                        Some(FallbackReason::EnvironmentUnsupported(detail))
+                    } else if single_patch.is_some() {
+                        None
+                    } else {
+                        Some(no_matching())
+                    }
+                }
             }
         };
         let has_patch = is_newer && !deferred_by_rollout && fallback_reason.is_none();

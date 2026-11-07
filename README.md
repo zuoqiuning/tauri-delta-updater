@@ -417,9 +417,9 @@ A patch is always verified against both hashes, so a poor-ratio patch is still *
 
 ### Memory and file size limits
 
-`qbsdiff` needs the old and new files available while computing or applying a patch; its working memory is roughly `max(17 × old_size, 9 × old_size + new_size)`, which is why large files are rejected rather than attempted. Single files larger than `MAX_INCREMENTAL_FILE_BYTES` (2 GB) are rejected with `DeltaError::IncrementalNotApplicable` — fall back to the full installer for those. Old files and patches are memory-mapped, the merged result is streamed to disk, and decompressed patch size is capped at `2 × old_size + 128 MB`.
+`qbsdiff` needs the old and new files available while computing or applying a patch; its working memory is roughly `max(17 × old_size, 9 × old_size + new_size)`, which is why large files are rejected rather than attempted. Single files larger than `MAX_INCREMENTAL_FILE_BYTES` (2 GB) are rejected with `DeltaError::IncrementalNotApplicable`; **generating** a patch additionally rejects any baseline whose estimated working set exceeds 4 GiB with `DeltaError::PatchWorkingSetTooLarge`, so `generate` skips it instead of aborting on an allocation failure. Old files and patches are memory-mapped, the merged result is streamed to disk, and decompressed patch size is capped at `2 × old_size + 128 MB`.
 
-Each patch task runs on a dedicated thread that reserves a **512 MB stack** (bsdiff recursion depth scales with file size). That is virtual address space, not RSS, but it means **do not run two patch generations concurrently in one process**. Applying a patch is the same constraint.
+Each patch task runs on a dedicated thread that reserves a **512 MB stack** (64 MB on 32-bit targets; bsdiff recursion depth scales with file size). That is virtual address space, not RSS, but it means **do not run two patch generations concurrently in one process**. Applying a patch is the same constraint.
 
 To measure your own app: build two releases and run
 `cargo run --example simulate_update -- old.exe new.exe target/delta-sim`.
@@ -962,7 +962,9 @@ backs up each changed file, copies the new bytes, deletes files removed in the
 target version, and restores the whole backup directory if any step fails.
 On macOS the script swaps the entire `.app` directory atomically, so the
 reconstructed bundle keeps its code signature and notarization; the app directory
-must be writable. Other platforms fall back to the full installer. The
+must be writable. Where whole-app swaps are not supported (Linux, or macOS without
+a real `.app` bundle), the client **still uses the single-file patch when one is
+available** and only falls back to the full installer when neither path works. The
 lower-level `core::bundle` APIs remain available if you want to drive the staging
 step yourself.
 
@@ -1136,6 +1138,7 @@ fallback, this library is the deeper option.
 | `DeltaError::Config` at startup | `current_version` is empty/not semver, or `manifest_url` / `public_key` is empty. Whitespace and a `v` prefix in the version are normalized. |
 | `DeltaError::WorkDirNotWritable` | A custom `work_dir` is not writable by the user. Omit it to use the user cache. |
 | `DeltaError::IncrementalNotApplicable` | The file exceeds the 2 GB incremental limit; use the full installer. |
+| `DeltaError::PatchWorkingSetTooLarge` | Only from `generate`: the baseline's estimated working set exceeds 4 GiB and the baseline is skipped (reported in `--report`); ship a full installer for that version. |
 | `DeltaError::ManifestInvalid` | The signed manifest is malformed (bad JSON / not semver). |
 | `DeltaError::ResponseTooLarge` | A manifest or signature response exceeded 10 MB. Deterministic; not retried. |
 | `DeltaError::UpdateInProgress` | Another updater holds the lock. Prompt "try again later"; not an anomaly. |

@@ -67,6 +67,18 @@ pub enum DeltaError {
         max_bytes: u64,
     },
 
+    /// 差分的预估工作集超过上限。
+    ///
+    /// 发布端生成补丁时需要 `max(17n, 9n+m)` 的工作内存（n/m 为旧/新文件大小）。
+    /// 超过上限时跳过该基线，而不是分配失败后 abort 进程。
+    #[error("文件过大：生成补丁预计需要 {required} 字节内存（上限 {limit}），已跳过")]
+    PatchWorkingSetTooLarge {
+        /// 预估工作集（字节）。
+        required: u64,
+        /// 允许的上限（字节）。
+        limit: u64,
+    },
+
     /// 清单/签名响应体超过体积上限。
     ///
     /// 确定性错误——被劫持的服务端返回超大响应时，重试只会反复消耗带宽。
@@ -198,6 +210,7 @@ impl DeltaError {
             DeltaError::ResumeRejected => "resume_rejected",
             DeltaError::PatchTooLarge { .. } => "patch_too_large",
             DeltaError::PatchExpandedTooLarge { .. } => "patch_expanded_too_large",
+            DeltaError::PatchWorkingSetTooLarge { .. } => "patch_working_set_too_large",
             DeltaError::ResponseTooLarge { .. } => "response_too_large",
             DeltaError::HashMismatch { .. } => "hash_mismatch",
             DeltaError::TargetExists(_) => "target_exists",
@@ -273,6 +286,10 @@ mod tests {
             E::ResumeRejected,
             E::PatchTooLarge { max_bytes: 1 },
             E::PatchExpandedTooLarge { max_bytes: 1 },
+            E::PatchWorkingSetTooLarge {
+                required: 1,
+                limit: 1,
+            },
             E::ResponseTooLarge {
                 url: String::new(),
                 limit: 1,
