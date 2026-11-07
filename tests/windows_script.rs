@@ -703,6 +703,14 @@ async fn test_script_honors_configured_timeouts() {
         content.contains("$confirmTimeout = 11"),
         "脚本必须使用配置的启动确认时长，实际脚本未包含 11"
     );
+    assert!(
+        content.contains("$noticeEnabled = $false"),
+        "直接调用 PlatformUpdater 时默认不弹回滚提示"
+    );
+    assert!(
+        content.contains("function Show-RollbackNotice"),
+        "提示函数必须存在，开关只决定是否调用"
+    );
 }
 
 /// 生成一个临时目录。

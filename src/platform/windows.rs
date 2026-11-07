@@ -78,6 +78,35 @@ pub fn generate_updater_for_pid_with(
     old_pid: u32,
     timings: ScriptTimings,
 ) -> Result<PathBuf> {
+    generate_updater_for_pid_with_options(current_exe, new_exe, work_dir, old_pid, timings, false)
+}
+
+/// 内置更新流程使用：回滚后是否提示用户。
+pub(crate) fn generate_updater_with_notice(
+    current_exe: &Path,
+    new_exe: &VerifiedArtifact,
+    work_dir: &Path,
+    timings: ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
+    generate_updater_for_pid_with_options(
+        current_exe,
+        new_exe,
+        work_dir,
+        std::process::id(),
+        timings,
+        notice,
+    )
+}
+
+fn generate_updater_for_pid_with_options(
+    current_exe: &Path,
+    new_exe: &VerifiedArtifact,
+    work_dir: &Path,
+    old_pid: u32,
+    timings: ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
     let exe_dir = current_exe
         .parent()
         .ok_or_else(|| DeltaError::PatchApplyFailed("找不到父目录".into()))?;
@@ -134,7 +163,11 @@ pub fn generate_updater_for_pid_with(
             ),
         )
         .replace("__SELF__", &ps_literal(&script_path.display().to_string()))
-        .replace("__BACKUP__", &ps_literal(&backup.display().to_string()));
+        .replace("__BACKUP__", &ps_literal(&backup.display().to_string()))
+        .replace(
+            "__NOTICE_ENABLED__",
+            if notice { "$true" } else { "$false" },
+        );
     crate::platform::shared::assert_rendered(&script);
 
     // UTF-8 BOM：Windows PowerShell 5.1 靠它识别 UTF-8
@@ -216,6 +249,51 @@ pub fn generate_bundle_updater_for_pid_with(
     work_dir: &Path,
     old_pid: u32,
     timings: ScriptTimings,
+) -> Result<PathBuf> {
+    generate_bundle_updater_for_pid_with_options(
+        current_exe,
+        staging_dir,
+        base_files,
+        target_files,
+        work_dir,
+        old_pid,
+        timings,
+        false,
+    )
+}
+
+/// 内置更新流程使用：回滚后是否提示用户。
+pub(crate) fn generate_bundle_updater_with_notice(
+    current_exe: &Path,
+    staging_dir: &Path,
+    base_files: &[crate::core::bundle::BundleFile],
+    target_files: &[crate::core::bundle::BundleFile],
+    work_dir: &Path,
+    timings: ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
+    generate_bundle_updater_for_pid_with_options(
+        current_exe,
+        staging_dir,
+        base_files,
+        target_files,
+        work_dir,
+        std::process::id(),
+        timings,
+        notice,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_bundle_updater_for_pid_with_options(
+    current_exe: &Path,
+    staging_dir: &Path,
+    base_files: &[crate::core::bundle::BundleFile],
+    target_files: &[crate::core::bundle::BundleFile],
+    work_dir: &Path,
+    old_pid: u32,
+    timings: ScriptTimings,
+    notice: bool,
 ) -> Result<PathBuf> {
     let exe_name = file_name(current_exe)?;
     // 新版本清单必须包含主程序本身，否则脚本重启后还是旧版本，
@@ -306,7 +384,11 @@ pub fn generate_bundle_updater_for_pid_with(
             "__JOURNAL__",
             &ps_literal(&journal_file.display().to_string()),
         )
-        .replace("__SELF__", &ps_literal(&script_path.display().to_string()));
+        .replace("__SELF__", &ps_literal(&script_path.display().to_string()))
+        .replace(
+            "__NOTICE_ENABLED__",
+            if notice { "$true" } else { "$false" },
+        );
     crate::platform::shared::assert_rendered(&script);
 
     // UTF-8 BOM：Windows PowerShell 5.1 靠它识别 UTF-8

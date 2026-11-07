@@ -69,6 +69,9 @@ pub(crate) struct FileConfig {
     /// 可选：下次启动时自动执行 `prepare` 落盘的待安装记录，默认 `false`。
     #[serde(default)]
     pub(crate) install_on_next_launch: Option<bool>,
+    /// 可选：回滚后是否弹出系统提示，默认 `true`。
+    #[serde(default)]
+    pub(crate) rollback_notice: Option<bool>,
 }
 
 impl FileConfig {
@@ -160,6 +163,9 @@ impl FileConfig {
         }
         if let Some(auto) = self.install_on_next_launch {
             config = config.install_on_next_launch(auto);
+        }
+        if let Some(notice) = self.rollback_notice {
+            config = config.rollback_notice(notice);
         }
         if let Some(allow) = self.allow_legacy_signatures {
             config = config.allow_legacy_signatures(allow);

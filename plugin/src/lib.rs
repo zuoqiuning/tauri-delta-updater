@@ -293,6 +293,7 @@ mod tests {
             "install_mode": "quiet",
             "allow_insecure_transport": false,
             "install_on_next_launch": true,
+            "rollback_notice": false,
             "additional_pubkeys": ["OLD-KEY"],
             "trust_policy": "all",
             "channel": "beta"
@@ -327,6 +328,7 @@ mod tests {
         assert_eq!(config.install_mode, InstallMode::Quiet);
         assert!(!config.allow_insecure_transport);
         assert!(config.install_on_next_launch);
+        assert!(!config.rollback_notice, "回滚提示必须能从配置关闭");
         assert_eq!(config.additional_public_keys, vec!["OLD-KEY".to_string()]);
         assert_eq!(config.trust_policy, TrustPolicy::AllOf);
     }
@@ -401,6 +403,7 @@ mod tests {
             install_mode: None,
             allow_insecure_transport: None,
             install_on_next_launch: None,
+            rollback_notice: None,
         };
         let err = file.into_update_config("1.0.0").unwrap_err();
         assert!(err.contains("endpoints"), "错误必须说明字段: {err}");

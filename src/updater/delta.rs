@@ -292,11 +292,12 @@ impl DeltaUpdater {
         PlatformUpdater::verify_patched_binary(&self.executable_path, artifact.path())?;
 
         // 生成替换脚本（只接受已验证产物；脚本放用户可写的工作目录）
-        let script = PlatformUpdater::generate_updater_with(
+        let script = PlatformUpdater::generate_updater_with_notice(
             &self.executable_path,
             &artifact,
             &self.work_dir,
             self.script_timings(),
+            self.config.rollback_notice,
         )?;
 
         // 阶段事件：脚本已生成，接下来只剩宿主退出与脚本执行。

@@ -92,6 +92,50 @@ impl PlatformUpdater {
         }
     }
 
+    /// 内置更新流程使用：生成替换脚本，并决定回滚后是否提示用户。
+    ///
+    /// 与 [`Self::generate_updater_with`] 的差别只有提示开关；直接调用
+    /// [`Self::generate_updater`] 的宿主自行掌控界面，默认不弹提示。
+    pub(crate) fn generate_updater_with_notice(
+        current_exe: &Path,
+        new_exe: &VerifiedArtifact,
+        work_dir: &Path,
+        timings: ScriptTimings,
+        notice: bool,
+    ) -> Result<PathBuf> {
+        #[cfg(target_os = "windows")]
+        return windows::generate_updater_with_notice(
+            current_exe,
+            new_exe,
+            work_dir,
+            timings,
+            notice,
+        );
+        #[cfg(target_os = "macos")]
+        return macos::generate_updater_with_notice(
+            current_exe,
+            new_exe,
+            work_dir,
+            timings,
+            notice,
+        );
+        #[cfg(target_os = "linux")]
+        return linux::generate_updater_with_notice(
+            current_exe,
+            new_exe,
+            work_dir,
+            timings,
+            notice,
+        );
+        #[allow(unreachable_code)]
+        {
+            let _ = (current_exe, new_exe, work_dir, timings, notice);
+            Err(crate::error::DeltaError::Config(
+                "当前操作系统不支持增量替换".into(),
+            ))
+        }
+    }
+
     /// 校验更新产物没有发生"签名退化"。
     ///
     /// Windows 上比较原版本与产物的 Authenticode 状态：
@@ -297,6 +341,56 @@ impl PlatformUpdater {
                 target_files,
                 work_dir,
                 timings,
+            );
+            Err(crate::error::DeltaError::Config(
+                "整包增量替换目前仅支持 Windows 与 macOS .app".into(),
+            ))
+        }
+    }
+
+    /// 内置更新流程使用：生成整包替换脚本，并决定回滚后是否提示用户。
+    pub(crate) fn generate_bundle_updater_with_notice(
+        current_exe: &Path,
+        staging_dir: &Path,
+        base_files: &[crate::core::bundle::BundleFile],
+        target_files: &[crate::core::bundle::BundleFile],
+        work_dir: &Path,
+        timings: ScriptTimings,
+        notice: bool,
+    ) -> Result<PathBuf> {
+        #[cfg(target_os = "windows")]
+        return windows::generate_bundle_updater_with_notice(
+            current_exe,
+            staging_dir,
+            base_files,
+            target_files,
+            work_dir,
+            timings,
+            notice,
+        );
+        // macOS 以整个 .app 为单位切换，不需要逐文件比较新旧布局
+        #[cfg(target_os = "macos")]
+        {
+            let _ = base_files;
+            return macos::generate_bundle_updater_with_notice(
+                current_exe,
+                staging_dir,
+                target_files,
+                work_dir,
+                timings,
+                notice,
+            );
+        }
+        #[allow(unreachable_code)]
+        {
+            let _ = (
+                current_exe,
+                staging_dir,
+                base_files,
+                target_files,
+                work_dir,
+                timings,
+                notice,
             );
             Err(crate::error::DeltaError::Config(
                 "整包增量替换目前仅支持 Windows 与 macOS .app".into(),

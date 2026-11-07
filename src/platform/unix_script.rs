@@ -27,6 +27,54 @@ pub fn generate(
     check_exe_link: bool,
     timings: ScriptTimings,
 ) -> Result<PathBuf> {
+    generate_with_options(
+        current_exe,
+        new_exe,
+        work_dir,
+        old_pid,
+        elevation,
+        check_exe_link,
+        timings,
+        false,
+    )
+}
+
+/// 内置更新流程使用：回滚后是否提示用户。
+#[cfg_attr(not(unix), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_with_notice(
+    current_exe: &Path,
+    new_exe: &VerifiedArtifact,
+    work_dir: &Path,
+    old_pid: u32,
+    elevation: bool,
+    check_exe_link: bool,
+    timings: ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
+    generate_with_options(
+        current_exe,
+        new_exe,
+        work_dir,
+        old_pid,
+        elevation,
+        check_exe_link,
+        timings,
+        notice,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_with_options(
+    current_exe: &Path,
+    new_exe: &VerifiedArtifact,
+    work_dir: &Path,
+    old_pid: u32,
+    elevation: bool,
+    check_exe_link: bool,
+    timings: ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
     let exe_dir = current_exe
         .parent()
         .ok_or_else(|| DeltaError::PatchApplyFailed("找不到父目录".into()))?;
@@ -165,6 +213,7 @@ launch_app() {
             ),
         )
         .replace("__CHECK_EXE_LINK__", if check_exe_link { "1" } else { "0" })
+        .replace("__NOTICE_ENABLED__", if notice { "1" } else { "0" })
         .replace(
             "__ROLLBACK__",
             &shell_quote(&rollback_flag.display().to_string()),
@@ -256,6 +305,14 @@ mod tests {
             assert!(content.contains("STATE_FILE="));
             assert!(content.contains("tdx_events.jsonl"));
             assert!(content.contains("tdx_rollback.txt"));
+            assert!(
+                content.contains("NOTICE_ENABLED=0"),
+                "直接调用平台脚本 API 时默认不弹回滚提示"
+            );
+            assert!(
+                content.contains("show_rollback_notice"),
+                "提示函数必须存在，开关只决定是否调用"
+            );
             assert!(!content.contains("__"), "渲染后不得残留占位符");
             if elevation {
                 assert!(content.contains("sudo -n"), "提权模式必须插入提权块");
@@ -263,5 +320,21 @@ mod tests {
                 assert!(!content.contains("pkexec"), "非提权模式不应插入提权块");
             }
         }
+
+        // 内置流程开启提示时，开关必须真的写进脚本。
+        let script = generate_with_notice(
+            &old,
+            &staged,
+            dir.path(),
+            999_999,
+            false,
+            true,
+            ScriptTimings::default(),
+            true,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(script).unwrap();
+        assert!(content.contains("NOTICE_ENABLED=1"));
+        assert!(!content.contains("__"), "渲染后不得残留占位符");
     }
 }

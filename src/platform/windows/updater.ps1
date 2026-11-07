@@ -18,6 +18,7 @@ $self         = __SELF__
 $backup       = __BACKUP__
 $eventsFile   = __EVENTS__
 $stateFile    = __STATE__
+$noticeEnabled = __NOTICE_ENABLED__
 
 function Write-Log([string]$message) {
     # 直接追加写入而不是 Add-Content：Add-Content 在文件刚创建/被其它进程占用时
@@ -44,6 +45,27 @@ function Write-Stage([string]$name) {
     try {
         $evt = @{ event = $name; time = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
         [System.IO.File]::AppendAllText($eventsFile, $evt + [Environment]::NewLine)
+    } catch { }
+}
+
+# 回滚后给用户的最小提示：应用已经在旧版本上重新启动。
+# 提示在独立进程里显示，脚本本身不阻塞；无交互桌面（服务/计划任务）直接跳过。
+function Show-RollbackNotice {
+    if (-not $noticeEnabled) { return }
+    try {
+        if (-not [Environment]::UserInteractive) { return }
+        $lang = [System.Globalization.CultureInfo]::CurrentUICulture.Name
+        if ($lang -like 'zh*') {
+            $title = '更新失败'
+            $text = '更新未完成，已恢复到上一版本。'
+        } else {
+            $title = 'Update failed'
+            $text = 'The update did not complete. The previous version has been restored.'
+        }
+        # 用 -EncodedCommand 传递文本，避免引号/空格在 Start-Process 参数里被二次解析。
+        $code = "Add-Type -AssemblyName PresentationFramework; `$null = [System.Windows.MessageBox]::Show('" + ($text -replace "'", "''") + "', '" + ($title -replace "'", "''") + "', 'OK', 'Warning')"
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+        Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', $encoded -ErrorAction SilentlyContinue | Out-Null
     } catch { }
 }
 
@@ -121,6 +143,7 @@ function Restart-Old {
             Start-App $target
         }
     }
+    Show-RollbackNotice
 }
 
 if (-not $isAdmin) {

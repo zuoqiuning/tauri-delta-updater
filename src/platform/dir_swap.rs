@@ -31,6 +31,54 @@ pub fn generate(
     old_pid: u32,
     timings: ScriptTimings,
 ) -> Result<PathBuf> {
+    generate_with_options(
+        app_root,
+        staging_dir,
+        current_exe,
+        target_files,
+        work_dir,
+        old_pid,
+        timings,
+        false,
+    )
+}
+
+/// 内置更新流程使用：回滚后是否提示用户。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_with_notice(
+    app_root: &Path,
+    staging_dir: &Path,
+    current_exe: &Path,
+    target_files: &[BundleFile],
+    work_dir: &Path,
+    old_pid: u32,
+    timings: ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
+    generate_with_options(
+        app_root,
+        staging_dir,
+        current_exe,
+        target_files,
+        work_dir,
+        old_pid,
+        timings,
+        notice,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_with_options(
+    app_root: &Path,
+    staging_dir: &Path,
+    current_exe: &Path,
+    target_files: &[BundleFile],
+    work_dir: &Path,
+    old_pid: u32,
+    timings: ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
     let exe_relative = current_exe.strip_prefix(app_root).map_err(|_| {
         DeltaError::Config(format!(
             "可执行文件 {} 不在应用目录 {} 内",
@@ -124,6 +172,7 @@ pub fn generate(
             "__WORK_DIR__",
             &shell_quote(&work_dir.display().to_string()),
         )
+        .replace("__NOTICE_ENABLED__", if notice { "1" } else { "0" })
         .replace("__VERIFY__", &verify);
     crate::platform::shared::assert_rendered(&script);
 

@@ -164,6 +164,15 @@ pub struct UpdateConfig {
     /// 该字段只被 Tauri 插件消费；库本身不会自动安装，宿主需显式调用
     /// [`crate::DeltaUpdater::install_pending`]。
     pub install_on_next_launch: bool,
+    /// 回滚后是否弹出系统提示，默认 `true`。
+    ///
+    /// 更新失败、旧版本重新启动后，替换脚本会显示一条最小提示：
+    /// Windows 是消息框，macOS / Linux 是桌面通知。提示在独立进程里触发，
+    /// 不阻塞替换脚本；无交互桌面（服务、计划任务）时自动跳过。
+    ///
+    /// 只作用于本库内置的更新流程；直接调用 [`crate::PlatformUpdater`]
+    /// 生成脚本时不弹提示，由宿主自行掌控界面。
+    pub rollback_notice: bool,
 }
 
 impl UpdateConfig {
@@ -195,6 +204,7 @@ impl UpdateConfig {
             install_mode: InstallMode::default(),
             allow_insecure_transport: true,
             install_on_next_launch: false,
+            rollback_notice: true,
         }
     }
 
@@ -319,6 +329,14 @@ impl UpdateConfig {
     /// 插件是否在下次启动时自动执行待安装记录（默认 `false`）。
     pub fn install_on_next_launch(mut self, auto: bool) -> Self {
         self.install_on_next_launch = auto;
+        self
+    }
+
+    /// 回滚后是否弹出系统提示（默认 `true`）。
+    ///
+    /// 关闭后更新失败仍然写回滚原因与事件，只是不再打扰用户。
+    pub fn rollback_notice(mut self, notice: bool) -> Self {
+        self.rollback_notice = notice;
         self
     }
 

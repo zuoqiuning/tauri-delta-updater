@@ -9,6 +9,7 @@ ROLLBACK_FILE=__ROLLBACK__
 EVENTS_FILE=__EVENTS__
 SUCCESS_FLAG=__FLAG__
 STATE_FILE=__STATE__
+NOTICE_ENABLED=__NOTICE_ENABLED__
 APP_ROOT=__APP_ROOT__
 APP_DIR=__APP_DIR__
 STAGING=__STAGING__
@@ -38,6 +39,25 @@ write_rollback() {
 write_stage() {
     printf '{"event":"%s","time":"%s"}\n' "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         >> "$EVENTS_FILE" 2>/dev/null || true
+}
+
+# 回滚后给用户的最小提示：桌面通知，不阻塞脚本；没有通知工具时静默跳过。
+show_rollback_notice() {
+    [ "$NOTICE_ENABLED" = "1" ] || return 0
+    NOTICE_TITLE='Update failed'
+    NOTICE_TEXT='The update did not complete. The previous version has been restored.'
+    LANG_HINT="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+    if [ -z "$LANG_HINT" ] && command -v defaults > /dev/null 2>&1; then
+        LANG_HINT=$(defaults read -g AppleLocale 2>/dev/null)
+    fi
+    case "$LANG_HINT" in
+        zh*) NOTICE_TITLE='更新失败'; NOTICE_TEXT='更新未完成，已恢复到上一版本。' ;;
+    esac
+    if command -v notify-send > /dev/null 2>&1; then
+        notify-send "$NOTICE_TITLE" "$NOTICE_TEXT" > /dev/null 2>&1 || true
+    elif command -v osascript > /dev/null 2>&1; then
+        osascript -e "display notification \"$NOTICE_TEXT\" with title \"$NOTICE_TITLE\"" > /dev/null 2>&1 || true
+    fi
 }
 
 file_sha() {
@@ -70,6 +90,7 @@ restart_old() {
         log '更新中止，重新启动旧版本。'
         launch_app
     fi
+    show_rollback_notice
 }
 
 verify_staging() {

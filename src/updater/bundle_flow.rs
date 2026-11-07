@@ -127,13 +127,14 @@ impl DeltaUpdater {
             crate::core::artifacts::EVENT_DOWNLOAD_COMPLETED,
         );
 
-        let script = PlatformUpdater::generate_bundle_updater_with(
+        let script = PlatformUpdater::generate_bundle_updater_with_notice(
             &self.executable_path,
             &staging_dir,
             &patch.base_files,
             &patch.target_files,
             &self.work_dir,
             self.script_timings(),
+            self.config.rollback_notice,
         )?;
 
         crate::core::artifacts::append_event(

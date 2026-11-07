@@ -40,6 +40,26 @@ pub fn generate_updater_with_timings(
     )
 }
 
+/// 内置更新流程使用：回滚后是否提示用户。
+pub(crate) fn generate_updater_with_notice(
+    current_exe: &Path,
+    new_exe: &VerifiedArtifact,
+    work_dir: &Path,
+    timings: crate::platform::ScriptTimings,
+    notice: bool,
+) -> Result<PathBuf> {
+    crate::platform::unix_script::generate_with_notice(
+        current_exe,
+        new_exe,
+        work_dir,
+        std::process::id(),
+        true,
+        check_exe_link(),
+        timings,
+        notice,
+    )
+}
+
 /// 与 [`generate_updater`] 相同，但显式指定要等待退出的 PID（供测试使用）。
 pub fn generate_updater_for_pid(
     current_exe: &Path,
