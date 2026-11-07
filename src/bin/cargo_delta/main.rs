@@ -8,6 +8,7 @@ use project::{write_atomic, Change, Project};
 use similar::TextDiff;
 
 fn main() {
+    tauri_delta_updater::release::enable_utf8_console();
     let cli = Cli::parse_cargo();
     if let Err(err) = run(cli) {
         eprintln!("[ERROR] {err}");
@@ -16,10 +17,18 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
-    let project = Project::discover(cli.project.as_deref())?;
     let is_init = matches!(cli.command, Command::Init { .. });
     let is_migrate = matches!(&cli.command, Command::Migrate { .. });
+    let apply = cli.apply;
+
     let changes = match cli.command {
+        Command::Release(args) => {
+            let mut options = (*args).into_options()?;
+            // 全局 --dry-run 对 release 同样生效，语义与 generate 一致。
+            options.dry_run = cli.dry_run;
+            tauri_delta_updater::release::run_release_blocking(options)?;
+            return Ok(());
+        }
         Command::Init {
             endpoint,
             pubkey,
@@ -28,8 +37,9 @@ fn run(cli: Cli) -> Result<(), String> {
             registry,
             check,
         } => {
+            let project = Project::discover(cli.project.as_deref())?;
             if check {
-                if cli.apply {
+                if apply {
                     return Err("--check 不能与 --apply 同时使用".into());
                 }
                 let missing = project.init_status()?;
@@ -66,7 +76,10 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Migrate {
             remove_official,
             force,
-        } => project.migrate_changes(remove_official, force)?,
+        } => {
+            let project = Project::discover(cli.project.as_deref())?;
+            project.migrate_changes(remove_official, force)?
+        }
     };
 
     if changes.is_empty() {
@@ -75,7 +88,7 @@ fn run(cli: Cli) -> Result<(), String> {
         for change in &changes {
             print_diff(change);
         }
-        if cli.apply {
+        if apply {
             for change in &changes {
                 write_atomic(&change.path, &change.after)?;
                 println!("已写入 {}", change.path.display());

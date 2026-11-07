@@ -285,3 +285,66 @@ fn migrate_copies_and_can_remove_official() {
     assert!(!permissions.iter().any(|v| v == "updater:default"));
     assert!(permissions.iter().any(|v| v == "delta-updater:default"));
 }
+
+/// `cargo delta release` 与 `generate` 共用发布实现：最小参数即可产出清单与补丁。
+#[test]
+fn release_generates_manifest_and_patch() {
+    use minisign::KeyPair;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let path = |p: &Path| p.to_string_lossy().to_string();
+
+    let old_dir = root.join("old_binaries");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let old_bytes: Vec<u8> = (0..64 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let new_bytes: Vec<u8> = (0..64 * 1024u32).map(|i| (i % 241) as u8).collect();
+    std::fs::write(old_dir.join("App_0.1.0_x64.exe"), old_bytes).unwrap();
+    let new_exe = root.join("App_0.1.1_x64.exe");
+    std::fs::write(&new_exe, new_bytes).unwrap();
+
+    // 安装包必须是另一份字节：与主程序相同会被拒绝。
+    let installer = root.join("App_0.1.1_x64-setup.exe");
+    std::fs::write(&installer, vec![0u8; 64 * 1024]).unwrap();
+
+    let key = root.join("key.msk");
+    let sk_text = KeyPair::generate_unencrypted_keypair()
+        .unwrap()
+        .sk
+        .to_box(None)
+        .unwrap()
+        .into_string();
+    std::fs::write(&key, sk_text).unwrap();
+
+    let out = root.join("dist");
+    let args = vec![
+        "release".to_string(),
+        "--from".into(),
+        path(&old_dir),
+        "--to".into(),
+        "0.1.1".into(),
+        "--app-binary".into(),
+        path(&new_exe),
+        "--installer".into(),
+        path(&installer),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        path(&key),
+        "--output-dir".into(),
+        path(&out),
+    ];
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, stdout, stderr) = run(root, &refs);
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    assert!(out.join("latest.json").is_file(), "必须写出清单");
+    assert!(out.join("latest.json.sig").is_file(), "必须写出签名");
+    assert!(
+        old_dir.join("0.1.0_to_0.1.1.patch").is_file(),
+        "补丁必须落在唯一的基线目录"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.join("latest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["version"], "0.1.1");
+}
