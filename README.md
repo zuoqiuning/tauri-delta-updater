@@ -1010,45 +1010,34 @@ if let Some(patch) = manifest.find_patch(current_version, current_platform()) {
 
 </details>
 
-### 3. CI/CD integration (release workflow)
+### 3. Publisher CLI (optional)
 
-The release path is one command. Install the CLI once, then publish from your build output:
+Publishing manifests, patches and CDN objects is the **application publisher's**
+job; the runtime engine never does it. If your pipeline already produces
+`latest.json` and patches, skip this section.
+
+The repository ships optional tooling for publishers who want it:
 
 ```bash
 cargo install tauri-delta-updater --features generator
 
-cargo delta release \
-  --from old_binaries \
-  --to 0.1.1 \
-  --app-binary ./target/release/Sereno.exe \
-  --installer ./target/release/Sereno_0.1.1_x64-setup.exe \
-  --base-url https://your-cos-endpoint.com \
-  --output-dir ./dist \
-  --archive-dir old_binaries \
-  --report ./dist/release-report.json \
-  --fail-on-empty
+cargo delta release --from old_binaries --to 0.1.1 \
+  --app-binary ./target/release/MyApp.exe \
+  --installer ./target/release/MyApp_0.1.1_x64-setup.exe \
+  --base-url https://cdn.example.com \
+  --output-dir ./dist --fail-on-empty
+
+cargo delta doctor https://cdn.example.com/latest.json \
+  --pubkey "$EMBEDDED_PUBKEY" --deep
 ```
 
-`--from` is repeatable and accepts either a directory of old executables or an
-explicit baseline binary. Every flag documented below is also available under
-`cargo delta release` with the same meaning. The standalone `generate` binary
-and the library API (`tauri_delta_updater::release::run_release`) remain
-available for custom pipelines.
+`cargo delta release` shares the same implementation as `generate`
+(`release::run_release`); `cargo delta doctor` validates a published bucket
+(signature, sizes, patch hashes, chain reachability). `--help` is always the
+authoritative argument list; the reference below is kept for offline reading.
 
-**Verify the published bucket before announcing.** `doctor` fetches the live
-manifest, verifies its signature and `tdu:v=` version binding, checks that every
-installer URL resolves with the declared size, downloads every patch to verify
-its SHA-256, and proves each patch can reach the current version within the
-chain hop limit. `--deep` also downloads each installer and verifies its
-minisign signature; `--header Name=Value` supports private CDNs. Any error makes
-the command exit non-zero, so it works as a CI gate:
-
-```bash
-cargo delta doctor https://your-cos-endpoint.com/latest.json \
-  --pubkey "$EMBEDDED_PUBKEY" \
-  --bundle-url https://your-cos-endpoint.com/latest.bundle.json \
-  --deep --json dist/doctor.json
-```
+<details>
+<summary>Publisher CLI reference (generate / cargo delta release / doctor)</summary>
 
 Build the CLI generator (the `generator` feature is required):
 
@@ -1294,6 +1283,8 @@ library path). `--rollout 0` pauses the release without deleting the manifest.
 > **The public key must be pinned in your application** — never fetched from the
 > same server that serves `latest.json`. `latest.json.pub` is generated for
 > operator convenience only; its first line carries a `DO NOT TRUST` warning.
+
+</details>
 
 ### Manifest compatibility
 
