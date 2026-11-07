@@ -163,6 +163,11 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) report: Option<PathBuf>,
 
+    /// 额外输出 `SHA256SUMS`（每行 `哈希  文件名`），覆盖清单、签名、公钥、
+    /// 安装包与本次生成的全部单文件补丁。
+    #[arg(long, value_name = "PATH")]
+    pub(crate) sha256sums: Option<PathBuf>,
+
     /// 生成**未压缩**的补丁（`BSDIFF40` 原始输出），供仍使用旧引擎的客户端。
     ///
     /// 旧客户端不认 zstd 容器，会把补丁判成 "not a valid patch"；跨代际过渡期

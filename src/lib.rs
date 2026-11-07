@@ -65,12 +65,16 @@
 //! [`DeltaUpdater::confirm_startup_success`]（实例方法）。
 //!
 //! 更推荐无条件调用 [`PlatformUpdater::confirm_startup_success_if_pending`]：
-//! 它只在本次启动确实来自一次替换时才写标志，普通启动零写入，
-//! 不会因为"忘了确认"导致脚本在 60 秒后回滚。
+//! 它只在本次启动确实来自一次替换时才写标志，普通启动零写入。
+//!
+//! **跨代际升级（新引擎的第一个版本）必须改用无条件确认**：
+//! 替换由旧引擎脚本驱动，旧脚本不会写 `tdx_update_dir` 指针。`if_pending`
+//! 现在也会把残留的旧脚本识别为替换证据，但新引擎首发仍应显式调用
+//! [`PlatformUpdater::confirm_startup_success`]，避免依赖兼容判据。
 //!
 //! ## 首次接入检查清单
 //!
-//! 1. 启动时调用 `confirm_startup_success_if_pending()`；
+//! 1. 启动时调用 `confirm_startup_success()`；新引擎首发不要用 `if_pending`；
 //! 2. `install()` 返回 `Updated` 或 `RepairRequired` 后退出进程
 //!    （或直接用 `install_and_exit()`）；
 //! 3. 把 `RequiresFullDownload` 交给官方 updater 或安装流程。

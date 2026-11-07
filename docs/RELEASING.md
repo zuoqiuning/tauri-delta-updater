@@ -229,7 +229,7 @@ cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.2.1
 | crates.io | 核心 `0.1.0` / `0.2.0` / `0.2.1`；插件 `0.2.1` |
 | npm | `tauri-plugin-delta-updater@0.2.1` |
 | git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1` |
-| 测试 | 核心 223 项 + 1 ignored（需真实子进程持锁）+ 22 文档测试；插件 16 项 + 2 个 ignored rustdoc 示例，全绿 |
+| 测试 | 核心 224 项 + 1 ignored（需真实子进程持锁）+ 22 文档测试；插件 16 项 + 2 个 ignored rustdoc 示例，全绿 |
 | clippy / fmt | 两个 crate `-D warnings` 全绿 |
 | MSRV | 1.88 |
 | 下一版本前提 | 项目所有者明确书面授权（版本 + 内容摘要 + 时间） |

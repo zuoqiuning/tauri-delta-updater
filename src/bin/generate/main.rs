@@ -521,6 +521,23 @@ async fn run(args: Args) -> Result<(), String> {
     )
     .map_err(|e| format!("写入 {manifest_file}.pub 失败: {e}"))?;
 
+    // 运维核对 CDN 是否齐全：一条命令产出清单、签名、公钥、安装包与补丁的校验和。
+    if let Some(path) = &args.sha256sums {
+        let mut files = vec![
+            output_dir.join(&manifest_file),
+            output_dir.join(format!("{manifest_file}.sig")),
+            output_dir.join(format!("{manifest_file}.pub")),
+            installer.to_path_buf(),
+        ];
+        files.extend(
+            patch_records
+                .iter()
+                .map(|record| patch_dir.join(&record.patch_file)),
+        );
+        write_sha256sums(path, &files).await?;
+        println!("[OK] SHA256SUMS: {}", path.display());
+    }
+
     let patch_count = manifest
         .patches
         .get(&platform_key)
@@ -555,4 +572,29 @@ async fn run(args: Args) -> Result<(), String> {
         "[OK] {manifest_file} + {manifest_file}.sig 生成成功。通道: {channel}，平台: {platform_key}，补丁 {patch_count} 个，跳过 {skipped_count} 个"
     );
     Ok(())
+}
+
+/// 写 `SHA256SUMS`：每行 `哈希  文件名`，不存在的产物直接跳过。
+async fn write_sha256sums(path: &std::path::Path, files: &[PathBuf]) -> Result<(), String> {
+    use std::fmt::Write as _;
+
+    let mut text = String::new();
+    for file in files {
+        if !file.is_file() {
+            continue;
+        }
+        let hash = calculate_hash(file)
+            .await
+            .map_err(|e| format!("计算 {} 的哈希失败: {e}", file.display()))?;
+        let name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("artifact");
+        writeln!(text, "{hash}  {name}").map_err(|_| "格式化 SHA256SUMS 失败".to_string())?;
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
+    }
+    std::fs::write(path, text).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }

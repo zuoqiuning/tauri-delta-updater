@@ -804,6 +804,63 @@ fn test_generate_cli_legacy_patch_is_uncompressed() {
     );
 }
 
+/// `--sha256sums` 必须覆盖清单、签名、公钥、安装包与补丁，格式为 `哈希  文件名`。
+#[test]
+fn test_generate_cli_writes_sha256sums() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let installer = dir.join("App_0.1.1_x64-setup.exe");
+    let mut installer_bytes = vec![0u8; 64 * 1024];
+    installer_bytes[..9].copy_from_slice(b"installer");
+    std::fs::write(&installer, &installer_bytes).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let sums = dir.join("SHA256SUMS");
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--installer".into(),
+        s(&installer),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--sha256sums".into(),
+        s(&sums),
+        "--fail-on-empty".into(),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let text = std::fs::read_to_string(&sums).unwrap();
+    for name in [
+        "latest.json",
+        "latest.json.sig",
+        "latest.json.pub",
+        "App_0.1.1_x64-setup.exe",
+        "0.1.0_to_0.1.1.patch",
+    ] {
+        assert!(text.contains(name), "SHA256SUMS 缺少 {name}: {text}");
+    }
+    for line in text.lines() {
+        let (hash, name) = line.split_once("  ").expect("格式必须是 '哈希  文件名'");
+        assert_eq!(hash.len(), 64, "哈希必须是 64 位: {line}");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{line}");
+        assert!(!name.is_empty());
+    }
+}
+
 /// 整包模式：目录级差分包 + 独立签名的 `latest.bundle.json`。
 #[test]
 fn test_generate_cli_bundle_mode_emits_signed_manifest() {

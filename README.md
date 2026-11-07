@@ -1078,6 +1078,7 @@ Key arguments:
 | `--new-app-dir` | Current app directory (exe + sidecars + resources); enables whole-app bundle patches. |
 | `--old-app-dir` | Previous app directory (repeatable). The directory name must contain the version; for macOS `.app` bundles the version may live in the parent directory (`v0.1.1/MyApp.app`). |
 | `--report` | Write a JSON release report (patch sizes, ratios, skipped baselines). |
+| `--sha256sums` | Write `SHA256SUMS` (hash + filename) for the manifest, signature, public key, installer and every generated patch. Use it to verify the CDN has all artifacts. |
 | `--channel` | Release channel (default `stable`). Other names write `latest-<channel>.json` / `latest-<channel>.bundle.json`. |
 | `--rollout` | Signed rollout percentage, 0–100 (default 100). Values below 100 write `platforms[].rollout`; `0` pauses the release. |
 | `--min-version` | Signed minimum version. Clients below it bypass `rollout` and must update. Omitting it clears the previous floor. |
@@ -1273,7 +1274,28 @@ fallback, this library is the deeper option.
 | Extra `tdx_update.ps1` / `tdx_update.sh` in the work directory | Normal: scripts don't delete themselves; the next update reclaims them. |
 | `Apps & Features` / `dpkg` still shows the old version | In-place exe replacement bypasses installer/package metadata. Use the full-download path for managed deployments. |
 
+**Rollback reasons** (`diagnose().last_rollback` / `rollback_history`):
+
+| Reason | Meaning | What to check |
+|---|---|---|
+| `startup_timeout` | The new build never wrote the success flag | App exits before `confirm_startup_success*`; startup slower than `confirm_timeout_secs` |
+| `startup_not_started` | The new process never reached host code | Load-time crash, missing DLL/dependency, antivirus block |
+| `startup_crashed` | Host code ran, then exited before confirming | Panic in early setup or a failed window creation |
+| `health_check_failed` | The host's health hook returned `Err` | Database/config/dependency the hook checks |
+| `update_failed` | Copy/rename in the replacement script failed | Disk space, permissions, another process holding the file |
+| `repaired_partial_update` | Repair restored an interrupted swap | Expected after a crash; not a user-visible update failure |
+
 ## Upgrading
+
+**Client compatibility matrix** (what a client can consume):
+
+| Client | Patch format | New manifest fields |
+|---|---|---|
+| Older engine (e.g. host 0.2.3) | raw `BSDIFF40` only; rejects zstd containers with `not a valid patch` | Unknown fields are ignored |
+| This engine | zstd container **and** raw `BSDIFF40` | `min_os`, `rollout`, `notes_i18n`, `extra` |
+
+During the transition, publish with `generate --legacy-patch` so old clients can
+still consume patches; switch back once they have been replaced.
 
 - **Between engine generations (e.g. 0.2.3 → 0.2.4)**: the swap is driven by the
   **old** engine's script, which does not write the new `tdx_update_dir` marker.
