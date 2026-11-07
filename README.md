@@ -64,9 +64,10 @@ cargo delta init ... --apply     # writes the files
 cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
 ```
 
-`init` writes the plugin as a **version dependency** (`0.2`), matching the
-published plugin crate. `--registry` is kept for older scripts and produces the
-same line. `--check` also warns when a project still pins the git form.
+`init` writes `"0.2"` by default (patch updates within the minor are allowed).
+`--registry` pins the exact version (`"0.2.1"`) for pipelines that require the
+dependency to match the tool exactly. `--check` warns when a project still pins
+the git form, but keeps exit code 0 so existing integrations stay green.
 
 Already on the official updater? `cargo delta migrate` copies
 `plugins.updater` into `plugins.delta-updater` and keeps the official plugin as
@@ -109,8 +110,11 @@ gives you `invoke('plugin:delta-updater|...')` — not typed imports. Add the np
 package in your frontend when you want the bindings:
 
 ```bash
-npm install tauri-plugin-delta-updater
+npm install tauri-plugin-delta-updater   # current: 0.2.1
 ```
+
+The bundled `examples/tauri-app` uses `path = "../plugin"` for in-repo
+development; real projects should depend on `"0.2"` from crates.io.
 
 `src-tauri/capabilities/default.json`:
 

@@ -98,11 +98,8 @@ fn init_apply_writes_all_files() {
     let cargo = read(&root, "Cargo.toml");
     assert!(cargo.contains("tauri-plugin-delta-updater"));
     assert!(
-        cargo.contains(&format!(
-            "tauri-plugin-delta-updater = \"{}\"",
-            env!("CARGO_PKG_VERSION")
-        )),
-        "插件已发布，默认必须写版本依赖: {cargo}"
+        cargo.contains("tauri-plugin-delta-updater = \"0.2\""),
+        "默认必须只约束到 minor（\"0.2\"）: {cargo}"
     );
 
     let (code, _stdout, stderr) = run(

@@ -292,16 +292,16 @@ fn remove_plugin(config: &str, name: &str) -> Result<String, String> {
 
 /// 在 `[dependencies]` 下补齐插件依赖；已存在时不改动。
 ///
-/// 插件已随 0.2.1 发布到 crates.io，因此写与工具自身一致的版本号；
-/// `_registry` 仅为旧脚本保留参数兼容，行为与默认一致。
-fn ensure_dependency(text: &str, _registry: bool) -> String {
+/// 默认写 `"0.2"`（允许同 minor 内 patch 升级）；`--registry` 写精确版本
+/// `"0.2.1"`，用于必须与工具版本一致的宿主。
+fn ensure_dependency(text: &str, registry: bool) -> String {
     if has_dependency(text) {
         return text.to_string();
     }
 
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut lines: Vec<&str> = text.lines().collect();
-    let dependency = dependency_line();
+    let dependency = dependency_line(registry);
     let insert_at = lines
         .iter()
         .position(|line| line.trim() == "[dependencies]")
@@ -322,9 +322,26 @@ fn ensure_dependency(text: &str, _registry: bool) -> String {
     rendered
 }
 
-/// 插件依赖声明：版本号与工具自身一致，避免写死旧版本。
-fn dependency_line() -> String {
-    format!("{PLUGIN_DEP} = \"{}\"", env!("CARGO_PKG_VERSION"))
+/// 插件依赖声明。
+///
+/// 默认只约束到 minor（`"0.2"`），让宿主拿到同系列补丁；`registry` 写精确
+/// 版本，适合要求"依赖版本必须等于发布工具版本"的流水线。
+fn dependency_line(registry: bool) -> String {
+    if registry {
+        format!("{PLUGIN_DEP} = \"{}\"", env!("CARGO_PKG_VERSION"))
+    } else {
+        format!("{PLUGIN_DEP} = \"{}\"", minor_requirement())
+    }
+}
+
+/// 从工具版本推导 minor 约束（`0.2.1` → `0.2`）。
+fn minor_requirement() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut parts = version.split('.');
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}"),
+        _ => version.to_string(),
+    }
 }
 
 fn has_dependency(text: &str) -> bool {
@@ -390,21 +407,24 @@ mod tests {
         }
     }
 
-    /// 默认写版本依赖（插件已发布），与 `--registry` 行为一致。
+    /// 默认写 minor 约束（`"0.2"`），`--registry` 写精确版本。
     #[test]
     fn dependency_source_is_valid_cargo_syntax() {
-        let expected = format!(
-            "[dependencies]\ntauri-plugin-delta-updater = \"{}\"",
-            env!("CARGO_PKG_VERSION")
-        );
+        let default = ensure_dependency("[dependencies]\n", false);
         assert_eq!(
-            ensure_dependency("[dependencies]\n", false).trim_end(),
-            expected
+            default.trim_end(),
+            "[dependencies]\ntauri-plugin-delta-updater = \"0.2\"",
+            "默认必须只约束到 minor"
         );
+
+        let exact = ensure_dependency("[dependencies]\n", true);
         assert_eq!(
-            ensure_dependency("[dependencies]\n", true).trim_end(),
-            expected,
-            "旧 --registry 参数必须保持同样结果"
+            exact.trim_end(),
+            format!(
+                "[dependencies]\ntauri-plugin-delta-updater = \"{}\"",
+                env!("CARGO_PKG_VERSION")
+            ),
+            "--registry 必须写精确版本"
         );
     }
 }

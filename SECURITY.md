@@ -83,9 +83,10 @@ file.
 
 A best-effort compatibility guard, **not a security boundary**. It is skipped
 when the OS version cannot be detected. On Linux it compares the **kernel
-release**, not the distribution version (writing `"24.04"` has no effect).
-A compromised publisher can always sign a manifest without `min_os`; the field
-only prevents accidentally shipping a build the target OS cannot run.
+release**, not the distribution version: writing `"24.04"` is read as a far
+higher kernel version and blocks every update, so do not use this field on
+Linux. A compromised publisher can always sign a manifest without `min_os`; the
+field only prevents accidentally shipping a build the target OS cannot run.
 
 ## Multi-hop chains and pending installs
 

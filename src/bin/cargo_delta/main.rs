@@ -25,7 +25,7 @@ fn run(cli: Cli) -> Result<(), String> {
             pubkey,
             bundle_endpoint,
             force,
-            registry: _,
+            registry,
             check,
         } => {
             if check {
@@ -44,7 +44,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     }
                     if project.dependency_is_git()? {
                         println!(
-                            "提示：插件依赖仍是 git 形式；插件已发布，重新运行 init --apply 可切到版本依赖。"
+                            "[WARN] 插件依赖仍是 git 形式；插件已发布，重新运行 init --apply 可切到版本依赖（退出码仍为 0）。"
                         );
                     }
                     print_next_steps(true);
@@ -60,7 +60,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 pubkey.trim(),
                 bundle_endpoint.as_deref(),
                 force,
-                false,
+                registry,
             )?
         }
         Command::Migrate {

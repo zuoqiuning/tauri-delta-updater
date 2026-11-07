@@ -49,7 +49,7 @@ pub(crate) enum Command {
         /// 已存在 `plugins.delta-updater` 时覆盖。
         #[arg(long)]
         force: bool,
-        /// 保留兼容：插件已发布，默认即写注册表版本依赖。
+        /// 写精确版本依赖（`"0.2.1"`）；默认为 `"0.2"`，允许同 minor 内补丁升级。
         #[arg(long)]
         registry: bool,
         /// 只检查配置是否完整，不打印 diff；缺失时以非零状态退出。
