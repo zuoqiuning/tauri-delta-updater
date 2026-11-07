@@ -129,10 +129,16 @@ impl DeltaUpdater {
     ///
     /// 下载与验签和 [`Self::download_full`] 完全一致，之后把安装包交给平台执行器：
     ///
-    /// - **Windows**：以安装器自己的权限要求启动 NSIS（`/P /UPDATE /R`）或
-    ///   MSI（`/passive /promptrestart AUTOLAUNCHAPP=True`）。
-    ///   返回 [`UpdateResult::Updated`] 后，**调用方必须立即退出进程**：
+    /// - **Windows**：以安装器自己的权限要求启动 NSIS（`/P /UPDATE /R`）、
+    ///   MSI（`/passive /promptrestart AUTOLAUNCHAPP=True`）或 Inno Setup
+    ///   （`/SILENT` / `/VERYSILENT`，由 [`crate::UpdateConfig::installer_kind`]
+    ///   显式声明）。返回 [`UpdateResult::Updated`] 后，**调用方必须立即退出进程**：
     ///   安装器要替换正在运行的可执行文件，并会自行重新启动应用。
+    ///
+    ///   **重启契约**：NSIS 由 `/R` 参数重启；**Inno 没有 `/R` 等价参数**，
+    ///   必须由 `.iss` 的 `[Run]` 段重启，且不能带 `skipifsilent`
+    ///   （它的语义是"静默模式不执行"，与 `/R` 正好相反）。引擎只负责启动
+    ///   安装器并退出，不会自行重启应用。
     /// - **macOS**：解包 `.app.tar.gz`，走与整包增量相同的目录切换脚本
     ///   （`codesign --verify`、备份、启动确认、失败回滚）。
     /// - **Linux**：AppImage 走单文件替换脚本；`.deb` / `.rpm` 明确拒绝，

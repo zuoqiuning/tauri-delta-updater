@@ -33,6 +33,23 @@ spctl -a -vv /Applications/MyApp.app
 - [ ] AppImage：直接执行 `.AppImage` → 更新 → 确认本体被替换、`$APPIMAGE` 路径正确。
 - [ ] 普通用户对只读目录更新：应中止并保留旧版本，不产生半成品。
 
+## 安装器语义对照（跨安装器不可类比）
+
+改 NSIS / MSI / Inno 参数或 `.iss` 时，逐条对照官方文档，不要凭另一个安装器的直觉：
+
+| 意图 | NSIS（Tauri 模板） | Inno Setup |
+|---|---|---|
+| 显示进度但不交互 | `/P` | `/SILENT` |
+| 完全无界面 | `/S` | `/VERYSILENT` |
+| 装完启动应用 | `/R` | `[Run]` 段，且**不能**加 `skipifsilent` |
+| 这是更新而非首次安装 | `/UPDATE` | `.iss` 读取旧 ARP / `UsePreviousAppDir`（无命令行参数） |
+| 关闭起始确认框 | 模板行为 | `/SP-` |
+| 不自动重启系统 | — | `/NORESTART` |
+
+- `skipifsilent` 的语义是“静默模式不执行”，与 NSIS `/R` 正好相反；加错会导致
+  静默更新完成后应用不启动。
+- MSI 使用 `/passive` / `/qb` / `/qn` 与 `AUTOLAUNCHAPP=True`，与上面两套都不同。
+
 ## 记录
 
 每个平台记录：OS 版本、安装方式、结果（通过 / 失败）、失败时的 `tdx_update.log`

@@ -125,7 +125,7 @@ PATCH 发布，理由是新增字段都带 serde 默认值、不改变现有构�
 | PE 感知差分（Zucchini / `--pe-normalize`） | 非破坏性（新增可选后端） | 真实产物基准测试证明收益 |
 | 并行目录 / 原子切换 | 可能破坏性（`Staged` 生命周期重设计） | Windows 独占锁、跨卷、杀软边界验证 |
 | macOS tar-level 增量路径 | 非破坏性（新增可选后端） | 真实签名/公证应用验证 |
-| 收紧安全默认值（`allow_legacy_signatures` / `allow_insecure_transport` 默认 `false`） | 破坏性（签名与传输行为变更） | 下一 MINOR，附迁移说明 |
+| 收紧安全默认值（`allow_legacy_signatures` / `allow_insecure_transport` 默认 `false`） | 破坏性（签名与传输行为变更） | 0.3.0 发布前完成，附迁移说明 |
 | 给 `UpdateConfig` / `UpdateManifest` / `PlatformInfo` 补 `#[non_exhaustive]` | 破坏性（字面量构造需改 serde / builder） | 已在未发布工作树完成，随下一 MINOR 发布；见 §1.4 |
 
 上表只有项目所有者明确启动时才进入排期；列出不等于默许实施。

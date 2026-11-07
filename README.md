@@ -253,7 +253,9 @@ same `platforms[].signature`. Known boundaries:
   without it startup fails with a clear error instead of sending a URL that
   contains literal braces.
 - `install_full` returns `Updated`, then the plugin exits — the installer is
-  already running and will relaunch the app.
+  already running and **must relaunch the app itself**: NSIS receives `/R`; Inno
+  must do it in `.iss` via `[Run]` **without** `skipifsilent`. The engine never
+  relaunches on this path.
 
 **Migration cost vs benefit.** The migration is mostly a **frontend rewrite**:
 this plugin streams `{ stage, ... }` events over a `Channel`, while

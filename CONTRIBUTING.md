@@ -70,8 +70,11 @@ cargo run --all-features --bin cargo-delta -- delta init --project <dir> --endpo
   the template and its real-execution test.
 - Installer semantics (NSIS / MSI / Inno flags, silent-mode behavior) must be
   checked against the vendor's official documentation, never inferred from
-  another installer. For example, Inno's `skipifsilent` means "do not run this
-  entry in silent mode" — the opposite of NSIS `/R`.
+  another installer. A review suggestion in this project once mapped NSIS `/R`
+  to Inno `skipifsilent`; Inno's docs say `skipifsilent` means "do not run this
+  entry in silent mode" — the opposite of `/R`. The lesson is that
+  cross-installer analogies fail, not that the implementer forgot to read the
+  docs.
 - Do not add error handling for cases that cannot happen. Do add it at
   boundaries (HTTP responses, archive bytes, user-supplied paths).
 - `minisign` is pinned to 0.7.9 and `generate/keys.rs::is_unencrypted_payload`
