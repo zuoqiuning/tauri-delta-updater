@@ -14,7 +14,7 @@ Version semantics: [VERSIONING.md](VERSIONING.md) · Release gates: [docs/RELEAS
 Seven questions, asked before the long docs:
 
 1. **Do you ship only the main executable?** Yes → single-file patches are the sweet spot. No (`externalBin` / `resources`) → configure `bundle_endpoint` and use whole-app deltas.
-2. **Which platforms?** Windows exe/NSIS, macOS `.app`, and Linux bare binaries/AppImage are supported. Linux `.deb` / `.rpm` installs should stay with the package manager; use this engine for notification only.
+2. **Which platforms?** Windows exe (NSIS / Inno Setup), macOS `.app`, and Linux bare binaries/AppImage are supported. Linux `.deb` / `.rpm` installs should stay with the package manager; use this engine for notification only.
 3. **Can your app exit when the update is ready?** Yes → three lines (`install()` + exit). Not yet → use `prepare()` and exit when your UI is done.
 4. **Do you need signed manifests, downgrade protection, deterministic rollback?** Yes → this engine. If you only want a smaller download and nothing else, a transparent layer over the official updater is simpler.
 5. **Already running a stable official-updater flow?** Read “Migration cost vs benefit” below before switching; the frontend contract changes.
@@ -90,7 +90,7 @@ or absent (single-stack, full fallback owned by `install_full`).
 > [!IMPORTANT]
 > **Replacing the official updater is a decision, not an automatic default.**
 > This plugin can cover both delta and full-installer paths, but then installer
-> failures (Windows NSIS/MSI) are owned by the installer, and macOS whole-app
+> failures (Windows NSIS/MSI/Inno) are owned by the installer, and macOS whole-app
 > updates need an Apple Developer signing/notarization setup to validate in
 > production. If you only want smaller downloads, keeping the official updater
 > and using this engine as the delta layer is the lower-risk default.
@@ -142,7 +142,8 @@ timings), `proxy` (`http://127.0.0.1:7890`), `headers` (extra HTTP headers for
 private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
 (`false` rejects pre-0.7 minisign signatures), `fallback_policy`
 (`transport` / `any`), `install_mode` (`passive` / `basicUi` / `quiet`),
-`allow_insecure_transport`, `bundle_type`, `install_id`,
+`installer_kind` (`inno` for Inno Setup builds; NSIS / MSI are inferred from the
+`.exe` / `.msi` suffix), `allow_insecure_transport`, `bundle_type`, `install_id`,
 `install_on_next_launch` (install the staged update on the next start; off by
 default), `rollback_notice` (show a minimal system notice after a rollback; on
 by default, turn it off for kiosks and headless deployments),
@@ -235,14 +236,16 @@ same `platforms[].signature`. Known boundaries:
 
 - Linux `.deb` / `.rpm` are refused (`full_install_failed`) — let the package
   manager update them; AppImage is fully supported.
-- A failed Windows NSIS/MSI install cannot be rolled back by us; the installer
+- A failed Windows NSIS/MSI/Inno install cannot be rolled back by us; the installer
   owns that. We surface `full_install_failed` and the log path.
 - Windows installer arguments follow Tauri's own conventions (`/P /UPDATE /R`
   for NSIS, `/passive /promptrestart AUTOLAUNCHAPP=True` for MSI), so updates
-  are not mistaken for first-time installs. `install_mode` switches to
-  `basicUi` (no `/P`) or `quiet` (`/S` / `/qn`); the default stays `passive`.
-  `quiet` cannot elevate by itself, so it only works for per-user installs or
-  when the process is already elevated.
+  are not mistaken for first-time installs. Inno Setup must be declared
+  (`installer_kind: "inno"`) and receives `/SILENT /NORESTART /SP-` (passive) or
+  `/VERYSILENT /NORESTART /SP-` (quiet); `/UPDATE` and `/R` are `.iss`-side
+  semantics, not Inno flags. `install_mode` switches to `basicUi` (no UI flag)
+  or `quiet`; the default stays `passive`. `quiet` cannot elevate by itself, so
+  it only works for per-user installs or when the process is already elevated.
 - `endpoints` may use the official updater's `{{target}}` (windows / darwin /
   linux), `{{arch}}`, `{{current_version}}` and `{{bundle_type}}` placeholders.
   The first three expand automatically; `{{bundle_type}}` requires an extra
@@ -379,7 +382,7 @@ Platform support:
 - **High compression ratio** — powered by `qbsdiff`. A 1 MB change inside a 20 MB binary produced a 210-byte patch in our benchmark. Actual ratios depend on how similar the two binaries are; see [Patch size expectations](#patch-size-expectations).
 - **Security first** — dual SHA-256 verification: the downloaded patch *and* the merged result are both hash-checked. The staged artifact's hash is handed to the replacement script, which verifies it again before and after the copy (closing the verification→swap TOCTOU window).
 - **Authenticode guard (Windows)** — if the running build is signed and the patched artifact is not, the update is blocked with `DeltaError::AuthenticodeUnsigned`. A hash-correct but unsigned binary would be refused by AppLocker/WDAC and "update" would brick the app. Unsigned builds (dev/portable) are unaffected.
-- **Built-in full-installer path** — `download_full()` downloads `platforms[].url`, verifies `platforms[].signature` with mmap (no 200 MB read into RAM), and `install_full()` runs it: NSIS/MSI with elevation on Windows, `.app.tar.gz` unpack + directory swap on macOS, AppImage replacement on Linux. The official updater is no longer required for the fallback path.
+- **Built-in full-installer path** — `download_full()` downloads `platforms[].url`, verifies `platforms[].signature` with mmap (no 200 MB read into RAM), and `install_full()` runs it: NSIS / MSI / Inno Setup with elevation on Windows, `.app.tar.gz` unpack + directory swap on macOS, AppImage replacement on Linux. The official updater is no longer required for the fallback path.
 - **Signed manifests** — Ed25519 (minisign) signatures on `latest.json` prevent man-in-the-middle tampering. Signature failures are reported as a distinct error so tampering can be told apart from a corrupted download.
 - **Downgrade protection, three layers, on by default** — (1) the **manifest itself is signed**, so an attacker cannot repoint it at an old installer without breaking the signature; (2) after verification, `manifest.version` is compared against the running version with **semantic versioning**, and a non-newer manifest returns `UpdateOutcome::UpToDate` instead of handing the host an old installer URL; (3) the generator's version binding in the trusted comment catches publisher-side "signature from A on manifest B" mistakes. The first two layers block replay; the third is defense in depth. None of them depends on an optional switch.
 - **Typed fallback reasons** — `FallbackReason::NoMatchingPatch` / `EnvironmentUnsupported`, instead of a free-form string that forces UI code to match Chinese prose.
@@ -792,6 +795,61 @@ If you use `check()` before installing, `info.full_download()` returns
 `{ version, url, signature }` as a typed value. With the one-call `install()`
 path you only get `url` + `reason`; when you need the installer signature
 for the official updater, go through `check()` first.
+
+</details>
+
+<details>
+<summary>Inno Setup installers (.exe)</summary>
+
+Inno Setup and NSIS both produce `.exe`, so the installer type cannot be inferred
+from the suffix. If your app is packaged with Inno, declare it explicitly —
+otherwise the engine calls the installer with NSIS flags (`/P /UPDATE /R`), which
+Inno ignores: it opens the full wizard or fails, and the engine side sees no
+error.
+
+```rust
+use tauri_delta_updater::{InstallerKind, UpdateConfig};
+
+let config = UpdateConfig::new("https://cdn.example.com/latest.json", "PUBKEY")
+    .current_version("0.1.0")
+    .installer_kind(InstallerKind::Inno);
+```
+
+With the plugin, set it in `tauri.conf.json`:
+
+```json
+"plugins": { "delta-updater": { "installer_kind": "inno" } }
+```
+
+`install_mode` maps to Inno's native flags:
+
+| `InstallMode` | Inno flags |
+|---|---|
+| `Passive` (default) | `/SILENT /NORESTART /SP-` |
+| `Quiet` | `/VERYSILENT /NORESTART /SP-` |
+| `BasicUi` | *(empty — Inno's default UI)* |
+
+`/SP-` suppresses Inno's "This will install…" prompt; `/NORESTART` prevents a
+silent-mode system reboot. **`/UPDATE` and `/R` have no Inno equivalent**: whether
+this is an update and whether the app restarts afterwards are `.iss`
+responsibilities. A minimal `.iss` shape:
+
+```ini
+[Setup]
+AppId={{YOUR-GUID}}
+DisableStartupPrompt=yes
+CloseApplications=yes
+
+[Run]
+Filename: "{app}\MyApp.exe"; Flags: nowait postinstall
+```
+
+Do **not** add `skipifsilent` there: it skips the launch in exactly the
+`/SILENT` / `/VERYSILENT` updates this engine performs, leaving the user with a
+closed app after a silent update. Detecting a previous install, reading/removing
+the old NSIS uninstall entry, and migrating per-user data are also script-side.
+The engine only guarantees the installer is launched with the right flags; it
+does not replace your `.iss` logic.
 
 </details>
 

@@ -89,8 +89,9 @@
 这三个结构体未标记 `#[non_exhaustive]`，严格按 §1.2 属于破坏性变更；当时按
 PATCH 发布，理由是新增字段都带 serde 默认值、不改变现有构造路径。
 
-**下一 MINOR 版本会给这三个结构体补 `#[non_exhaustive]`**，届时字面量构造需要
-加 `..Default::default()`。在此之前，新增公开结构体字段不再按 PATCH 处理。
+未发布的工作树已给这三个结构体补上 `#[non_exhaustive]`（随下一次 MINOR 发布），
+此后新增公开字段不再破坏下游；代价是字面量构造需要改为 serde 反序列化或 builder。
+在此之前，新增公开结构体字段不再按 PATCH 处理。
 
 ---
 
@@ -125,6 +126,6 @@ PATCH 发布，理由是新增字段都带 serde 默认值、不改变现有构�
 | 并行目录 / 原子切换 | 可能破坏性（`Staged` 生命周期重设计） | Windows 独占锁、跨卷、杀软边界验证 |
 | macOS tar-level 增量路径 | 非破坏性（新增可选后端） | 真实签名/公证应用验证 |
 | 收紧安全默认值（`allow_legacy_signatures` / `allow_insecure_transport` 默认 `false`） | 破坏性（签名与传输行为变更） | 下一 MINOR，附迁移说明 |
-| 给 `UpdateConfig` / `UpdateManifest` / `PlatformInfo` 补 `#[non_exhaustive]` | 破坏性（字面量构造需补默认值） | 下一 MINOR；见 §1.4 |
+| 给 `UpdateConfig` / `UpdateManifest` / `PlatformInfo` 补 `#[non_exhaustive]` | 破坏性（字面量构造需改 serde / builder） | 已在未发布工作树完成，随下一 MINOR 发布；见 §1.4 |
 
 上表只有项目所有者明确启动时才进入排期；列出不等于默许实施。
