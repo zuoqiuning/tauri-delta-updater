@@ -2,7 +2,7 @@
 
 | 路径 | 用途 |
 |---|---|
-| [RELEASING.md](RELEASING.md) | 发布门禁、顺序、失败补救与 CI 边界 |
+| [RELEASING.md](RELEASING.md) | 三平台同步发布命令、门禁、失败补救与发布说明写作规范 |
 | [SOURCE_MAP.md](SOURCE_MAP.md) | 改什么 → 改哪个文件 → 哪个测试守护 |
 | [DEVICE_TESTS.md](DEVICE_TESTS.md) | 发布前 macOS / Windows / Linux 真机验证清单 |
 | [releases/](releases/) | 每个版本的发布说明归档 |

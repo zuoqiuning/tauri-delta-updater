@@ -9,6 +9,66 @@
 
 ---
 
+## 0. 三平台同步发布（速查）
+
+> 这里指**引擎自身**的发版：crates.io（核心 + 插件）、npm 前端包、GitHub Release。
+> 应用更新清单/补丁/CDN 的发布属于宿主仓库，不在本文件范围内。
+
+唯一推荐入口是 GitHub Actions 的 `release.yml`（`workflow_dispatch`），它按顺序
+发布 core → plugin → npm，任一步失败会停在可重试位置：
+
+```bash
+gh workflow run release.yml -f version=0.3.0 -f publish=true
+gh run watch --workflow release.yml
+```
+
+前置条件：版本四处一致、annotated tag 已推送、仓库已配置
+`CARGO_REGISTRY_TOKEN` / `NPM_TOKEN`、`release` environment 审批人已就绪。
+
+它发布的内容：
+
+1. `tauri-delta-updater@<version>`（crates.io）
+2. `tauri-plugin-delta-updater@<version>`（crates.io，等待核心索引可见）
+3. `tauri-plugin-delta-updater@<version>`（npm）
+4. GitHub Release **不由该 workflow 创建**，用发布说明单独创建（见下）
+
+本机手动等价命令（没有 Actions 权限时）：
+
+```bash
+git push origin main
+git push origin v<version>
+cargo publish --registry crates-io --locked
+# 等 crates.io 上核心版本可见，再发插件
+cargo publish --manifest-path plugin/Cargo.toml --registry crates-io --locked
+npm publish --access public --registry https://registry.npmjs.org
+gh release create v<version> \
+  --title "v<version> — <一句用户可感知的变化>" \
+  --notes-file docs/releases/v<version>.md --latest
+```
+
+命令规范：
+
+- **cargo 必须带 `--registry crates-io`**：本机常配置镜像/源替换，不带它可能只更新
+  镜像索引而不会上传 crates.io。
+- **npm 必须显式官方 registry**：本机 `NPM_CONFIG_REGISTRY` 可能指向镜像；
+  `npm publish --registry https://registry.npmjs.org` 才是正式发布。
+- **先核心后插件**：插件校验会从注册表解析核心版本，核心不可见时插件必然失败。
+- **npm 放最后**：crate 失败时不要让前端包指向一个不存在的 Rust 版本。
+- **tag 在发布前推送**：annotated tag，版本一旦发布不可覆盖；不要移动或删除 tag
+  后重发同一版本。
+- 只重发 npm 时，重跑 `publish-npm` job 或单独执行 `npm publish`，不要重复
+  `cargo publish`（版本已存在会被拒绝）。
+
+发布后验证：
+
+```bash
+curl -sf https://crates.io/api/v1/crates/tauri-delta-updater/<version>
+curl -sf https://crates.io/api/v1/crates/tauri-plugin-delta-updater/<version>
+npm view tauri-plugin-delta-updater@<version> version --registry https://registry.npmjs.org
+```
+
+---
+
 ## 1. 发布前置条件
 
 ### 1.1 版本号可用
@@ -160,6 +220,57 @@ gh release create v0.3.0 \
 - **真机验证记录**：按 [`docs/DEVICE_TESTS.md`](DEVICE_TESTS.md) 执行，结果写入发布说明；
   未执行的项必须标注，不能用 CI 绿替代；
 - “本版本不可覆盖，后续版本须经授权”的声明。
+
+### 2.2 发布说明写作规范（面向使用者）
+
+`CHANGELOG.md` 是维护者视角，可以写 API、实现细节与兼容性判定；
+`docs/releases/v<version>.md` 和 GitHub Release 是**使用者视角**，只写他们能感知的
+行为变化和必须执行的动作。
+
+规则：
+
+1. **标题**：版本号 + 一句用户可感知的变化。不要写“重构 / 优化发布端 / 测试通过”。
+2. **升级注意放最前**：破坏性变更、默认行为变化、必须改的配置。
+3. **新增/修复写“现象 → 新行为”**：能给配置示例就给示例，不写文件名、模块名、commit、
+   测试数量。
+4. **必要的 API 名称只出现在升级注意或配置示例里**，正文用产品语言。
+5. **结尾写验证边界**：哪些平台/场景未真机验证，不用 CI 绿替代。
+
+反例（维护者语言）：
+
+```text
+- 重构 release 模块，generate 与 cargo delta release 共用实现。
+- 231 项测试通过，clippy 全绿。
+- UpdateConfig 标记 #[non_exhaustive]。
+```
+
+正例（使用者语言）：
+
+```text
+- 发布工具收拢为一条命令：`cargo delta release ...`，不再需要手写校验和脚本。
+- 用结构体字面量构造 `UpdateConfig` 的代码需改用 builder；通过 builder/serde
+  配置的调用方不受影响。
+```
+
+模板：
+
+```markdown
+# v<version> — <一句用户可感知的变化>
+
+发布日期 / 对比基线
+
+## 升级注意
+- <破坏性变更 / 必须执行的迁移 / 默认行为变化>
+
+## 新增
+- <用户能做什么、行为如何变化；必要时给配置示例>
+
+## 修复
+- <现象 → 修复后的行为>
+
+## 验证边界
+- <未真机验证的平台或场景>
+```
 
 ---
 
