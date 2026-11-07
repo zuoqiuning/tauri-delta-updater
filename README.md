@@ -405,10 +405,11 @@ worth knowing before an audit:
   new version. That is inside the "the machine is already compromised" threat
   model; it is not a security boundary for the updater.
 - **Legacy minisign signatures are accepted.** `verify_manifest_signature`
-  accepts the legacy format (`allow_legacy = true`) for compatibility with
-  minisign 0.7. After the release pipeline moves to the pre-hash format, tighten
-  this; keep it on the release checklist rather than leaving it only in a
-  source comment.
+  accepts the legacy format (`allow_legacy = true`). Our generator is pinned to
+  minisign 0.7.9, which emits pre-hash signatures (asserted by a unit test), so
+  in practice the compatibility window only matters for third-party pipelines.
+  Removing `allow_legacy` changes signature-validation behavior and is therefore
+  a MINOR release per `VERSIONING.md`.
 - **The Windows Authenticode check is offline** (`WTD_CACHE_ONLY_URL_RETRIEVAL`).
   A trusted original whose artifact is unsigned is blocked; when the cache has
   no chain for an otherwise valid artifact, the check is skipped rather than
