@@ -144,7 +144,9 @@ private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
 (`transport` / `any`), `install_mode` (`passive` / `basicUi` / `quiet`),
 `allow_insecure_transport`, `bundle_type`, `install_id`,
 `install_on_next_launch` (install the staged update on the next start; off by
-default), `additional_pubkeys` (extra trusted keys during rotation),
+default), `rollback_notice` (show a minimal system notice after a rollback; on
+by default, turn it off for kiosks and headless deployments),
+`additional_pubkeys` (extra trusted keys during rotation),
 `trust_policy` (`any` default / `all` requires every trusted key to sign), and
 `channel` (default `stable`; endpoints may use `{{channel}}` next to
 `{{target}}` / `{{arch}}` / `{{current_version}}`).
@@ -400,7 +402,7 @@ Platform support:
 - **Platform-scoped patches** — patches are grouped per platform key, so an x64 client never picks up an arm64 patch.
 - **Staged rollout APIs** — `check()` to query without downloading, `prepare()` to download and merge without launching the swap, and `Staged::launch()` to trigger the swap when you're ready.
 - **Cross-restart staged install** — if the user quits after `prepare()` but before `launch()`, the staged artifact is persisted in `tdx_pending.json`. On the next start, `pending_update()` / `install_pending()` re-verify it (strictly newer version, script and artifact inside the work directory, SHA-256 of the merged exe) and run the swap without touching the network. The plugin exposes `pending` / `install_pending`, and `install_on_next_launch` runs it automatically at startup (off by default).
-- **Auto-rollback with a real restart** — if the new version fails to write its startup flag within the timeout, the script stops the new process, restores the backup, **and relaunches the old version**. The same recovery runs when elevation is declined or a copy fails.
+- **Auto-rollback with a real restart** — if the new version fails to write its startup flag within the timeout, the script stops the new process, restores the backup, **and relaunches the old version**. The same recovery runs when elevation is declined or a copy fails. The user gets a minimal system notice after the rollback (Windows message box, macOS/Linux desktop notification; disable with `rollback_notice: false`) instead of silently reverting.
 - **Crash-safe replacement** — if a previous run was interrupted between "rename exe → `.bak`" and the swap, the next script run restores the backup first; a leftover `.bak` next to an intact target is never restored.
 - **Safe mode with automatic recovery** — after 3 consecutive *deterministic* failures (bad signature, hash mismatch, disk full...), delta updates pause. Transient network errors don't count. After a 6-hour cooldown a single new attempt is allowed automatically; hosts can also call `reset_safety()`.
 - **Concurrency protection** — a cross-process file lock prevents parallel updaters from corrupting state. Lock contention surfaces as `DeltaError::UpdateInProgress`, not a generic worker error.
@@ -965,6 +967,21 @@ explicit baseline binary. Every flag documented below is also available under
 `cargo delta release` with the same meaning. The standalone `generate` binary
 and the library API (`tauri_delta_updater::release::run_release`) remain
 available for custom pipelines.
+
+**Verify the published bucket before announcing.** `doctor` fetches the live
+manifest, verifies its signature and `tdu:v=` version binding, checks that every
+installer URL resolves with the declared size, downloads every patch to verify
+its SHA-256, and proves each patch can reach the current version within the
+chain hop limit. `--deep` also downloads each installer and verifies its
+minisign signature; `--header Name=Value` supports private CDNs. Any error makes
+the command exit non-zero, so it works as a CI gate:
+
+```bash
+cargo delta doctor https://your-cos-endpoint.com/latest.json \
+  --pubkey "$EMBEDDED_PUBKEY" \
+  --bundle-url https://your-cos-endpoint.com/latest.bundle.json \
+  --deep --json dist/doctor.json
+```
 
 Build the CLI generator (the `generator` feature is required):
 

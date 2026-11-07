@@ -24,7 +24,7 @@
 | 安全模式与失败计数 | `src/core/safety.rs` | `src/updater/flow.rs` | `src/core/safety.rs` 单测、`tests/integration.rs` |
 | 环境诊断与启动 doctor | `src/updater/diagnosis.rs`（`warnings`） | `src/platform/target.rs`、`plugin/src/lib.rs` | `src/updater/mod.rs` 单测 |
 | 本地验证闭环（无网络） | `src/updater/simulate.rs` | `src/core/diff.rs` | 文档示例（`cargo test --doc`） |
-| 发布端（清单 / 补丁 / 报告） | `src/release/` | `src/bin/generate/`、`src/bin/cargo_delta/` | `tests/generate_cli.rs`、`tests/cargo_delta_cli.rs` |
+| 发布端（清单 / 补丁 / 报告 / 体检） | `src/release/`、`src/bin/cargo_delta/doctor.rs` | `src/bin/generate/`、`src/bin/cargo_delta/` | `tests/generate_cli.rs`、`tests/cargo_delta_cli.rs` |
 | 接入脚手架（init/migrate） | `src/bin/cargo_delta/` | `serde_json`、`similar`（仅 generator feature） | `tests/cargo_delta_cli.rs` |
 | Tauri 插件与命令 | `plugin/src/lib.rs` | `plugin/permissions/` | 插件 crate 内单测 |
 | 对外 API 契约 | `src/lib.rs` | `tests/public_api.rs` | `cargo test --test public_api` |
