@@ -41,8 +41,13 @@
   `delta-updater://diagnosis` 事件；重新发布 `delta-updater://unavailable`
   事件说明不可用原因。
 - `DeltaUpdater::prepare_with_events`：可观察、可取消的 prepare 路径。
+- 前端类型包：`plugin/guest-js` + `plugin/dist-js`（npm 名 `tauri-plugin-delta-updater`），
+  提供 `check` / `install` / `prepare` / `launch` / `diagnose` 等函数与完整事件/结果类型；
+  未配置 `NPM_TOKEN` 时发布流程自动跳过 npm。
+- 核心 crate 与插件合并为一个 Cargo workspace：版本只在 `[workspace.package]` 声明一次，
+  依赖图与 lockfile 统一，`cargo test` 等命令不再需要两套 manifest。
 - CI：cargo 缓存、`--no-fail-fast`、独立依赖审计（每周 `cargo audit`）、
-  核心/插件版本一致性检查；发布流程同时发布插件 crate。
+  核心/插件/前端包版本一致性检查；发布流程同时发布核心、插件与 npm 包。
 - `SECURITY.md` 与 `CONTRIBUTING.md`。
 
 ### 变更
