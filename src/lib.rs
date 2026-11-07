@@ -178,16 +178,9 @@
 //! ```
 //! use tauri_delta_updater::UpdateManifest;
 //!
-//! let manifest = UpdateManifest {
-//!     version: "0.1.2".to_string(),
-//!     notes: String::new(),
-//!     pub_date: String::new(),
-//!     min_version: None,
-//!     platforms: Default::default(),
-//!     patches: Default::default(),
-//!     notes_i18n: Default::default(),
-//!     extra: Default::default(),
-//! };
+//! // `UpdateManifest` 是 `#[non_exhaustive]`：清单按真实发布格式解析，
+//! // 不要用结构体字面量构造（新增字段会破坏下游编译）。
+//! let manifest: UpdateManifest = serde_json::from_str(r#"{"version":"0.1.2"}"#).unwrap();
 //!
 //! // 无匹配补丁时返回 None，调用方应回退到全量下载
 //! assert!(manifest.find_patch("0.1.0", "windows-x86_64").is_none());
@@ -284,7 +277,7 @@ pub use core::verify::{
     verify_manifest_signature, verify_manifest_signature_file, verify_manifest_signature_multi,
     verify_manifest_signature_with, TrustPolicy,
 };
-pub use platform::full_install::InstallMode;
+pub use platform::full_install::{InstallMode, InstallerKind};
 pub use platform::os_version::current_os_version;
 pub use platform::target::{
     current_platform, detect_arch, incremental_fallback_reason, normalize_version,

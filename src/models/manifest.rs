@@ -10,6 +10,7 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 3;
 
 /// 完全兼容 Tauri 官方 Updater 插件的 latest.json 格式
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct UpdateManifest {
     /// 目标版本号。
     ///
@@ -155,6 +156,7 @@ where
 
 /// 单个平台的完整安装包信息（兼容 Tauri 官方格式）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PlatformInfo {
     /// 安装包的 minisign 签名（base64）。
     ///

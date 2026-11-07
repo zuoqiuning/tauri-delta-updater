@@ -15,7 +15,9 @@ use crate::platform::ScriptTimings;
 use std::path::Path;
 
 /// 全量安装包的类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum InstallerKind {
     /// Windows NSIS 安装器（`.exe`，静默参数 `/S`）。
     Nsis,
@@ -25,6 +27,13 @@ pub enum InstallerKind {
     MacAppTarGz,
     /// Linux AppImage。
     AppImage,
+    /// Inno Setup 打包的 Windows 安装器（`.exe`）。
+    ///
+    /// Inno 与 NSIS 的产物后缀相同，**无法从文件名区分**：用 Inno Setup
+    /// 打包的宿主必须通过 [`crate::UpdateConfig::installer_kind`] 显式声明，
+    /// 否则会被按 NSIS 参数调用（Inno 不识别 `/P /UPDATE /R`，会弹出完整 UI
+    /// 或直接失败）。
+    Inno,
     /// 无法识别的类型（不会被执行）。
     Other,
 }
@@ -93,12 +102,29 @@ pub fn install_with_mode(
     timings: ScriptTimings,
     mode: InstallMode,
 ) -> Result<()> {
-    match installer_kind(installer) {
-        InstallerKind::Nsis | InstallerKind::Msi => {
+    install_with_mode_and_kind(current_exe, installer, work_dir, timings, mode, None)
+}
+
+/// 与 [`install_with_mode`] 相同，但可显式声明安装器类型。
+///
+/// `kind` 为 `None` 时按文件后缀推断；`.exe` 会推断成 NSIS。
+/// Inno Setup 的产物同样是 `.exe`，必须传
+/// `Some(InstallerKind::Inno)`，否则引擎会按 NSIS 参数调用。
+pub fn install_with_mode_and_kind(
+    current_exe: &Path,
+    installer: &Path,
+    work_dir: &Path,
+    timings: ScriptTimings,
+    mode: InstallMode,
+    kind: Option<InstallerKind>,
+) -> Result<()> {
+    let kind = resolve_kind(installer, kind)?;
+    match kind {
+        InstallerKind::Nsis | InstallerKind::Msi | InstallerKind::Inno => {
             #[cfg(target_os = "windows")]
             {
                 let _ = (current_exe, work_dir, timings);
-                windows::launch(installer, mode)
+                windows::launch_with_kind(installer, mode, kind)
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -144,9 +170,34 @@ pub fn install_with_mode(
     }
 }
 
+/// 解析最终使用的安装器类型，并校验配置项与文件后缀的一致性。
+///
+/// 只拦明显矛盾（`.msi` 配 Inno、`.tar.gz` 配 Nsis 等）；`.exe` 同时属于
+/// NSIS 与 Inno，无法做唯一性校验，这也是必须显式配置的原因。
+fn resolve_kind(installer: &Path, kind: Option<InstallerKind>) -> Result<InstallerKind> {
+    let inferred = installer_kind(installer);
+    let Some(kind) = kind else {
+        return Ok(inferred);
+    };
+    let compatible = match kind {
+        InstallerKind::Nsis | InstallerKind::Inno => inferred == InstallerKind::Nsis,
+        InstallerKind::Msi => inferred == InstallerKind::Msi,
+        InstallerKind::MacAppTarGz => inferred == InstallerKind::MacAppTarGz,
+        InstallerKind::AppImage => inferred == InstallerKind::AppImage,
+        InstallerKind::Other => false,
+    };
+    if !compatible {
+        return Err(crate::error::DeltaError::Config(format!(
+            "installer_kind 配置为 {kind:?}，但安装包后缀推断为 {inferred:?}：{}",
+            installer.display()
+        )));
+    }
+    Ok(kind)
+}
+
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::{installer_kind, InstallMode, InstallerKind};
+    use super::{InstallMode, InstallerKind};
     use crate::error::{DeltaError, Result};
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -161,8 +212,12 @@ mod windows {
         buffer
     }
 
-    pub fn launch(installer: &Path, mode: InstallMode) -> Result<()> {
-        let kind = installer_kind(installer);
+    /// 用已知类型启动安装器（Inno 与 NSIS 同为 `.exe`，不能重新推断）。
+    pub fn launch_with_kind(
+        installer: &Path,
+        mode: InstallMode,
+        kind: InstallerKind,
+    ) -> Result<()> {
         let (file, params): (PathBuf, String) = match kind {
             // 与官方 updater 一致：默认被动模式 + `/UPDATE` 告诉 Tauri 的
             // NSIS 安装器这是更新而不是首次安装；`/R` 让安装完成后重新启动应用。
@@ -172,6 +227,8 @@ mod windows {
                 PathBuf::from("msiexec.exe"),
                 format!("/i \"{}\" {}", installer.display(), msi_parameters(mode)),
             ),
+            // Inno 的 `/UPDATE` / `/R` 语义由 `.iss` 脚本承担，没有对应命令行参数。
+            InstallerKind::Inno => (installer.to_path_buf(), inno_parameters(mode)),
             other => {
                 return Err(DeltaError::FullInstallFailed(format!(
                     "不支持的全量安装包类型（{other:?}）：{}",
@@ -228,6 +285,27 @@ mod windows {
             InstallMode::Quiet => "/qn",
         };
         format!("{ui} /promptrestart AUTOLAUNCHAPP=True")
+    }
+
+    /// Inno Setup 参数：交互模式 + 不弹起始确认框 + 不自动重启系统。
+    ///
+    /// - `Passive` → `/SILENT`：显示进度窗口，不进入安装向导；
+    /// - `Quiet` → `/VERYSILENT`：完全无界面；
+    /// - `BasicUi` → 空字符串：走 Inno 默认 UI。
+    ///
+    /// `/SP-` 关闭 Inno 默认的 "This will install…" 起始确认框；
+    /// `/NORESTART` 阻止安装器在静默模式下自行重启系统。
+    ///
+    /// **`/UPDATE` 与 `/R` 没有 Inno 等价参数**：是否为更新、装完是否启动应用，
+    /// 必须由 `.iss` 脚本实现（读旧 ARP 记录、`[Run]` 段去掉
+    /// `skipifsilent` 等）。引擎只负责把上面这些参数传对。
+    pub(super) fn inno_parameters(mode: InstallMode) -> String {
+        match mode {
+            InstallMode::Passive => "/SILENT /NORESTART /SP-",
+            InstallMode::BasicUi => "",
+            InstallMode::Quiet => "/VERYSILENT /NORESTART /SP-",
+        }
+        .to_string()
     }
 }
 
@@ -336,7 +414,7 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
-    use super::{install, installer_kind, InstallerKind};
+    use super::{install, installer_kind, resolve_kind, InstallerKind};
     use crate::error::DeltaError;
     use crate::platform::ScriptTimings;
     use std::path::Path;
@@ -406,6 +484,77 @@ mod tests {
         assert!(
             super::windows::msi_parameters(InstallMode::Quiet).contains("/qn"),
             "quiet 必须映射到 /qn"
+        );
+    }
+
+    /// Inno 静默参数必须覆盖三种交互模式，并带上防重启/防确认框标记。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn inno_parameters_match_install_mode() {
+        use super::InstallMode;
+
+        let passive = super::windows::inno_parameters(InstallMode::Passive);
+        assert!(
+            passive.contains("/SILENT"),
+            "passive 必须用 /SILENT: {passive}"
+        );
+        assert!(
+            passive.contains("/NORESTART"),
+            "静默模式必须阻止自动重启系统: {passive}"
+        );
+        assert!(passive.contains("/SP-"), "必须关闭起始确认框: {passive}");
+        assert!(
+            !passive.contains("/VERYSILENT"),
+            "/SILENT 不能同时出现 /VERYSILENT: {passive}"
+        );
+
+        let quiet = super::windows::inno_parameters(InstallMode::Quiet);
+        assert!(quiet.contains("/VERYSILENT"), "quiet 必须完全静默: {quiet}");
+        assert!(
+            quiet.contains("/NORESTART") && quiet.contains("/SP-"),
+            "{quiet}"
+        );
+
+        assert!(
+            super::windows::inno_parameters(InstallMode::BasicUi).is_empty(),
+            "basicUi 走 Inno 默认 UI，不应附加参数"
+        );
+    }
+
+    /// `.exe` 同时属于 NSIS 与 Inno：显式配置决定实际参数。
+    #[test]
+    fn explicit_inno_kind_overrides_exe_inference() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("setup.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+
+        assert_eq!(installer_kind(&exe), InstallerKind::Nsis);
+        assert_eq!(
+            resolve_kind(&exe, Some(InstallerKind::Inno)).unwrap(),
+            InstallerKind::Inno
+        );
+        assert_eq!(
+            resolve_kind(&exe, Some(InstallerKind::Nsis)).unwrap(),
+            InstallerKind::Nsis
+        );
+        assert_eq!(resolve_kind(&exe, None).unwrap(), InstallerKind::Nsis);
+    }
+
+    /// 配置项与后缀明显矛盾时必须早失败，而不是把错误安装器丢给 ShellExecute。
+    #[test]
+    fn explicit_kind_rejects_mismatched_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let msi = dir.path().join("setup.msi");
+        std::fs::write(&msi, b"MSI").unwrap();
+
+        let err = resolve_kind(&msi, Some(InstallerKind::Inno)).unwrap_err();
+        assert!(
+            matches!(err, DeltaError::Config(_)),
+            "配置错误必须返回 Config，实际: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("installer_kind"),
+            "错误必须点名字段: {err}"
         );
     }
 

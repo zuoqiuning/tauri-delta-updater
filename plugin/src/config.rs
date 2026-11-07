@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::{AppHandle, Runtime};
-use tauri_delta_updater::{FallbackPolicy, InstallMode, TrustPolicy, UpdateConfig};
+use tauri_delta_updater::{FallbackPolicy, InstallMode, InstallerKind, TrustPolicy, UpdateConfig};
 
 /// `tauri.conf.json` 里 `plugins.delta-updater` 的配置。
 ///
@@ -63,6 +63,10 @@ pub(crate) struct FileConfig {
     /// 可选：Windows 安装器模式（`passive` / `basicUi` / `quiet`）。
     #[serde(default)]
     pub(crate) install_mode: Option<String>,
+    /// 可选：全量安装器类型。用 Inno Setup 打包时必须设为 `inno`；
+    /// `nsis` / `msi` 可省略（按文件后缀推断）。
+    #[serde(default)]
+    pub(crate) installer_kind: Option<String>,
     /// 可选：是否允许明文 HTTP 端点，默认 `true`（仅兼容，建议 `false`）。
     #[serde(default)]
     pub(crate) allow_insecure_transport: Option<bool>,
@@ -157,6 +161,19 @@ impl FileConfig {
                 }
             };
             config = config.install_mode(mode);
+        }
+        if let Some(kind) = self.installer_kind {
+            let kind = match kind.trim().to_ascii_lowercase().as_str() {
+                "inno" => InstallerKind::Inno,
+                "nsis" => InstallerKind::Nsis,
+                "msi" => InstallerKind::Msi,
+                other => {
+                    return Err(format!(
+                        "plugins.delta-updater.installer_kind 非法: {other}（inno / nsis / msi）"
+                    ))
+                }
+            };
+            config = config.installer_kind(kind);
         }
         if let Some(allow) = self.allow_insecure_transport {
             config = config.allow_insecure_transport(allow);

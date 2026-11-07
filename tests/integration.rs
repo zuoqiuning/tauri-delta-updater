@@ -10,6 +10,11 @@ use tauri_delta_updater::{
 use tempfile::tempdir;
 use tokio::fs;
 
+/// `UpdateManifest` 是 `#[non_exhaustive]`：外部只能按真实发布格式反序列化。
+fn manifest_with_version(version: &str) -> UpdateManifest {
+    serde_json::from_value(serde_json::json!({ "version": version })).unwrap()
+}
+
 // ==================== 补丁生成与应用 ====================
 
 #[tokio::test]
@@ -156,16 +161,7 @@ async fn test_large_file_performance() {
 
 #[test]
 fn test_find_patch_is_platform_scoped() {
-    let mut manifest = UpdateManifest {
-        version: "0.2.0".to_string(),
-        notes: String::new(),
-        pub_date: String::new(),
-        min_version: None,
-        platforms: Default::default(),
-        patches: Default::default(),
-        notes_i18n: Default::default(),
-        extra: Default::default(),
-    };
+    let mut manifest = manifest_with_version("0.2.0");
 
     let patch = |from: &str, url: &str| tauri_delta_updater::PatchInfo {
         from_version: from.to_string(),
@@ -210,16 +206,7 @@ fn test_find_patch_is_platform_scoped() {
 fn test_find_patch_ignores_stale_target_version() {
     // 关键回归：清单里可能残留上一轮发布的补丁（指向旧的 to_version）。
     // 直接使用会把应用更新到错误版本，必须拒绝。
-    let mut manifest = UpdateManifest {
-        version: "0.2.0".to_string(),
-        notes: String::new(),
-        pub_date: String::new(),
-        min_version: None,
-        platforms: Default::default(),
-        patches: Default::default(),
-        notes_i18n: Default::default(),
-        extra: Default::default(),
-    };
+    let mut manifest = manifest_with_version("0.2.0");
 
     manifest.patches.insert(
         "windows-x86_64".to_string(),

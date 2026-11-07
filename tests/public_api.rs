@@ -17,11 +17,11 @@ use tauri_delta_updater::{
     verify_manifest_signature_file, verify_manifest_signature_multi,
     verify_manifest_signature_with, BundleFile, BundleManifest, BundlePatch, CancelToken,
     CheckOutcome, DeltaError, DeltaUpdater, Diagnosis, FallbackPolicy, FallbackReason,
-    FullDownload, FullDownloadOutcome, InstallMode, PatchInfo, PatchScope, PendingArtifact,
-    PendingUpdate, PlatformInfo, PlatformUpdater, Result, Rollout, ScriptEvent, ScriptTimings,
-    SimulationReport, Staged, StagedBundle, StagedFullInstaller, StagedRepair, StartupState,
-    TrustPolicy, UpdateCheck, UpdateConfig, UpdateEvent, UpdateLock, UpdateManifest, UpdateOutcome,
-    UpdateResult, UpdateSession, VerifiedArtifact, MAX_DELTA_CHAIN_HOPS,
+    FullDownload, FullDownloadOutcome, InstallMode, InstallerKind, PatchInfo, PatchScope,
+    PendingArtifact, PendingUpdate, PlatformInfo, PlatformUpdater, Result, Rollout, ScriptEvent,
+    ScriptTimings, SimulationReport, Staged, StagedBundle, StagedFullInstaller, StagedRepair,
+    StartupState, TrustPolicy, UpdateCheck, UpdateConfig, UpdateEvent, UpdateLock, UpdateManifest,
+    UpdateOutcome, UpdateResult, UpdateSession, VerifiedArtifact, MAX_DELTA_CHAIN_HOPS,
     MAX_INCREMENTAL_FILE_BYTES,
 };
 

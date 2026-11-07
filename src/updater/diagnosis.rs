@@ -1,5 +1,6 @@
 //! 环境诊断：只读快照，不发起网络请求。
 
+use crate::platform::full_install::InstallerKind;
 use crate::platform::PlatformUpdater;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -103,6 +104,11 @@ pub struct Diagnosis {
     /// 明文不影响完整性（清单/补丁仍验签），但会暴露版本号等元数据，
     /// 并让中间人可以看到更新活动的节奏。生产环境应改用 HTTPS。
     pub insecure_transport: bool,
+    /// 配置显式声明的全量安装器类型；`None` 表示按文件后缀推断。
+    ///
+    /// 用 Inno Setup 打包的宿主必须显式配置，否则排障时无法从诊断页看出
+    /// "为什么 `.exe` 被当成 NSIS 调用"。
+    pub installer_kind: Option<InstallerKind>,
 }
 
 impl Diagnosis {
@@ -279,6 +285,7 @@ impl DeltaUpdater {
             script_events,
             privilege_tools_available: privilege_tools_available(),
             insecure_transport: self.config.uses_insecure_transport(),
+            installer_kind: self.config.installer_kind,
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::core::verify::TrustPolicy;
 use crate::error::DeltaError;
-use crate::platform::full_install::InstallMode;
+use crate::platform::full_install::{InstallMode, InstallerKind};
 use crate::platform::target::current_platform;
 use std::path::{Path, PathBuf};
 
@@ -54,6 +54,7 @@ impl FallbackPolicy {
 /// 除 `manifest_url` 与 `public_key` 外都有合理默认值，
 /// 通常只需要设置这两项。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct UpdateConfig {
     /// `latest.json` 的下载地址。
     ///
@@ -154,6 +155,15 @@ pub struct UpdateConfig {
     ///
     /// 其它平台忽略该字段。
     pub install_mode: InstallMode,
+    /// 全量安装器类型。默认 `None`：按 `platforms[].url` 的后缀推断
+    /// （`.exe` → NSIS、`.msi` → MSI、`.app.tar.gz` → macOS 包、
+    /// `.AppImage` → AppImage）。
+    ///
+    /// **用 Inno Setup 打包的宿主必须显式设为
+    /// [`InstallerKind::Inno`]**：Inno 与 NSIS 的产物都是 `.exe`，
+    /// 后缀无法区分；误判为 NSIS 会传入 `/P /UPDATE /R`，Inno 不识别这些
+    /// 参数，表现为弹完整 UI 或直接失败，且引擎侧没有任何错误。
+    pub installer_kind: Option<InstallerKind>,
     /// 是否允许明文 HTTP 端点，默认 `true`（保持兼容）。
     ///
     /// `false` 时，非回环地址的 `http://` 会在构造阶段被拒绝；
@@ -202,6 +212,7 @@ impl UpdateConfig {
             fallback_policy: FallbackPolicy::default(),
             headers: Vec::new(),
             install_mode: InstallMode::default(),
+            installer_kind: None,
             allow_insecure_transport: true,
             install_on_next_launch: false,
             rollback_notice: true,
@@ -317,6 +328,16 @@ impl UpdateConfig {
     /// 设置 Windows 全量安装器交互模式。
     pub fn install_mode(mut self, mode: InstallMode) -> Self {
         self.install_mode = mode;
+        self
+    }
+
+    /// 显式声明全量安装器类型。
+    ///
+    /// 用 Inno Setup 打包的宿主必须设为 [`InstallerKind::Inno`]；NSIS / MSI
+    /// 可省略（按文件后缀推断）。配置与后缀明显矛盾时（如 `.msi` 配 Inno），
+    /// 安装阶段会返回 [`crate::DeltaError::Config`]。
+    pub fn installer_kind(mut self, kind: InstallerKind) -> Self {
+        self.installer_kind = Some(kind);
         self
     }
 

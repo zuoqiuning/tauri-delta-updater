@@ -291,6 +291,7 @@ mod tests {
             "fallback_policy": "any",
             "headers": { "X-Auth": "token" },
             "install_mode": "quiet",
+            "installer_kind": "inno",
             "allow_insecure_transport": false,
             "install_on_next_launch": true,
             "rollback_notice": false,
@@ -326,6 +327,11 @@ mod tests {
             FallbackPolicy::OnAnyFailure
         ));
         assert_eq!(config.install_mode, InstallMode::Quiet);
+        assert_eq!(
+            config.installer_kind,
+            Some(tauri_delta_updater::InstallerKind::Inno),
+            "Inno 必须能从配置声明"
+        );
         assert!(!config.allow_insecure_transport);
         assert!(config.install_on_next_launch);
         assert!(!config.rollback_notice, "回滚提示必须能从配置关闭");
@@ -339,6 +345,7 @@ mod tests {
         for (key, value) in [
             ("fallback_policy", "sometimes"),
             ("install_mode", "silentish"),
+            ("installer_kind", "innosetup"),
             ("trust_policy", "majority"),
             ("channel", "be ta"),
             ("channel", "../evil"),
@@ -401,6 +408,7 @@ mod tests {
             fallback_policy: None,
             headers: None,
             install_mode: None,
+            installer_kind: None,
             allow_insecure_transport: None,
             install_on_next_launch: None,
             rollback_notice: None,

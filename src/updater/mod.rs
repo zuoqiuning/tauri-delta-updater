@@ -557,6 +557,7 @@ mod ui_result_tests {
             script_events: Vec::new(),
             privilege_tools_available: None,
             insecure_transport: false,
+            installer_kind: None,
         };
         assert!(base.can_use_delta());
         assert_eq!(base.user_message(), "环境正常。");
