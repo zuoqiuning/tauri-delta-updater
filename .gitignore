@@ -33,7 +33,5 @@
 /scripts/
 /docs/项目源码导出.md
 /项目源码导出.md
-# 内部草稿/评审稿不入库；VERSIONING.md 仅保留在本地，不作为公开文档
-/docs/发布.md
+# 内部草稿/评审稿不入库
 /docs/深度评审报告-*.md
-/VERSIONING.md

@@ -29,6 +29,10 @@
 //!
 //! `src-tauri/capabilities/default.json` 需要 `"delta-updater:default"`。
 //!
+//! 本 crate 只是两个分发物之一：前端类型包（`guest-js` / `dist-js`）走 npm，
+//! **不在 crate tarball 内**。只用 `invoke('plugin:delta-updater|...')` 时
+//! 不需要它；要 `import` 类型化绑定时再单独安装 npm 包。
+//!
 //! ## 前端契约
 //!
 //! ```ignore

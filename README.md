@@ -7,6 +7,8 @@
 
 A high-performance, secure, and fault-tolerant delta update engine for Tauri v2 applications.
 
+Version semantics: [VERSIONING.md](VERSIONING.md) · Release gates: [docs/发布.md](docs/发布.md)
+
 ### Is this for you?
 
 Seven questions, asked before the long docs:
@@ -97,6 +99,17 @@ tauri-plugin-delta-updater = { git = "https://github.com/zuoqiuning/tauri-delta-
 # Local checkout:   tauri-plugin-delta-updater = { path = "../plugin" }
 ```
 
+The plugin is distributed as **two packages**: this Rust crate (engine, commands,
+permissions) and a separate npm package with the typed frontend bindings. The
+crate tarball deliberately excludes `guest-js` / `dist-js`, so `cargo add` alone
+gives you `invoke('plugin:delta-updater|...')` — not typed imports. Add the npm
+package in your frontend when you want the bindings (not published yet; install
+from a checkout):
+
+```bash
+npm install /path/to/repo/plugin
+```
+
 `src-tauri/capabilities/default.json`:
 
 ```json
@@ -184,11 +197,9 @@ The plugin confirms startup before any window opens, streams stage events, and
 exits the process once the swap is ready. Errors arrive as
 `{ code, message, retryable, security }` — branch on `code`, never on `message`.
 
-Typed bindings (optional) live in `plugin/guest-js` and build to `plugin/dist-js`:
-`check`, `install`, `prepare`, `launch`, `downloadFull`, `installFull`,
-`pending`, `discardPending`, `installPending`, `diagnose`, `cancel`,
-`resetSafety`, plus `UpdateEvent` / `UpdateResult` / `ErrorDto` types. The npm package is **not published yet**; until it is, install
-it from a checkout (`npm install /path/to/repo/plugin`) or copy `dist-js`.
+The npm package exports `check`, `install`, `prepare`, `launch`, `downloadFull`,
+`installFull`, `pending`, `discardPending`, `installPending`, `diagnose`,
+`cancel`, `resetSafety`, plus `UpdateEvent` / `UpdateResult` / `ErrorDto` types.
 
 > [!WARNING]
 > **Single-instance apps: test the exit path once per platform.** The plugin
