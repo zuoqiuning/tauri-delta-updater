@@ -4,7 +4,7 @@ use crate::platform::PlatformUpdater;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::DeltaUpdater;
+use super::{config, DeltaUpdater};
 
 /// 替换脚本写入的结构化事件（`tdx_events.jsonl` 的一行）。
 ///
@@ -91,6 +91,11 @@ pub struct Diagnosis {
     /// 为 `false` 时，提权替换后可能无法把应用降权回原用户，
     /// 诊断页应提示这一环境限制。
     pub privilege_tools_available: Option<bool>,
+    /// 当前是否配置了明文 HTTP 端点（非回环地址）。
+    ///
+    /// 明文不影响完整性（清单/补丁仍验签），但会暴露版本号等元数据，
+    /// 并让中间人可以看到更新活动的节奏。生产环境应改用 HTTPS。
+    pub insecure_transport: bool,
 }
 
 impl Diagnosis {
@@ -150,6 +155,11 @@ impl Diagnosis {
         if self.fallback_reason.is_some() && !self.bundle_capable {
             warnings
                 .push("当前环境不支持单文件增量，且未配置整包清单：更新将回退为完整安装包下载。");
+        }
+        if self.insecure_transport {
+            warnings.push(
+                "清单端点使用明文 HTTP：完整性仍由签名保证，但版本信息会暴露在传输中，生产环境请改用 HTTPS。",
+            );
         }
         #[cfg(target_os = "linux")]
         if self.privilege_tools_available == Some(false) {
@@ -254,6 +264,9 @@ impl DeltaUpdater {
             events_path: self.work_dir.join(crate::core::artifacts::EVENTS_FILE),
             script_events: read_script_events(&self.work_dir),
             privilege_tools_available: privilege_tools_available(),
+            insecure_transport: std::iter::once(&self.config.manifest_url)
+                .chain(self.config.fallback_manifest_urls.iter())
+                .any(|url| config::endpoint_is_insecure(url)),
         }
     }
 }

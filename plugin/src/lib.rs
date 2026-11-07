@@ -249,17 +249,26 @@ mod tests {
         );
     }
 
-    /// 工作目录、超时与代理必须能从 `tauri.conf.json` 配置。
+    /// 工作目录、超时、代理与端点策略必须能从 `tauri.conf.json` 配置。
     #[test]
     fn file_config_exposes_runtime_controls() {
+        use tauri_delta_updater::{FallbackPolicy, InstallMode};
+
         let value = serde_json::json!({
-            "endpoints": ["https://cdn.example.com/latest.json"],
+            "endpoints": [
+                "https://cdn.example.com/latest.json",
+                "https://backup.example.com/latest.json"
+            ],
             "pubkey": "PK",
             "work_dir": "/tmp/tdx",
             "wait_timeout_secs": 20,
             "confirm_timeout_secs": 120,
             "proxy": "http://127.0.0.1:7890",
-            "allow_legacy_signatures": false
+            "allow_legacy_signatures": false,
+            "fallback_policy": "any",
+            "headers": { "X-Auth": "token" },
+            "install_mode": "quiet",
+            "allow_insecure_transport": false
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         let config = file.into_update_config("1.0.0").unwrap();
@@ -269,11 +278,40 @@ mod tests {
         );
         assert_eq!(config.wait_timeout_secs, 20);
         assert_eq!(config.confirm_timeout_secs, 120);
-        assert!(config.client.is_some(), "代理配置必须注入自定义客户端");
+        assert!(config.client.is_some(), "代理/请求头必须注入自定义客户端");
         assert!(
             !config.allow_legacy_signatures,
             "严格签名模式必须能从配置开启"
         );
+        assert_eq!(
+            config.fallback_manifest_urls,
+            vec!["https://backup.example.com/latest.json".to_string()],
+            "endpoints 数组的其余项必须作为备用端点"
+        );
+        assert!(matches!(
+            config.fallback_policy,
+            FallbackPolicy::OnAnyFailure
+        ));
+        assert_eq!(config.install_mode, InstallMode::Quiet);
+        assert!(!config.allow_insecure_transport);
+    }
+
+    /// 非法端点策略/安装模式必须在启动阶段报错，而不是静默忽略。
+    #[test]
+    fn invalid_runtime_controls_are_rejected() {
+        for (key, value) in [
+            ("fallback_policy", "sometimes"),
+            ("install_mode", "silentish"),
+        ] {
+            let mut raw = serde_json::json!({
+                "endpoints": ["https://cdn.example.com/latest.json"],
+                "pubkey": "PK"
+            });
+            raw[key] = value.into();
+            let file: FileConfig = serde_json::from_value(raw).unwrap();
+            let err = file.into_update_config("1.0.0").unwrap_err();
+            assert!(err.contains(key), "错误必须说明字段 {key}: {err}");
+        }
     }
 
     /// 非法代理必须在启动阶段报错，而不是等到第一次请求才失败。
@@ -317,6 +355,10 @@ mod tests {
             confirm_timeout_secs: None,
             proxy: None,
             allow_legacy_signatures: None,
+            fallback_policy: None,
+            headers: None,
+            install_mode: None,
+            allow_insecure_transport: None,
         };
         let err = file.into_update_config("1.0.0").unwrap_err();
         assert!(err.contains("endpoints"), "错误必须说明字段: {err}");

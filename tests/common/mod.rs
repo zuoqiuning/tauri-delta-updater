@@ -18,6 +18,8 @@ pub struct MockServer {
     requested: Arc<std::sync::Mutex<Vec<String>>>,
     /// 某个路径接下来还要返回多少次 502（用于重试验证）。
     failures: Arc<std::sync::Mutex<HashMap<String, usize>>>,
+    /// 全局要求的请求头（用于验证自定义 headers 真的发出去了）。
+    required_header: Arc<std::sync::Mutex<Option<(String, String)>>>,
 }
 
 impl MockServer {
@@ -27,9 +29,11 @@ impl MockServer {
         let served = Arc::new(std::sync::Mutex::new(files));
         let requested: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
         let failures: Arc<std::sync::Mutex<HashMap<String, usize>>> = Arc::default();
+        let required_header: Arc<std::sync::Mutex<Option<(String, String)>>> = Arc::default();
         let handler_state = Arc::clone(&served);
         let handler_requested = Arc::clone(&requested);
         let handler_failures = Arc::clone(&failures);
+        let handler_header = Arc::clone(&required_header);
 
         std::thread::spawn(move || {
             for stream in listener.incoming().take(32) {
@@ -39,6 +43,12 @@ impl MockServer {
                 let request = String::from_utf8_lossy(&buf);
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
                 handler_requested.lock().unwrap().push(path.clone());
+
+                // 请求头校验：缺头或值不符直接 403，便于验证 headers 配置。
+                let header_ok = match handler_header.lock().unwrap().clone() {
+                    Some((name, value)) => has_header(&request, &name, &value),
+                    None => true,
+                };
 
                 let fail = {
                     let mut failures = handler_failures.lock().unwrap();
@@ -52,7 +62,10 @@ impl MockServer {
                 };
 
                 let body = handler_state.lock().unwrap().get(&path).cloned();
-                let response = if fail {
+                let response = if !header_ok {
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_vec()
+                } else if fail {
                     b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                         .to_vec()
                 } else {
@@ -84,7 +97,13 @@ impl MockServer {
             served,
             requested,
             failures,
+            required_header,
         }
+    }
+
+    /// 要求所有请求携带指定头；缺头或值不符时返回 403。
+    pub fn require_header(&self, name: &str, value: &str) {
+        *self.required_header.lock().unwrap() = Some((name.to_string(), value.to_string()));
     }
 
     /// 让某个路径接下来的 `count` 次请求返回 502（验证重试与退避）。
@@ -263,14 +282,21 @@ pub async fn delta_fixture() -> (tempfile::TempDir, DeltaUpdater, MockServer, Ve
 
 /// 与 [`delta_fixture`] 相同，但配置了整包清单地址（用于验证整包不可用时的回退路径）。
 pub async fn delta_fixture_with_bundle() -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
-    delta_fixture_with_policy(None, None, true).await
+    delta_fixture_with_policy(None, None, true, Vec::new()).await
+}
+
+/// 与 [`delta_fixture`] 相同，但客户端带自定义请求头。
+pub async fn delta_fixture_with_headers(
+    headers: Vec<(String, String)>,
+) -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
+    delta_fixture_with_policy(None, None, false, headers).await
 }
 
 /// 与 [`delta_fixture`] 相同，但清单可带灰度比例。
 pub async fn delta_fixture_with_rollout(
     rollout: Option<u8>,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
-    delta_fixture_with_policy(rollout, None, false).await
+    delta_fixture_with_policy(rollout, None, false, Vec::new()).await
 }
 
 /// 灰度 + 最低版本门槛的夹具。
@@ -278,13 +304,14 @@ pub async fn delta_fixture_with_rollout_and_min(
     percentage: u8,
     min_version: &str,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
-    delta_fixture_with_policy(Some(percentage), Some(min_version), false).await
+    delta_fixture_with_policy(Some(percentage), Some(min_version), false, Vec::new()).await
 }
 
 async fn delta_fixture_with_policy(
     rollout: Option<u8>,
     min_version: Option<&str>,
     with_bundle: bool,
+    headers: Vec<(String, String)>,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer, Vec<u8>) {
     let dir = tempdir().unwrap();
     let work_dir = dir.path().to_path_buf();
@@ -340,7 +367,8 @@ async fn delta_fixture_with_policy(
         let config = UpdateConfig::new(server.url("/latest.json"), pk_b64)
             .current_version("0.1.0")
             .executable_path(&old_exe)
-            .work_dir(&work_dir);
+            .work_dir(&work_dir)
+            .headers(headers);
         if with_bundle {
             config.bundle_manifest_url(server.url("/latest.bundle.json"))
         } else {
@@ -358,4 +386,14 @@ pub fn write_file(root: &std::path::Path, relative: &str, content: &[u8]) {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, content).unwrap();
+}
+
+/// 请求文本里是否包含指定请求头（名字大小写不敏感，值精确匹配）。
+fn has_header(request: &str, name: &str, expected: &str) -> bool {
+    request.lines().any(|line| {
+        let Some((key, value)) = line.split_once(':') else {
+            return false;
+        };
+        key.trim().eq_ignore_ascii_case(name) && value.trim() == expected
+    })
 }

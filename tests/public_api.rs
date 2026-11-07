@@ -15,11 +15,11 @@ use tauri_delta_updater::{
     safe_mode_remaining, should_abort, simulate_update, verify_file_signature, verify_layout,
     verify_manifest_signature, verify_manifest_signature_file, verify_manifest_signature_with,
     BundleFile, BundleManifest, BundlePatch, CancelToken, CheckOutcome, DeltaError, DeltaUpdater,
-    Diagnosis, FallbackReason, FullDownload, FullDownloadOutcome, PatchInfo, PatchScope,
-    PlatformInfo, PlatformUpdater, Result, Rollout, ScriptEvent, ScriptTimings, SimulationReport,
-    Staged, StagedBundle, StagedFullInstaller, StagedRepair, StartupState, UpdateCheck,
-    UpdateConfig, UpdateEvent, UpdateLock, UpdateManifest, UpdateOutcome, UpdateResult,
-    UpdateSession, VerifiedArtifact, MAX_INCREMENTAL_FILE_BYTES,
+    Diagnosis, FallbackPolicy, FallbackReason, FullDownload, FullDownloadOutcome, InstallMode,
+    PatchInfo, PatchScope, PlatformInfo, PlatformUpdater, Result, Rollout, ScriptEvent,
+    ScriptTimings, SimulationReport, Staged, StagedBundle, StagedFullInstaller, StagedRepair,
+    StartupState, UpdateCheck, UpdateConfig, UpdateEvent, UpdateLock, UpdateManifest,
+    UpdateOutcome, UpdateResult, UpdateSession, VerifiedArtifact, MAX_INCREMENTAL_FILE_BYTES,
 };
 
 /// 模块级路径同样属于契约（文档与示例直接引用这些路径）。

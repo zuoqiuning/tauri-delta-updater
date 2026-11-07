@@ -46,6 +46,15 @@
   可设为 `false` 只接受 pre-hash 签名；新增 `verify_manifest_signature_with`。
 - `cargo delta`：`--registry` 明确提示“插件尚未发布”，`--check` 失败时给出
   修复命令，接入后的下一步包含退出姿势/单实例/残留文件的真机检查清单。
+- 多端点故障转移：`UpdateConfig::fallback_endpoints` / `FallbackPolicy`
+  （默认 `transport`：连接失败、超时、5xx、429 才切换，404 不切换；
+  验签失败永远终止）；插件 `endpoints` 数组的其余项正式作为备用端点。
+- HTTP 请求头：`UpdateConfig::headers` 与插件 `headers`，覆盖清单、签名、
+  补丁与全量安装包四条请求链路（仅限内置客户端）。
+- Windows `install_mode`：`passive`（默认）/ `basicUi` / `quiet`，
+  插件配置同名键；`quiet` 无法自行提权。
+- 明文 HTTP 诊断：`Diagnosis.insecure_transport` 告警 +
+  `allow_insecure_transport`（默认兼容，设 `false` 在构造期拒绝非回环 http）。
 - 前端类型包：`plugin/guest-js` + `plugin/dist-js`（npm 名 `tauri-plugin-delta-updater`），
   提供 `check` / `install` / `prepare` / `launch` / `diagnose` 等函数与完整事件/结果类型；
   未配置 `NPM_TOKEN` 时发布流程自动跳过 npm。
@@ -64,8 +73,10 @@
 ### 升级注意
 
 - `UpdateResult` 新增 `Ready` 变体（`#[non_exhaustive]`，外部 `match` 保留通配分支即可）。
-- `UpdateConfig` 新增公开字段 `allow_legacy_signatures`：用 builder 的调用方无需改动；
-  用结构体字面量构造的调用方需要补齐该字段。
+- `UpdateConfig` 新增公开字段 `allow_legacy_signatures` / `fallback_manifest_urls` /
+  `fallback_policy` / `headers` / `install_mode` / `allow_insecure_transport`：
+  用 builder 的调用方无需改动；用结构体字面量构造的调用方需要补齐这些字段。
+- `Diagnosis` 新增公开字段 `insecure_transport`：同样需要字面量调用方补齐。
 - 破坏性变更：无。清单格式、签名默认语义与替换脚本行为保持不变。
 
 ## [0.2.0] - 2026-11-07

@@ -272,6 +272,7 @@ pub use core::verify::{
     manifest_version_binding, verify_file_signature, verify_manifest_signature,
     verify_manifest_signature_file, verify_manifest_signature_with,
 };
+pub use platform::full_install::InstallMode;
 pub use platform::target::{
     current_platform, detect_arch, incremental_fallback_reason, normalize_version,
 };
@@ -279,7 +280,7 @@ pub use platform::PlatformUpdater;
 /// 替换脚本的等待时长（由 `UpdateConfig` 的 timeout 配置写入脚本）。
 pub use platform::ScriptTimings;
 pub use updater::{
-    simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackReason, FullDownload,
-    FullDownloadOutcome, ScriptEvent, SimulationReport, Staged, StagedBundle, StagedFullInstaller,
-    StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
+    simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy, FallbackReason,
+    FullDownload, FullDownloadOutcome, ScriptEvent, SimulationReport, Staged, StagedBundle,
+    StagedFullInstaller, StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
 };

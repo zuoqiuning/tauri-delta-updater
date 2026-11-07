@@ -29,6 +29,23 @@ pub enum InstallerKind {
     Other,
 }
 
+/// Windows 安装器的交互模式（对应 Tauri 官方 updater 的 `installMode`）。
+///
+/// 默认 `Passive`，与官方保持同一行为；其它模式只改变安装器 UI 与提权方式，
+/// 不改变“安装完成后重启应用”的语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum InstallMode {
+    /// 显示进度条但不要求交互（NSIS `/P`，MSI `/passive`）。官方默认。
+    #[default]
+    Passive,
+    /// 显示基础交互界面（NSIS 默认 UI，MSI `/qb`）。
+    BasicUi,
+    /// 完全静默（NSIS `/S`，MSI `/qn`）。安装器无法自行提权，
+    /// 仅适用于用户级安装或进程本身已是管理员。
+    Quiet,
+}
+
 /// 按文件名推断安装包类型。
 pub fn installer_kind(path: &Path) -> InstallerKind {
     let name = path
@@ -56,16 +73,33 @@ pub fn install(
     work_dir: &Path,
     timings: ScriptTimings,
 ) -> Result<()> {
+    install_with_mode(
+        current_exe,
+        installer,
+        work_dir,
+        timings,
+        InstallMode::default(),
+    )
+}
+
+/// 与 [`install`] 相同，但可指定 Windows 安装器交互模式。
+pub fn install_with_mode(
+    current_exe: &Path,
+    installer: &Path,
+    work_dir: &Path,
+    timings: ScriptTimings,
+    mode: InstallMode,
+) -> Result<()> {
     match installer_kind(installer) {
         InstallerKind::Nsis | InstallerKind::Msi => {
             #[cfg(target_os = "windows")]
             {
                 let _ = (current_exe, work_dir, timings);
-                windows::launch(installer)
+                windows::launch(installer, mode)
             }
             #[cfg(not(target_os = "windows"))]
             {
-                let _ = (current_exe, work_dir, timings);
+                let _ = (current_exe, work_dir, timings, mode);
                 Err(crate::error::DeltaError::FullInstallFailed(format!(
                     "{} 只能在 Windows 上执行",
                     installer.display()
@@ -75,11 +109,12 @@ pub fn install(
         InstallerKind::MacAppTarGz => {
             #[cfg(target_os = "macos")]
             {
+                let _ = mode;
                 macos::install_app(current_exe, installer, work_dir, timings)
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (current_exe, work_dir, timings);
+                let _ = (current_exe, work_dir, timings, mode);
                 Err(crate::error::DeltaError::FullInstallFailed(
                     "macOS .app.tar.gz 只能在 macOS 上执行".into(),
                 ))
@@ -88,11 +123,12 @@ pub fn install(
         InstallerKind::AppImage => {
             #[cfg(target_os = "linux")]
             {
+                let _ = mode;
                 linux::install_appimage(current_exe, installer, work_dir, timings)
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (current_exe, work_dir, timings);
+                let _ = (current_exe, work_dir, timings, mode);
                 Err(crate::error::DeltaError::FullInstallFailed(
                     "AppImage 安装包只能在 Linux 上执行".into(),
                 ))
@@ -107,7 +143,7 @@ pub fn install(
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::{installer_kind, InstallerKind};
+    use super::{installer_kind, InstallMode, InstallerKind};
     use crate::error::{DeltaError, Result};
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -122,16 +158,16 @@ mod windows {
         buffer
     }
 
-    pub fn launch(installer: &Path) -> Result<()> {
+    pub fn launch(installer: &Path, mode: InstallMode) -> Result<()> {
         let kind = installer_kind(installer);
         let (file, params): (PathBuf, String) = match kind {
-            // 与官方 updater 一致：被动模式（显示进度）+ `/UPDATE` 告诉 Tauri 的
+            // 与官方 updater 一致：默认被动模式 + `/UPDATE` 告诉 Tauri 的
             // NSIS 安装器这是更新而不是首次安装；`/R` 让安装完成后重新启动应用。
-            InstallerKind::Nsis => (installer.to_path_buf(), nsis_parameters()),
-            // MSI 用被动模式静默安装，`AUTOLAUNCHAPP` 让安装器重新启动应用。
+            InstallerKind::Nsis => (installer.to_path_buf(), nsis_parameters(mode)),
+            // MSI 用相同语义的安装模式，`AUTOLAUNCHAPP` 让安装器重新启动应用。
             InstallerKind::Msi => (
                 PathBuf::from("msiexec.exe"),
-                format!("/i \"{}\" {}", installer.display(), msi_parameters()),
+                format!("/i \"{}\" {}", installer.display(), msi_parameters(mode)),
             ),
             other => {
                 return Err(DeltaError::FullInstallFailed(format!(
@@ -169,16 +205,26 @@ mod windows {
         Ok(())
     }
 
-    /// NSIS 参数：被动模式 + 更新标记 + 安装后重启应用。
+    /// NSIS 参数：交互模式 + 更新标记 + 安装后重启应用。
     ///
     /// `/UPDATE` 是 Tauri NSIS 模板识别的更新标记；缺了它安装器会走首次安装流程。
-    pub(super) fn nsis_parameters() -> String {
-        "/P /UPDATE /R".to_string()
+    pub(super) fn nsis_parameters(mode: InstallMode) -> String {
+        let ui = match mode {
+            InstallMode::Passive => "/P ",
+            InstallMode::BasicUi => "",
+            InstallMode::Quiet => "/S ",
+        };
+        format!("{ui}/UPDATE /R")
     }
 
-    /// MSI 参数：被动模式 + 不自动重启系统 + 安装后启动应用。
-    pub(super) fn msi_parameters() -> String {
-        "/passive /promptrestart AUTOLAUNCHAPP=True".to_string()
+    /// MSI 参数：交互模式 + 不自动重启系统 + 安装后启动应用。
+    pub(super) fn msi_parameters(mode: InstallMode) -> String {
+        let ui = match mode {
+            InstallMode::Passive => "/passive",
+            InstallMode::BasicUi => "/qb",
+            InstallMode::Quiet => "/qn",
+        };
+        format!("{ui} /promptrestart AUTOLAUNCHAPP=True")
     }
 }
 
@@ -320,16 +366,43 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_installer_arguments_match_tauri_conventions() {
-        let nsis = super::windows::nsis_parameters();
+        use super::InstallMode;
+
+        let nsis = super::windows::nsis_parameters(InstallMode::Passive);
         assert!(nsis.contains("/P"), "NSIS 必须用被动模式: {nsis}");
         assert!(nsis.contains("/UPDATE"), "NSIS 必须带更新标记: {nsis}");
         assert!(nsis.contains("/R"), "NSIS 安装后必须重启应用: {nsis}");
 
-        let msi = super::windows::msi_parameters();
+        let basic = super::windows::nsis_parameters(InstallMode::BasicUi);
+        assert!(
+            !basic.contains("/P") && !basic.contains("/S"),
+            "basicUi 不应带静默标记: {basic}"
+        );
+        assert!(
+            basic.contains("/UPDATE /R"),
+            "必须保留更新标记与重启: {basic}"
+        );
+
+        let quiet = super::windows::nsis_parameters(InstallMode::Quiet);
+        assert!(quiet.contains("/S"), "quiet 必须带 /S: {quiet}");
+        assert!(
+            quiet.contains("/UPDATE /R"),
+            "必须保留更新标记与重启: {quiet}"
+        );
+
+        let msi = super::windows::msi_parameters(InstallMode::Passive);
         assert!(msi.contains("/passive"), "MSI 必须用被动模式: {msi}");
         assert!(
             msi.contains("AUTOLAUNCHAPP=True"),
             "MSI 安装后必须启动应用: {msi}"
+        );
+        assert!(
+            super::windows::msi_parameters(InstallMode::BasicUi).contains("/qb"),
+            "basicUi 必须映射到 /qb"
+        );
+        assert!(
+            super::windows::msi_parameters(InstallMode::Quiet).contains("/qn"),
+            "quiet 必须映射到 /qn"
         );
     }
 

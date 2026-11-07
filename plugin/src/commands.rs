@@ -212,7 +212,11 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 ///       "wait_timeout_secs": 60,
 ///       "confirm_timeout_secs": 60,
 ///       "proxy": "http://127.0.0.1:7890",
-///       "allow_legacy_signatures": false
+///       "allow_legacy_signatures": false,
+///       "headers": { "Authorization": "Bearer ..." },
+///       "fallback_policy": "transport",
+///       "install_mode": "passive",
+///       "allow_insecure_transport": false
 ///     }
 ///   }
 /// }

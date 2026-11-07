@@ -9,6 +9,7 @@
 //! | 事件 | 关键字段 | 何时发出 |
 //! |---|---|---|
 //! | `delta.check` | `version`, `is_newer`, `has_patch` | 清单验签与版本比较之后 |
+//! | `delta.endpoint.failed` | `url`, `reason` | 主端点失败、切换到备用端点 |
 //! | `delta.patch.matched` | `from`, `to`, `size` | 命中可用补丁 |
 //! | `delta.patch.rejected` | `reason` | 补丁哈希/应用失败 |
 //! | `delta.fallback` | `reason` | 回退全量下载 |
@@ -35,6 +36,20 @@ pub(crate) fn check(version: &str, is_newer: bool, has_patch: bool) {
     );
     #[cfg(not(feature = "tracing"))]
     let _ = (version, is_newer, has_patch);
+}
+
+/// 发出 `delta.endpoint.failed` 事件。
+pub(crate) fn endpoint_fallback(url: &str, reason: &str) {
+    #[cfg(feature = "tracing")]
+    tracing::warn!(
+        target: "tauri_delta_updater",
+        event = "delta.endpoint.failed",
+        url,
+        reason,
+        "清单端点失败，尝试备用端点"
+    );
+    #[cfg(not(feature = "tracing"))]
+    let _ = (url, reason);
 }
 
 /// 发出 `delta.patch.matched` 事件。

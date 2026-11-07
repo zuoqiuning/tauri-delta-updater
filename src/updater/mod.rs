@@ -29,7 +29,7 @@ mod rollout;
 mod simulate;
 mod staged;
 
-pub use config::UpdateConfig;
+pub use config::{FallbackPolicy, UpdateConfig};
 pub use diagnosis::{Diagnosis, ScriptEvent};
 pub use outcome::{CheckOutcome, FallbackReason, UpdateCheck, UpdateOutcome, UpdateResult};
 pub use simulate::{simulate_update, SimulationReport};
@@ -75,6 +75,28 @@ impl DeltaUpdater {
                 return Err(DeltaError::Config(
                     "bundle_manifest_url 不能为空：它指向 latest.bundle.json".into(),
                 ));
+            }
+        }
+        if config
+            .fallback_manifest_urls
+            .iter()
+            .any(|url| url.trim().is_empty())
+        {
+            return Err(DeltaError::Config(
+                "fallback_endpoints 不能包含空地址".into(),
+            ));
+        }
+        // 明文 HTTP 只允许回环地址；非回环端点默认仅警告，
+        // 宿主可显式关闭（allow_insecure_transport(false)）直接拒绝。
+        if !config.allow_insecure_transport {
+            for url in
+                std::iter::once(&config.manifest_url).chain(config.fallback_manifest_urls.iter())
+            {
+                if config::endpoint_is_insecure(url) {
+                    return Err(DeltaError::Config(format!(
+                        "端点使用明文 HTTP 且未允许：{url}（改用 HTTPS 或设置 allow_insecure_transport）"
+                    )));
+                }
             }
         }
 
@@ -139,15 +161,42 @@ impl DeltaUpdater {
         }
 
         let client = match config.client.clone() {
-            Some(client) => client,
+            Some(client) => {
+                // 自定义客户端拥有完整网络配置（headers/代理/超时）；
+                // 再叠加 headers 会被静默忽略，因此直接拒绝，避免“配了却没生效”。
+                if !config.headers.is_empty() {
+                    return Err(DeltaError::Config(
+                        "headers 只能配合内置客户端；自定义 client 请自行设置默认请求头".into(),
+                    ));
+                }
+                client
+            }
             // 默认客户端带超时：连接 15 秒、单次读空闲 60 秒。
             // 不设总超时——大补丁在慢网络下可能合法地下很久，
             // 读超时只在"连接挂着但数据彻底停了"时触发。
-            None => reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(15))
-                .read_timeout(Duration::from_secs(60))
-                .build()
-                .map_err(|e| DeltaError::Network(format!("构建默认 HTTP 客户端失败: {e}")))?,
+            None => {
+                let mut builder = reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(15))
+                    .read_timeout(Duration::from_secs(60));
+                if !config.headers.is_empty() {
+                    let mut map = reqwest::header::HeaderMap::new();
+                    for (name, value) in &config.headers {
+                        let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                            .map_err(|e| {
+                                DeltaError::Config(format!("非法请求头名 {name:?}: {e}"))
+                            })?;
+                        let header_value =
+                            reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                                DeltaError::Config(format!("非法请求头值 {value:?}: {e}"))
+                            })?;
+                        map.insert(header_name, header_value);
+                    }
+                    builder = builder.default_headers(map);
+                }
+                builder
+                    .build()
+                    .map_err(|e| DeltaError::Network(format!("构建默认 HTTP 客户端失败: {e}")))?
+            }
         };
 
         Ok(Self {
@@ -197,6 +246,16 @@ impl DeltaUpdater {
             wait_secs: self.config.wait_timeout_secs,
             confirm_secs: self.config.confirm_timeout_secs,
         }
+    }
+
+    /// 清单端点序列：主地址 + 备用地址。
+    pub(super) fn manifest_endpoints(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.config.manifest_url.as_str()).chain(
+            self.config
+                .fallback_manifest_urls
+                .iter()
+                .map(String::as_str),
+        )
     }
 }
 
@@ -456,6 +515,7 @@ mod ui_result_tests {
             events_path: PathBuf::from("work/tdx_events.jsonl"),
             script_events: Vec::new(),
             privilege_tools_available: None,
+            insecure_transport: false,
         };
         assert!(base.can_use_delta());
         assert_eq!(base.user_message(), "环境正常。");

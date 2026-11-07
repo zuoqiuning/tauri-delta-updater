@@ -119,8 +119,17 @@ tauri-plugin-delta-updater = { git = "https://github.com/zuoqiuning/tauri-delta-
 
 Optional keys (all have safe defaults): `work_dir` (override the user-writable
 cache directory), `wait_timeout_secs` / `confirm_timeout_secs` (replacement
-timings), `proxy` (`http://127.0.0.1:7890`), `allow_legacy_signatures`
-(`false` rejects pre-0.7 minisign signatures), `bundle_type`, `install_id`.
+timings), `proxy` (`http://127.0.0.1:7890`), `headers` (extra HTTP headers for
+private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
+(`false` rejects pre-0.7 minisign signatures), `fallback_policy`
+(`transport` / `any`), `install_mode` (`passive` / `basicUi` / `quiet`),
+`allow_insecure_transport`, `bundle_type`, `install_id`.
+
+`endpoints` is an array: the first URL is the primary manifest, the rest are
+backups. With the default `fallback_policy: "transport"`, the updater switches
+only on connection failures, timeouts, 5xx or 429; `404` does **not** switch.
+`fallback_policy: "any"` switches on any HTTP/transport failure. A signature
+failure always aborts — failover can never bypass signature verification.
 
 `src-tauri/src/lib.rs` — the only Rust you write:
 
@@ -198,7 +207,10 @@ same `platforms[].signature`. Known boundaries:
   owns that. We surface `full_install_failed` and the log path.
 - Windows installer arguments follow Tauri's own conventions (`/P /UPDATE /R`
   for NSIS, `/passive /promptrestart AUTOLAUNCHAPP=True` for MSI), so updates
-  are not mistaken for first-time installs.
+  are not mistaken for first-time installs. `install_mode` switches to
+  `basicUi` (no `/P`) or `quiet` (`/S` / `/qn`); the default stays `passive`.
+  `quiet` cannot elevate by itself, so it only works for per-user installs or
+  when the process is already elevated.
 - `endpoints` may use the official updater's `{{target}}` (windows / darwin /
   linux), `{{arch}}`, `{{current_version}}` and `{{bundle_type}}` placeholders.
   The first three expand automatically; `{{bundle_type}}` requires an extra
@@ -349,6 +361,7 @@ Platform support:
 - **Structured rollback events** — replacement scripts append one JSON line per rollback (and the repair path) to `tdx_events.jsonl` (`{ event, reason, time }`). `diagnose().events_path` points at the file and `diagnose().script_events` already returns the last 20 parsed entries as typed `ScriptEvent` values, so the UI can explain what happened without parsing a free-form log. Malformed or future lines are ignored.
 - **Optional structured events** — enable the `tracing` feature to receive `delta.check`, `delta.patch.matched`, `delta.patch.rejected`, `delta.fallback`, `delta.safety_mode.entered`, `delta.safety_mode.cooldown_active`, and `delta.patched` events; zero cost when disabled.
 - **Zero-config constructor** — `DeltaUpdater::auto(url, pubkey, version)` derives the platform, user work directory, and HTTP client.
+- **Multi-endpoint failover** — `endpoints` accepts backups; the switch policy is explicit and signature failures always abort. Custom `headers` cover private CDNs and auth tokens.
 - **UI-level default path** — `install()` returns `UpdateResult::{Updated, RepairRequired, UpToDate, Deferred, RequiresFullDownload, SafeMode}`; the advanced `update()` still returns the full `UpdateOutcome` when you need patch-level control.
 - **Platform-scoped patches** — patches are grouped per platform key, so an x64 client never picks up an arm64 patch.
 - **Staged rollout APIs** — `check()` to query without downloading, `prepare()` to download and merge without launching the swap, and `Staged::launch()` to trigger the swap when you're ready.
@@ -413,6 +426,11 @@ worth knowing before an audit:
   in practice the compatibility window only matters for third-party pipelines.
   Removing `allow_legacy` changes signature-validation behavior and is therefore
   a MINOR release per `VERSIONING.md`.
+- **Plaintext HTTP is allowed by default for compatibility.** Non-loopback
+  `http://` endpoints are flagged by `diagnose().insecure_transport`; setting
+  `allow_insecure_transport(false)` rejects them at construction. Signatures
+  still protect integrity, but URLs, versions and update cadence are visible to
+  the network. Use HTTPS in production.
 - **The Windows Authenticode check is offline** (`WTD_CACHE_ONLY_URL_RETRIEVAL`).
   A trusted original whose artifact is unsigned is blocked; when the cache has
   no chain for an otherwise valid artifact, the check is skipped rather than

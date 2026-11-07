@@ -49,10 +49,32 @@ impl DeltaUpdater {
     }
 
     /// 下载并校验清单签名，返回可信的清单。
+    ///
+    /// 按主端点 → 备用端点顺序尝试；切换策略由
+    /// [`super::FallbackPolicy`] 控制。**验签失败永远是终止条件**，
+    /// 不会因为存在备用端点而继续尝试。
     pub(super) async fn fetch_verified_manifest(&self) -> Result<UpdateManifest> {
+        let mut last_error: Option<DeltaError> = None;
+        for url in self.manifest_endpoints() {
+            match self.fetch_verified_manifest_at(url).await {
+                Ok(manifest) => return Ok(manifest),
+                Err(err) if self.config.fallback_policy.should_fallback(&err) => {
+                    crate::core::events::endpoint_fallback(url, &err.to_string());
+                    last_error = Some(err);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| DeltaError::Config("没有可用的清单端点：manifest_url 为空".into())))
+    }
+
+    /// 从指定端点拉取并验签清单（不做端点切换）。
+    async fn fetch_verified_manifest_at(&self, url: &str) -> Result<UpdateManifest> {
+        let signature_url = default_signature_url(url);
         let (manifest_bytes, signature) = tokio::join!(
-            fetch_bytes(&self.client, &self.config.manifest_url),
-            fetch_text(&self.client, &self.config.signature_url)
+            fetch_bytes(&self.client, url),
+            fetch_text(&self.client, &signature_url)
         );
         let manifest_bytes = manifest_bytes?;
         let signature = signature?;

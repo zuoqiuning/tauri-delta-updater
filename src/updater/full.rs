@@ -157,11 +157,12 @@ impl DeltaUpdater {
 
         match outcome {
             FullDownloadOutcome::Downloaded { installer } => {
-                crate::platform::full_install::install(
+                crate::platform::full_install::install_with_mode(
                     &self.executable_path,
                     installer.path(),
                     &self.work_dir,
                     self.script_timings(),
+                    self.config.install_mode,
                 )?;
                 Ok(UpdateResult::Updated {
                     version: installer.version().to_string(),

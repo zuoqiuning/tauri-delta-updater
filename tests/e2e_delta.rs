@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri_delta_updater::{
-    CancelToken, DeltaError, DeltaUpdater, UpdateConfig, UpdateEvent, UpdateOutcome, UpdateResult,
+    CancelToken, DeltaError, DeltaUpdater, FallbackPolicy, UpdateConfig, UpdateEvent,
+    UpdateOutcome, UpdateResult,
 };
 use tempfile::tempdir;
 
@@ -37,6 +38,71 @@ async fn test_end_to_end_delta_update() {
         }
         other => panic!("应当完成增量更新，实际得到: {other:?}"),
     }
+}
+
+/// 自定义请求头必须真的发到服务端；缺失时服务端返回 403。
+#[tokio::test]
+async fn test_custom_headers_are_sent() {
+    let (_dir, updater, server, _new_bytes) =
+        delta_fixture_with_headers(vec![("X-Token".into(), "secret".into())]).await;
+    server.require_header("X-Token", "secret");
+    assert!(
+        updater.check().await.is_ok(),
+        "带正确请求头时必须能拉取清单"
+    );
+
+    // 反向验证：同一个服务端要求请求头时，不带头的客户端必须被拒绝。
+    let (_dir2, plain, server2, _new2) = delta_fixture().await;
+    server2.require_header("X-Token", "secret");
+    let err = plain.check().await.unwrap_err();
+    assert!(
+        matches!(err, DeltaError::HttpStatus(403)),
+        "缺少请求头必须被服务端拒绝，实际: {err:?}"
+    );
+}
+
+/// 端点切换策略：只有策略允许时才回退到备用清单，验签失败永远终止。
+#[tokio::test]
+async fn test_manifest_endpoint_falls_back_only_when_policy_allows() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app.exe");
+    std::fs::write(&exe, b"app").unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+
+    let server = MockServer::start(HashMap::new());
+    let (sk, pk) = signing_keypair();
+    let (manifest, signature) = build_manifest(
+        &sk,
+        &server.base_url,
+        "0.2.0",
+        tauri_delta_updater::current_platform(),
+        &"a".repeat(64),
+        &"b".repeat(64),
+        Some(1024),
+    );
+    server.set("/latest.json", manifest);
+    server.set("/latest.json.sig", signature.into_bytes());
+
+    let base = UpdateConfig::new(server.url("/missing.json"), pk)
+        .current_version("0.1.0")
+        .executable_path(&exe)
+        .work_dir(&work)
+        .fallback_endpoints(vec![server.url("/latest.json")]);
+
+    let permissive =
+        DeltaUpdater::new(base.clone().fallback_policy(FallbackPolicy::OnAnyFailure)).unwrap();
+    assert!(
+        permissive.check().await.is_ok(),
+        "OnAnyFailure 时主端点 404 必须切换到备用端点"
+    );
+
+    let transport_only = DeltaUpdater::new(base).unwrap();
+    let err = transport_only.check().await.unwrap_err();
+    assert!(
+        matches!(err, DeltaError::HttpStatus(404)),
+        "默认策略不得在 404 时切换: {err:?}"
+    );
 }
 
 /// `prepare_with_events`：只下载合并、不启动替换，事件流与安装路径一致。

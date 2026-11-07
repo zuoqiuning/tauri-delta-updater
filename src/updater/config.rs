@@ -1,7 +1,45 @@
 //! 增量更新配置。
 
+use crate::error::DeltaError;
+use crate::platform::full_install::InstallMode;
 use crate::platform::target::current_platform;
 use std::path::{Path, PathBuf};
+
+/// 主清单不可用时，何时切换到备用端点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum FallbackPolicy {
+    /// 连接失败、超时、5xx / 429 时切换。默认，与官方“镜像故障转移”语义一致；
+    /// 404 等确定性错误不切换，避免把“清单还没发布”误判成需要换源。
+    #[default]
+    OnTransportError,
+    /// 任何 HTTP / 传输失败都切换。
+    ///
+    /// 适合“主端点 404 = 该通道未发布，备用端点有镜像”的部署；验签失败仍然终止，
+    /// 绝不会因为换端点而绕过签名校验。
+    OnAnyFailure,
+}
+
+impl FallbackPolicy {
+    /// 该错误是否值得尝试下一个端点。
+    pub(crate) fn should_fallback(self, err: &DeltaError) -> bool {
+        match self {
+            FallbackPolicy::OnTransportError => match err {
+                DeltaError::Network(_) | DeltaError::Timeout(_) => true,
+                DeltaError::HttpStatus(code) => *code >= 500 || *code == 429,
+                _ => false,
+            },
+            FallbackPolicy::OnAnyFailure => matches!(
+                err,
+                DeltaError::Network(_)
+                    | DeltaError::Timeout(_)
+                    | DeltaError::HttpStatus(_)
+                    | DeltaError::ResponseTooLarge { .. }
+                    | DeltaError::InvalidResponse(_)
+            ),
+        }
+    }
+}
 
 /// 增量更新的配置。
 ///
@@ -80,6 +118,25 @@ pub struct UpdateConfig {
     /// 该开关只影响第三方历史管线的兼容。安全要求高的宿主可设为
     /// `false`，让非预哈希签名直接失败（属于签名校验行为收紧）。
     pub allow_legacy_signatures: bool,
+    /// 备用清单地址（主地址失败时按策略依次尝试）。
+    ///
+    /// 每个端点都有自己的 `.sig` 地址（同目录同名 + `.sig`）。
+    pub fallback_manifest_urls: Vec<String>,
+    /// 主清单失败后何时切换备用端点，默认只在传输错误/5xx 时切换。
+    pub fallback_policy: FallbackPolicy,
+    /// 附加到所有 HTTP 请求的请求头（私有 CDN Token、User-Agent 等）。
+    ///
+    /// 只能配合内置客户端使用；同时设置 [`Self::client`] 时由调用方自行配置请求头。
+    pub headers: Vec<(String, String)>,
+    /// Windows 全量安装器的交互模式，默认 `Passive`（与官方一致）。
+    ///
+    /// 其它平台忽略该字段。
+    pub install_mode: InstallMode,
+    /// 是否允许明文 HTTP 端点，默认 `true`（保持兼容）。
+    ///
+    /// `false` 时，非回环地址的 `http://` 会在构造阶段被拒绝；
+    /// 无论取值如何，明文端点都会出现在 `diagnose().warnings()` 中。
+    pub allow_insecure_transport: bool,
 }
 
 impl UpdateConfig {
@@ -103,6 +160,11 @@ impl UpdateConfig {
             bundle_manifest_url: None,
             client: None,
             allow_legacy_signatures: true,
+            fallback_manifest_urls: Vec::new(),
+            fallback_policy: FallbackPolicy::default(),
+            headers: Vec::new(),
+            install_mode: InstallMode::default(),
+            allow_insecure_transport: true,
         }
     }
 
@@ -181,6 +243,50 @@ impl UpdateConfig {
         self.allow_legacy_signatures = allow;
         self
     }
+
+    /// 设置备用清单端点（主端点失败时按策略尝试）。
+    pub fn fallback_endpoints(mut self, urls: Vec<String>) -> Self {
+        self.fallback_manifest_urls = urls;
+        self
+    }
+
+    /// 设置端点切换策略，默认仅在传输错误/5xx 时切换。
+    pub fn fallback_policy(mut self, policy: FallbackPolicy) -> Self {
+        self.fallback_policy = policy;
+        self
+    }
+
+    /// 设置附加请求头（私有 CDN Token、定制 UA 等）。
+    pub fn headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    /// 设置 Windows 全量安装器交互模式。
+    pub fn install_mode(mut self, mode: InstallMode) -> Self {
+        self.install_mode = mode;
+        self
+    }
+
+    /// 是否允许明文 HTTP 端点（默认允许，仅用于兼容；建议保持 `false`）。
+    pub fn allow_insecure_transport(mut self, allow: bool) -> Self {
+        self.allow_insecure_transport = allow;
+        self
+    }
+}
+
+/// 端点是否使用明文 HTTP 且不是回环地址。
+pub(crate) fn endpoint_is_insecure(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "http" {
+        return false;
+    }
+    !matches!(
+        parsed.host_str(),
+        Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+    )
 }
 
 /// 由清单地址推导签名地址。
@@ -201,17 +307,90 @@ pub(crate) fn default_signature_url(manifest_url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_signature_url, UpdateConfig};
+    use super::*;
+
+    fn config(url: &str) -> UpdateConfig {
+        UpdateConfig::new(url, "PK").current_version("0.1.0")
+    }
+
+    fn updater(config: UpdateConfig) -> crate::error::Result<crate::updater::DeltaUpdater> {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"app").unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let config = config.executable_path(&exe).work_dir(&work);
+        crate::updater::DeltaUpdater::new(config)
+    }
+
+    #[test]
+    fn fallback_policy_classifies_errors() {
+        use FallbackPolicy::*;
+        assert!(OnTransportError.should_fallback(&DeltaError::Network("x".into())));
+        assert!(OnTransportError.should_fallback(&DeltaError::Timeout("x".into())));
+        assert!(OnTransportError.should_fallback(&DeltaError::HttpStatus(502)));
+        assert!(OnTransportError.should_fallback(&DeltaError::HttpStatus(429)));
+        assert!(!OnTransportError.should_fallback(&DeltaError::HttpStatus(404)));
+        assert!(!OnTransportError.should_fallback(&DeltaError::SignatureInvalid("x".into())));
+
+        assert!(OnAnyFailure.should_fallback(&DeltaError::HttpStatus(404)));
+        assert!(!OnAnyFailure.should_fallback(&DeltaError::ManifestInvalid("x".into())));
+    }
+
+    #[test]
+    fn insecure_http_is_detected_but_loopback_is_allowed() {
+        assert!(endpoint_is_insecure("http://cdn.example.com/latest.json"));
+        assert!(!endpoint_is_insecure("https://cdn.example.com/latest.json"));
+        assert!(!endpoint_is_insecure("http://127.0.0.1:8080/latest.json"));
+        assert!(!endpoint_is_insecure("http://localhost:8080/latest.json"));
+        assert!(!endpoint_is_insecure("not a url"));
+    }
+
+    #[test]
+    fn insecure_transport_can_be_rejected() {
+        let err =
+            updater(config("http://cdn.example.com/latest.json").allow_insecure_transport(false))
+                .unwrap_err();
+        assert!(
+            matches!(err, DeltaError::Config(_)),
+            "非回环 http 必须被拒绝: {err:?}"
+        );
+
+        updater(config("http://127.0.0.1:8080/latest.json").allow_insecure_transport(false))
+            .expect("回环 http 仍应允许（本地调试）");
+    }
+
+    #[test]
+    fn invalid_headers_are_rejected() {
+        let err = updater(
+            config("https://cdn.example.com/latest.json")
+                .headers(vec![("bad name".into(), "x".into())]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, DeltaError::Config(_)), "{err:?}");
+    }
+
+    #[test]
+    fn headers_with_custom_client_are_rejected() {
+        let client = crate::core::crypto::client_builder().build().unwrap();
+        let err = updater(
+            config("https://cdn.example.com/latest.json")
+                .client(client)
+                .headers(vec![("X-Token".into(), "secret".into())]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, DeltaError::Config(_)), "{err:?}");
+    }
 
     /// `.sig` 必须插在路径末尾、查询参数之前；带 token 的 CDN 最容易在这里出错。
     #[test]
     fn signature_url_keeps_query_parameters() {
         assert_eq!(
-            default_signature_url("https://cdn.example.com/latest.json"),
+            super::default_signature_url("https://cdn.example.com/latest.json"),
             "https://cdn.example.com/latest.json.sig"
         );
         assert_eq!(
-            default_signature_url("https://cdn.example.com/latest.json?token=abc&v=2"),
+            super::default_signature_url("https://cdn.example.com/latest.json?token=abc&v=2"),
             "https://cdn.example.com/latest.json.sig?token=abc&v=2"
         );
     }

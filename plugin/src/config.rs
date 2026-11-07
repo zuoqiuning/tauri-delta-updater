@@ -1,7 +1,10 @@
 //! 插件注册与 `tauri.conf.json` 配置读取。
 
+use std::collections::HashMap;
+
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::{AppHandle, Runtime};
-use tauri_delta_updater::UpdateConfig;
+use tauri_delta_updater::{FallbackPolicy, InstallMode, UpdateConfig};
 
 /// `tauri.conf.json` 里 `plugins.delta-updater` 的配置。
 ///
@@ -9,7 +12,7 @@ use tauri_delta_updater::UpdateConfig;
 /// 迁移时不必改配置。官方配置里的 `windows` / `dmg` 等字段会被忽略。
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct FileConfig {
-    /// 清单地址。与官方一致用数组；一个插件实例只消费第一个。
+    /// 清单地址。与官方一致用数组：第一个是主端点，其余作为备用端点。
     pub(crate) endpoints: Vec<String>,
     /// 固化在应用里的公钥（base64 或 `.pub` 文件内容）。
     pub(crate) pubkey: String,
@@ -42,20 +45,37 @@ pub(crate) struct FileConfig {
     /// 本项目发布端产出 pre-hash 签名；设为 `false` 可拒绝第三方旧格式。
     #[serde(default)]
     pub(crate) allow_legacy_signatures: Option<bool>,
+    /// 可选：主端点失败后何时切换备用端点（`transport` 默认 / `any`）。
+    #[serde(default)]
+    pub(crate) fallback_policy: Option<String>,
+    /// 可选：附加到所有请求的 HTTP 头（私有 CDN Token、定制 UA）。
+    #[serde(default)]
+    pub(crate) headers: Option<HashMap<String, String>>,
+    /// 可选：Windows 安装器模式（`passive` / `basicUi` / `quiet`）。
+    #[serde(default)]
+    pub(crate) install_mode: Option<String>,
+    /// 可选：是否允许明文 HTTP 端点，默认 `true`（仅兼容，建议 `false`）。
+    #[serde(default)]
+    pub(crate) allow_insecure_transport: Option<bool>,
 }
 
 impl FileConfig {
     /// 转成库层配置。
     pub(crate) fn into_update_config(self, current_version: &str) -> Result<UpdateConfig, String> {
-        let endpoint = self
-            .endpoints
-            .first()
-            .ok_or_else(|| "plugins.delta-updater.endpoints 不能为空".to_string())?
-            .clone();
+        let mut endpoints = self.endpoints.into_iter();
+        let primary = endpoints
+            .next()
+            .ok_or_else(|| "plugins.delta-updater.endpoints 不能为空".to_string())?;
         let bundle_type = self.bundle_type.as_deref().filter(|s| !s.trim().is_empty());
 
-        let endpoint = expand_endpoint(&endpoint, current_version, bundle_type)?;
-        let mut config = UpdateConfig::new(endpoint, self.pubkey).current_version(current_version);
+        let primary = expand_endpoint(&primary, current_version, bundle_type)?;
+        let fallbacks = endpoints
+            .map(|url| expand_endpoint(&url, current_version, bundle_type))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut config = UpdateConfig::new(primary, self.pubkey).current_version(current_version);
+        if !fallbacks.is_empty() {
+            config = config.fallback_endpoints(fallbacks);
+        }
         if let Some(id) = self.install_id.filter(|id| !id.trim().is_empty()) {
             config = config.install_id(id);
         }
@@ -68,17 +88,66 @@ impl FileConfig {
         if let Some(secs) = self.confirm_timeout_secs {
             config = config.confirm_timeout_secs(secs);
         }
-        if let Some(proxy) = self.proxy.filter(|proxy| !proxy.trim().is_empty()) {
-            let proxy = reqwest::Proxy::all(proxy.trim())
-                .map_err(|err| format!("plugins.delta-updater.proxy 非法: {err}"))?;
-            let client = tauri_delta_updater::client_builder()
-                .proxy(proxy)
-                .build()
-                .map_err(|err| format!("构建 HTTP 客户端失败: {err}"))?;
-            config = config.client(client);
+        if let Some(policy) = self.fallback_policy {
+            let policy = match policy.trim().to_ascii_lowercase().as_str() {
+                "transport" | "on_transport_error" => FallbackPolicy::OnTransportError,
+                "any" | "on_any_failure" => FallbackPolicy::OnAnyFailure,
+                other => {
+                    return Err(format!(
+                        "plugins.delta-updater.fallback_policy 非法: {other}（transport / any）"
+                    ))
+                }
+            };
+            config = config.fallback_policy(policy);
+        }
+        if let Some(mode) = self.install_mode {
+            let mode = match mode.trim().to_ascii_lowercase().as_str() {
+                "passive" => InstallMode::Passive,
+                "basicui" | "basic_ui" | "basic" => InstallMode::BasicUi,
+                "quiet" | "silent" => InstallMode::Quiet,
+                other => {
+                    return Err(format!(
+                    "plugins.delta-updater.install_mode 非法: {other}（passive / basicUi / quiet）"
+                ))
+                }
+            };
+            config = config.install_mode(mode);
+        }
+        if let Some(allow) = self.allow_insecure_transport {
+            config = config.allow_insecure_transport(allow);
         }
         if let Some(allow) = self.allow_legacy_signatures {
             config = config.allow_legacy_signatures(allow);
+        }
+
+        // 代理与附加请求头都需要自定义客户端；两者合并构建，
+        // 避免出现"只生效了一个"的静默问题。
+        let proxy = self.proxy.filter(|proxy| !proxy.trim().is_empty());
+        let headers = self.headers.unwrap_or_default();
+        if proxy.is_some() || !headers.is_empty() {
+            let mut builder = tauri_delta_updater::client_builder();
+            if let Some(proxy) = proxy {
+                let proxy = reqwest::Proxy::all(proxy.trim())
+                    .map_err(|err| format!("plugins.delta-updater.proxy 非法: {err}"))?;
+                builder = builder.proxy(proxy);
+            }
+            if !headers.is_empty() {
+                let mut map = HeaderMap::new();
+                for (name, value) in headers {
+                    let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
+                        format!("plugins.delta-updater.headers 名称非法 {name:?}: {err}")
+                    })?;
+                    let header_value = HeaderValue::from_str(&value).map_err(|err| {
+                        format!("plugins.delta-updater.headers 值非法 {value:?}: {err}")
+                    })?;
+                    map.insert(header_name, header_value);
+                }
+                builder = builder.default_headers(map);
+            }
+            let client = builder
+                .build()
+                .map_err(|err| format!("构建 HTTP 客户端失败: {err}"))?;
+            config = config.client(client);
         }
         if let Some(bundle) = self.bundle_endpoint {
             config =
