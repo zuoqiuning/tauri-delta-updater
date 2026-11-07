@@ -225,6 +225,18 @@ async fn run(args: Args) -> Result<(), String> {
         None => None,
     };
 
+    let mut notes_i18n = HashMap::new();
+    for entry in &args.notes_i18n {
+        let (locale, text) = entry.split_once('=').ok_or_else(|| {
+            format!("--notes-i18n 必须是 LOCALE=TEXT 形式（如 zh-CN=本次修复了...）：{entry}")
+        })?;
+        let locale = locale.trim();
+        if locale.is_empty() {
+            return Err(format!("--notes-i18n 的语言标记不能为空: {entry}"));
+        }
+        notes_i18n.insert(locale.to_string(), text.to_string());
+    }
+
     // 通道名会进入文件名，只允许安全字符，避免 `../latest` 这类路径穿越。
     let channel = args.channel.trim().to_lowercase();
     if channel.is_empty()
@@ -341,6 +353,8 @@ async fn run(args: Args) -> Result<(), String> {
             min_version: None,
             platforms: HashMap::new(),
             patches: HashMap::new(),
+            notes_i18n: HashMap::new(),
+            extra: Default::default(),
         },
     };
 
@@ -453,6 +467,7 @@ async fn run(args: Args) -> Result<(), String> {
     manifest.version = new_version.to_string();
     manifest.pub_date = chrono::Utc::now().to_rfc3339();
     manifest.notes = args.notes.clone();
+    manifest.notes_i18n = notes_i18n;
 
     // 安装包本身的签名，供 Tauri 官方 updater 校验全量下载。
     // 双签时把多个 minisign 块拼接：客户端支持多块验签。

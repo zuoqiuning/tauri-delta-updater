@@ -272,7 +272,7 @@ mod tests {
 
         let value = serde_json::json!({
             "endpoints": [
-                "https://cdn.example.com/latest.json",
+                "https://cdn.example.com/{{channel}}/latest.json",
                 "https://backup.example.com/latest.json"
             ],
             "pubkey": "PK",
@@ -287,10 +287,16 @@ mod tests {
             "allow_insecure_transport": false,
             "install_on_next_launch": true,
             "additional_pubkeys": ["OLD-KEY"],
-            "trust_policy": "all"
+            "trust_policy": "all",
+            "channel": "beta"
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         let config = file.into_update_config("1.0.0").unwrap();
+        assert!(
+            config.manifest_url.contains("/beta/"),
+            "{{channel}} 必须展开为配置的渠道: {}",
+            config.manifest_url
+        );
         assert_eq!(
             config.work_dir.as_deref(),
             Some(std::path::Path::new("/tmp/tdx"))
@@ -325,6 +331,7 @@ mod tests {
             ("fallback_policy", "sometimes"),
             ("install_mode", "silentish"),
             ("trust_policy", "majority"),
+            ("channel", "be ta"),
         ] {
             let mut raw = serde_json::json!({
                 "endpoints": ["https://cdn.example.com/latest.json"],
@@ -372,6 +379,7 @@ mod tests {
             pubkey: "PK".into(),
             additional_pubkeys: None,
             trust_policy: None,
+            channel: None,
             bundle_endpoint: None,
             bundle_type: None,
             install_id: None,

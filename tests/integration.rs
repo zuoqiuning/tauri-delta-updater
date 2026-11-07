@@ -163,6 +163,8 @@ fn test_find_patch_is_platform_scoped() {
         min_version: None,
         platforms: Default::default(),
         patches: Default::default(),
+        notes_i18n: Default::default(),
+        extra: Default::default(),
     };
 
     let patch = |from: &str, url: &str| tauri_delta_updater::PatchInfo {
@@ -215,6 +217,8 @@ fn test_find_patch_ignores_stale_target_version() {
         min_version: None,
         platforms: Default::default(),
         patches: Default::default(),
+        notes_i18n: Default::default(),
+        extra: Default::default(),
     };
 
     manifest.patches.insert(

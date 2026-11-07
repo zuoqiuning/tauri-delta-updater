@@ -122,10 +122,14 @@ export interface PlatformInfo {
 export interface UpdateManifest {
     version: string;
     notes: string;
+    /** Localized notes (locale → text); `notes` is the fallback. */
+    notes_i18n?: Record<string, string>;
     pub_date: string;
     min_version?: string;
     platforms: Record<string, PlatformInfo>;
     patches: Record<string, PatchInfo[]>;
+    /** Unknown top-level fields preserved from the signed manifest. */
+    [key: string]: unknown;
 }
 /** `check()` 的结果。 */
 export interface CheckOutcome {

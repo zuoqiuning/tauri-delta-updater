@@ -67,6 +67,12 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) secondary_password: Option<String>,
 
+    /// 多语言更新说明（可重复）：`--notes-i18n zh-CN=本次修复了 ...`。
+    ///
+    /// 写入受签名保护的 `notes_i18n`；`--notes` 作为未匹配语言的兜底。
+    #[arg(long = "notes-i18n", value_name = "LOCALE=TEXT")]
+    pub(crate) notes_i18n: Vec<String>,
+
     /// 目标平台的最低系统版本（如 Windows `10.0.19045`、macOS `13.0`、Linux 内核 `5.15`）。
     ///
     /// 写入受清单签名保护的 `platforms[].min_os`；省略即清除该平台的门槛。

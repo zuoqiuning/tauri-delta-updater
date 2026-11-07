@@ -181,6 +181,8 @@
 //!     min_version: None,
 //!     platforms: Default::default(),
 //!     patches: Default::default(),
+//!     notes_i18n: Default::default(),
+//!     extra: Default::default(),
 //! };
 //!
 //! // 无匹配补丁时返回 None，调用方应回退到全量下载

@@ -1204,6 +1204,56 @@ fn test_generate_cli_dual_signs_with_secondary_key() {
     );
 }
 
+/// `--notes-i18n` 写入多语言更新说明，格式必须是 `LOCALE=TEXT`。
+#[test]
+fn test_generate_cli_writes_localized_notes() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".to_string(),
+        s(&old_versions),
+        "--app-binary".to_string(),
+        s(&new_exe),
+        "--version".to_string(),
+        "0.1.1".to_string(),
+        "--base-url".to_string(),
+        "https://cdn.example.com".to_string(),
+        "--private-key".to_string(),
+        s(&key_file),
+        "--notes".to_string(),
+        "fallback notes".to_string(),
+        "--notes-i18n".to_string(),
+        "zh-CN=中文说明".to_string(),
+        "--notes-i18n".to_string(),
+        "ja=日本語".to_string(),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(code, 0, "合法 --notes-i18n 必须成功\nstderr: {stderr}");
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["notes_i18n"]["zh-CN"], "中文说明");
+    assert_eq!(manifest["notes_i18n"]["ja"], "日本語");
+    assert_eq!(manifest["notes"], "fallback notes");
+
+    let mut bad = args;
+    bad.extend(["--notes-i18n".to_string(), "broken".to_string()]);
+    let (code, _stdout, stderr) = run_generate(&bad, &dir);
+    assert_ne!(code, 0, "缺少 `=` 的 --notes-i18n 必须失败");
+    assert!(
+        stderr.contains("--notes-i18n"),
+        "错误必须说明字段: {stderr}"
+    );
+}
+
 /// `--min-os` 写入受签名保护的最低系统版本；非法格式必须在写文件前失败。
 #[test]
 fn test_generate_cli_writes_min_os() {

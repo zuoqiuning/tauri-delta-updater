@@ -37,6 +37,17 @@ pub struct UpdateManifest {
     /// 若混在一个列表里，客户端可能取到其它架构的补丁，导致校验失败。
     #[serde(default, deserialize_with = "deserialize_patches")]
     pub patches: HashMap<String, Vec<PatchInfo>>,
+    /// 多语言更新说明（locale → 文本），[`Self::notes`] 作为兜底。
+    ///
+    /// 受清单签名保护；旧客户端只读 `notes`，不会受影响。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub notes_i18n: HashMap<String, String>,
+    /// 未识别的顶层字段，原样保留。
+    ///
+    /// 让宿主可以读取发布端的自定义元数据（渠道标记、发布页 URL 等），
+    /// 也让 `generate --existing` 不会丢掉旧清单里的扩展字段。
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl UpdateManifest {
@@ -62,8 +73,20 @@ impl UpdateManifest {
         self.patches.get(platform).is_some_and(|p| !p.is_empty())
     }
 
+    /// 按语言取更新说明：精确匹配 → 语言前缀（`zh-CN` → `zh`）→ `notes` 兜底。
+    pub fn notes_for(&self, locale: &str) -> &str {
+        let locale = locale.trim();
+        if let Some(text) = self.notes_i18n.get(locale) {
+            return text;
+        }
+        let language = locale.split(['-', '_']).next().unwrap_or(locale);
+        if let Some(text) = self.notes_i18n.get(language) {
+            return text;
+        }
+        &self.notes
+    }
+
     /// 清单版本是否严格高于给定版本。
-    ///
     /// **这是防降级的核心判据**。签名只能证明"这份清单出自发布者之手"，
     /// 不能证明"它比当前版本新"——攻击者可以原样重放一份旧的、签名合法的
     /// 清单，把用户降级回含已知漏洞的版本。版本单调性必须由客户端自己判。
@@ -214,6 +237,8 @@ mod tests {
             min_version: None,
             platforms: Default::default(),
             patches: Default::default(),
+            notes_i18n: Default::default(),
+            extra: Default::default(),
         }
     }
 
@@ -231,6 +256,41 @@ mod tests {
         assert!(manifest("1.0.0").is_newer_than("1.0.0-alpha").unwrap());
         assert!(!manifest("1.0.0-alpha").is_newer_than("1.0.0").unwrap());
         assert!(manifest("1.0.0").is_newer_than("1.0.0-beta.2").unwrap());
+    }
+
+    /// 多语言说明：精确匹配 → 语言前缀 → `notes` 兜底。
+    #[test]
+    fn localized_notes_fall_back_to_language_then_default() {
+        let mut m = manifest("1.2.3");
+        m.notes = "default".into();
+        m.notes_i18n.insert("zh-CN".into(), "中文".into());
+        m.notes_i18n.insert("ja".into(), "日本語".into());
+
+        assert_eq!(m.notes_for("zh-CN"), "中文");
+        assert_eq!(m.notes_for("zh-TW"), "default", "没有 zh 前缀时回落默认");
+        assert_eq!(m.notes_for("ja-JP"), "日本語", "语言前缀匹配");
+        assert_eq!(m.notes_for("fr"), "default");
+        assert_eq!(m.notes_for(""), "default");
+    }
+
+    /// 未识别的顶层字段必须原样保留（宿主自定义元数据）。
+    #[test]
+    fn unknown_top_level_fields_are_preserved() {
+        let parsed: UpdateManifest = serde_json::from_value(serde_json::json!({
+            "version": "1.2.3",
+            "notes": "hi",
+            "channel": "beta",
+            "release_page": "https://example.com/releases/1.2.3"
+        }))
+        .unwrap();
+        assert_eq!(parsed.extra["channel"], "beta");
+
+        let round_trip = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(round_trip["channel"], "beta");
+        assert_eq!(
+            round_trip["release_page"],
+            "https://example.com/releases/1.2.3"
+        );
     }
 
     /// 灰度字段是可选的：旧清单没有它时按全量发布处理。

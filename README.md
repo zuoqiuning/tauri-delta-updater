@@ -125,8 +125,10 @@ private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
 (`transport` / `any`), `install_mode` (`passive` / `basicUi` / `quiet`),
 `allow_insecure_transport`, `bundle_type`, `install_id`,
 `install_on_next_launch` (install the staged update on the next start; off by
-default), `additional_pubkeys` (extra trusted keys during rotation), and
-`trust_policy` (`any` default / `all` requires every trusted key to sign).
+default), `additional_pubkeys` (extra trusted keys during rotation),
+`trust_policy` (`any` default / `all` requires every trusted key to sign), and
+`channel` (default `stable`; endpoints may use `{{channel}}` next to
+`{{target}}` / `{{arch}}` / `{{current_version}}`).
 
 `endpoints` is an array: the first URL is the primary manifest, the rest are
 backups. With the default `fallback_policy: "transport"`, the updater switches
@@ -364,6 +366,7 @@ Platform support:
 - **Multi-hop delta chains** — when no direct patch exists, `update()` applies up to 3 verified hops (0.1 → 0.2 → 0.3), checking each intermediate result against its signed `target_hash` before it becomes the next hop's input. The planner prefers a direct patch, then the cheapest viable chain, then the full installer; a chain whose total size exceeds 80% of the installer falls back to full. The generator keeps only chainable history (`MAX_DELTA_CHAIN_HOPS`) so manifests don't grow forever.
 - **Key rotation without breaking old clients** — `additional_public_keys` / `additional_pubkeys` extend the trusted set; `trust_policy: "any"` accepts a signature from any of them, `"all"` requires every key to sign (dual-sign window). `.sig` files may contain multiple minisign blocks, and `generate --secondary-private-key` signs both the manifest and the installer with both keys.
 - **Minimum OS gate** — `generate --min-os 10.0.19045` writes a signed `platforms[].min_os`. The client refuses the update **before any download** when the detected OS is older (`UpdateOutcome::UnsupportedOs`), and hides both the patch and the full-installer URL from `check()`. Detection is Windows `RtlGetVersion`, macOS `sw_vers`, Linux kernel release; if it cannot be determined, the update proceeds (unknown ≠ unsupported).
+- **Localized release notes and custom metadata** — `generate --notes-i18n zh-CN=... --notes-i18n en=...` writes signed `notes_i18n`; `manifest.notes_for(locale)` resolves exact → language prefix → `notes`. Unknown top-level manifest fields are preserved in `UpdateManifest::extra`, and `generate --existing` carries them across releases, so hosts can read custom release metadata without forking the format.
 - **Signed percentage rollout** — `generate --rollout 20` writes `platforms[].rollout` into the signed manifest; clients bucket on `sha256(install_id + version) % 100`. Misses get `Deferred` and download nothing; `0` pauses the release, `100` behaves like a normal release. The install ID persists in `tdx_install_id`, or pass `UpdateConfig::install_id(...)`. No server-side bucketing and no second manifest.
 - **Forced minimum version** — `generate --min-version 0.1.5` writes a signed floor into the manifest. Clients below it ignore the rollout percentage and must update, so a bad release can be reversed without waiting for the bucket.
 - **Deterministic startup handshake** — the replacement script writes `staged`, the new process writes `booting`, and `confirm_startup_success_with(|| ...)` writes `committed` only after the host's health check passes. Failure writes `health_check_failed` and rolls back immediately; `diagnose().startup_state` / `last_rollback` distinguish "never started", "crashed before commit", "started but unhealthy" and "committed".
@@ -1050,6 +1053,7 @@ Key arguments:
 | `--rollout` | Signed rollout percentage, 0–100 (default 100). Values below 100 write `platforms[].rollout`; `0` pauses the release. |
 | `--min-version` | Signed minimum version. Clients below it bypass `rollout` and must update. Omitting it clears the previous floor. |
 | `--min-os` | Signed minimum OS version for this platform (Windows `10.0.19045`, macOS `13.0`, Linux kernel `5.15`). Clients that can detect an older OS refuse the update before downloading. Omit to clear it. |
+| `--notes-i18n` | Localized release notes (repeatable), format `LOCALE=TEXT` (e.g. `zh-CN=修复了...`). Written to the signed `notes_i18n`; `--notes` remains the fallback. |
 | `--fail-on-empty` | Exit non-zero when no patch was produced (CI guard). |
 | `--dry-run` | Plan and verify without writing files. |
 
@@ -1235,12 +1239,14 @@ fallback, this library is the deeper option.
   `fallback_policy`, `install_mode`, `allow_insecure_transport`,
   `install_on_next_launch`, `additional_public_keys` and `trust_policy`;
   `Diagnosis` gained `insecure_transport`; `PlatformInfo` gained `min_os`;
-  `UpdateOutcome` / `UpdateResult` gained `UnsupportedOs`; new `PendingUpdate` /
-  `PendingArtifact` types, `TrustPolicy`, `current_os_version()`,
-  `verify_manifest_signature_multi`, `verify_file_signature_multi`,
-  `MAX_DELTA_CHAIN_HOPS`, and the `pending` / `install_pending` plugin commands.
-  The release workflow now publishes both crates; until the plugin appears on
-  crates.io, `cargo delta init` writes a git dependency.
+  `UpdateManifest` gained `notes_i18n` / `extra` and `notes_for(locale)`;
+  `BundleManifest` gained `extra`; `UpdateOutcome` / `UpdateResult` gained
+  `UnsupportedOs`; new `PendingUpdate` / `PendingArtifact` types, `TrustPolicy`,
+  `current_os_version()`, `verify_manifest_signature_multi`,
+  `verify_file_signature_multi`, `MAX_DELTA_CHAIN_HOPS`, and the `pending` /
+  `install_pending` plugin commands. The release workflow now publishes both
+  crates; until the plugin appears on crates.io, `cargo delta init` writes a git
+  dependency.
 
 ## License
 

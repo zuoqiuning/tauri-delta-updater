@@ -326,6 +326,7 @@ mod tests {
             version: "0.2.0".into(),
             platform: "windows-x86_64".into(),
             bundles: vec![patch.clone()],
+            extra: Default::default(),
         };
 
         assert!(manifest.find_patch("0.1.0", "windows-x86_64").is_some());

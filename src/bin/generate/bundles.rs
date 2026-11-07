@@ -87,6 +87,7 @@ pub(crate) async fn generate_bundles(
         version: new_version.to_string(),
         platform: platform_key.to_string(),
         bundles,
+        extra: Default::default(),
     };
     let count = manifest.bundles.len();
 

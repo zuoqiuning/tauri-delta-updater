@@ -53,6 +53,7 @@ async fn test_end_to_end_bundle_update() {
         version: "0.2.0".into(),
         platform: platform.to_string(),
         bundles: vec![bundle.clone()],
+        extra: Default::default(),
     };
     let bytes = serde_json::to_vec_pretty(&bundle_manifest).unwrap();
     let sig = sign_bound(&sk, &bytes, "tdu:v=0.2.0");
@@ -222,6 +223,7 @@ async fn test_end_to_end_macos_app_bundle() {
         version: "0.2.0".into(),
         platform: platform.to_string(),
         bundles: vec![bundle.clone()],
+        extra: Default::default(),
     };
     let bytes = serde_json::to_vec_pretty(&bundle_manifest).unwrap();
     let sig = sign_bound(&sk, &bytes, "tdu:v=0.2.0");

@@ -179,6 +179,8 @@ mod tests {
             min_version: None,
             platforms,
             patches: grouped,
+            notes_i18n: Default::default(),
+            extra: Default::default(),
         }
     }
 

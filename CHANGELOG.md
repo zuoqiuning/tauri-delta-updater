@@ -37,6 +37,13 @@
 
 ### 新增
 
+- 发布渠道与端点占位符：插件配置 `channel`（默认 `stable`），端点支持
+  `{{channel}}`，与 `{{target}}` / `{{arch}}` / `{{current_version}}` 一起展开；
+  非法渠道名在启动阶段报错。
+- 多语言说明与自定义元数据：`generate --notes-i18n LOCALE=TEXT`（可重复）写入
+  受签名保护的 `notes_i18n`，客户端用 `manifest.notes_for(locale)`
+  （精确 → 语言前缀 → `notes`）；未识别的清单顶层字段保留在
+  `UpdateManifest::extra` / `BundleManifest::extra`，`--existing` 发布时不会丢失。
 - 最低系统版本门槛：`generate --min-os` 写入受签名保护的
   `platforms[].min_os`；`check()` 隐藏补丁与全量地址，`update()` 在**任何下载前**
   返回 `UpdateOutcome::UnsupportedOs`（含要求版本与本机版本）。本机版本探测

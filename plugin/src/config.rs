@@ -22,6 +22,9 @@ pub(crate) struct FileConfig {
     /// 可选：多钥信任策略（`any` 默认 / `all` 要求全部签名）。
     #[serde(default)]
     pub(crate) trust_policy: Option<String>,
+    /// 可选：发布渠道，默认 `stable`；端点可用 `{{channel}}` 占位符。
+    #[serde(default)]
+    pub(crate) channel: Option<String>,
     /// 可选：整包清单地址（`latest.bundle.json`）。
     #[serde(default)]
     pub(crate) bundle_endpoint: Option<String>,
@@ -76,10 +79,25 @@ impl FileConfig {
             .next()
             .ok_or_else(|| "plugins.delta-updater.endpoints 不能为空".to_string())?;
         let bundle_type = self.bundle_type.as_deref().filter(|s| !s.trim().is_empty());
+        let channel = match self.channel.as_deref().map(str::trim) {
+            Some(channel) if !channel.is_empty() => {
+                let channel = channel.to_ascii_lowercase();
+                if !channel
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+                {
+                    return Err(format!(
+                        "plugins.delta-updater.channel 非法: {channel}（只允许小写字母、数字、- 与 _）"
+                    ));
+                }
+                channel
+            }
+            _ => "stable".to_string(),
+        };
 
-        let primary = expand_endpoint(&primary, current_version, bundle_type)?;
+        let primary = expand_endpoint(&primary, current_version, bundle_type, &channel)?;
         let fallbacks = endpoints
-            .map(|url| expand_endpoint(&url, current_version, bundle_type))
+            .map(|url| expand_endpoint(&url, current_version, bundle_type, &channel))
             .collect::<Result<Vec<_>, _>>()?;
         let mut config = UpdateConfig::new(primary, self.pubkey).current_version(current_version);
         if let Some(keys) = self.additional_pubkeys {
@@ -177,8 +195,12 @@ impl FileConfig {
             config = config.client(client);
         }
         if let Some(bundle) = self.bundle_endpoint {
-            config =
-                config.bundle_manifest_url(expand_endpoint(&bundle, current_version, bundle_type)?);
+            config = config.bundle_manifest_url(expand_endpoint(
+                &bundle,
+                current_version,
+                bundle_type,
+                &channel,
+            )?);
         }
         Ok(config)
     }
@@ -187,12 +209,14 @@ impl FileConfig {
 /// 展开官方 updater 支持的端点占位符。
 ///
 /// 支持 `{{target}}`（windows / darwin / linux）、`{{arch}}`（x86_64 / aarch64）、
-/// `{{current_version}}` 与 `{{bundle_type}}`（需配置 `bundle_type`）。
-/// 用了 `{{bundle_type}}` 却没配置时返回明确错误，避免请求带着字面量花括号发出。
+/// `{{current_version}}`、`{{channel}}`（默认 `stable`）与 `{{bundle_type}}`
+/// （需配置 `bundle_type`）。用了 `{{bundle_type}}` 却没配置时返回明确错误，
+/// 避免请求带着字面量花括号发出。
 fn expand_endpoint(
     url: &str,
     current_version: &str,
     bundle_type: Option<&str>,
+    channel: &str,
 ) -> Result<String, String> {
     if url.contains("{{bundle_type}}") && bundle_type.is_none() {
         return Err(
@@ -206,7 +230,8 @@ fn expand_endpoint(
     let mut expanded = url
         .replace("{{target}}", target)
         .replace("{{arch}}", arch)
-        .replace("{{current_version}}", current_version);
+        .replace("{{current_version}}", current_version)
+        .replace("{{channel}}", channel);
     if let Some(kind) = bundle_type {
         expanded = expanded.replace("{{bundle_type}}", kind);
     }

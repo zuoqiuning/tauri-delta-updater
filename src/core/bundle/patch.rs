@@ -44,6 +44,9 @@ pub struct BundleManifest {
     /// 每个历史版本的整包补丁。
     #[serde(default)]
     pub bundles: Vec<BundlePatch>,
+    /// 未识别的顶层字段，原样保留（与 [`crate::UpdateManifest::extra`] 同语义）。
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl BundleManifest {
