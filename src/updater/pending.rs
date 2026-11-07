@@ -134,6 +134,11 @@ impl DeltaUpdater {
     /// [`Self::pending_update`] 的版本时调用 [`Self::discard_pending`]，
     /// 再执行新的更新；否则会先装到 pending 的旧版本，再走一次更新。
     pub async fn install_pending(&self) -> Result<bool> {
+        // 安装目录处于"整包替换未完成"的中间状态时，必须先修复（`update()` 会优先
+        // 走修复）；直接执行待安装替换脚本可能覆盖恢复现场。
+        if PlatformUpdater::bundle_repair_needed(&self.executable_path, self.work_dir()) {
+            return Ok(false);
+        }
         let _lock = UpdateLock::acquire_in(self.work_dir())?;
         let Some(record) = self.pending_update().await? else {
             return Ok(false);
@@ -358,6 +363,22 @@ mod tests {
         assert!(updater.discard_pending().await.unwrap());
         assert!(!dir.path().join(artifacts::PENDING_FILE).exists());
         assert!(!updater.discard_pending().await.unwrap());
+    }
+
+    /// 整包替换中断时必须先修复，不能直接执行待安装脚本（记录保留给下次启动）。
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn install_pending_refuses_while_bundle_repair_is_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_exe_record(dir.path(), "0.3.0", b"new").await;
+        std::fs::create_dir_all(dir.path().join(artifacts::BUNDLE_BACKUP_DIR)).unwrap();
+
+        let updater = test_updater(dir.path(), "0.2.0");
+        assert!(!updater.install_pending().await.unwrap());
+        assert!(
+            updater.pending_update().await.unwrap().is_some(),
+            "修复优先，待安装记录必须保留"
+        );
     }
 
     #[test]
