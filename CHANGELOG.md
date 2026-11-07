@@ -37,6 +37,11 @@
 
 ### 新增
 
+- 多密钥信任：`UpdateConfig::additional_public_keys` + `TrustPolicy`
+  （`AnyOf` 默认 / `AllOf` 要求全部签名），插件配置 `additional_pubkeys` / `trust_policy`；
+  `.sig` 与 `platforms[].signature` 支持多个 minisign 签名块，
+  `cargo delta generate --secondary-private-key` 可双签清单与安装包，
+  用于密钥轮换而不打断旧客户端。
 - 多跳补丁链：没有直达补丁时按最多 3 跳依次应用（`0.1 → 0.2 → 0.3`），
   每一跳都用签名清单里的 `target_hash` 校验中间产物，再作为下一跳输入；
   链的总大小超过安装包 80% 时回退全量。`cargo delta generate` 自动保留

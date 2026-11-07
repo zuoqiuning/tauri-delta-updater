@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri_delta_updater::{
-    CancelToken, DeltaError, DeltaUpdater, FallbackPolicy, UpdateConfig, UpdateEvent,
+    CancelToken, DeltaError, DeltaUpdater, FallbackPolicy, TrustPolicy, UpdateConfig, UpdateEvent,
     UpdateOutcome, UpdateResult,
 };
 use tempfile::tempdir;
@@ -58,6 +58,61 @@ async fn test_custom_headers_are_sent() {
     assert!(
         matches!(err, DeltaError::HttpStatus(403)),
         "缺少请求头必须被服务端拒绝，实际: {err:?}"
+    );
+}
+
+/// 双签清单 + `AllOf`：客户端必须接受双签、拒绝单签。
+#[tokio::test]
+async fn test_multi_key_all_of_is_enforced() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app.exe");
+    let work_dir = dir.path().join("work");
+    std::fs::write(&exe, b"app").unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+
+    let (sk_a, pk_a) = signing_keypair();
+    let (sk_b, pk_b) = signing_keypair();
+    let server = MockServer::start(HashMap::new());
+    let platform = tauri_delta_updater::current_platform();
+    let (manifest_bytes, _) = build_manifest(
+        &sk_a,
+        &server.base_url,
+        "0.2.0",
+        platform,
+        "patch-hash",
+        "target-hash",
+        None,
+    );
+    let dual = format!(
+        "{}\n{}",
+        sign(&sk_a, &manifest_bytes),
+        sign(&sk_b, &manifest_bytes)
+    );
+    server.set("/latest.json", manifest_bytes.clone());
+    server.set("/latest.json.sig", dual.into_bytes());
+
+    let updater = DeltaUpdater::new(
+        UpdateConfig::new(server.url("/latest.json"), pk_a)
+            .current_version("0.1.0")
+            .executable_path(&exe)
+            .work_dir(&work_dir)
+            .additional_public_keys(vec![pk_b])
+            .trust_policy(TrustPolicy::AllOf),
+    )
+    .unwrap();
+    assert!(
+        updater.check().await.is_ok(),
+        "新旧两把密钥都签名的清单必须通过 AllOf"
+    );
+
+    server.set(
+        "/latest.json.sig",
+        sign(&sk_a, &manifest_bytes).into_bytes(),
+    );
+    let err = updater.check().await.unwrap_err();
+    assert!(
+        matches!(err, DeltaError::SignatureInvalid(_)),
+        "只有一把签名时 AllOf 必须拒绝，实际: {err:?}"
     );
 }
 

@@ -235,6 +235,8 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 ///     "delta-updater": {
 ///       "endpoints": ["https://cdn.example.com/latest.json"],
 ///       "pubkey": "RWQ...",
+///       "additional_pubkeys": ["RWQ... (old key during rotation)"],
+///       "trust_policy": "any",
 ///       "bundle_endpoint": "https://cdn.example.com/latest.bundle.json",
 ///       "work_dir": "/custom/writable/dir",
 ///       "wait_timeout_secs": 60,

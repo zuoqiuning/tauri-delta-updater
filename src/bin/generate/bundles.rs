@@ -16,7 +16,7 @@ pub(crate) async fn generate_bundles(
     output_dir: &Path,
     patch_dir: &Path,
     manifest_file: &str,
-    secret_key: &minisign::SecretKey,
+    signing_keys: &[minisign::SecretKey],
 ) -> Result<usize, String> {
     let Some(new_dir) = &args.new_app_dir else {
         return Ok(0);
@@ -95,15 +95,9 @@ pub(crate) async fn generate_bundles(
     std::fs::create_dir_all(output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
     std::fs::write(output_dir.join(manifest_file), &json)
         .map_err(|e| format!("写入 {manifest_file} 失败: {e}"))?;
-    let signature = minisign::sign(
-        None,
-        secret_key,
-        std::io::Cursor::new(&json),
-        Some(&format!("tdu:v={new_version}")),
-        None,
-    )
-    .map_err(|e| format!("签名整包清单失败: {e}"))?
-    .to_string();
+    let signature =
+        crate::sign_with_keys(signing_keys, &json, Some(&format!("tdu:v={new_version}")))
+            .map_err(|e| format!("签名整包清单失败: {e}"))?;
     std::fs::write(output_dir.join(format!("{manifest_file}.sig")), signature)
         .map_err(|e| format!("写入 {manifest_file}.sig 失败: {e}"))?;
 

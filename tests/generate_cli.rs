@@ -1134,6 +1134,76 @@ fn test_generate_cli_rejects_path_like_channel() {
     );
 }
 
+/// 双签：清单与安装包都必须带上第二把密钥的签名。
+#[test]
+fn test_generate_cli_dual_signs_with_secondary_key() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk1, sk1_text, pk1) = keypair();
+    let (_sk2, sk2_text, pk2) = keypair();
+    let key1 = dir.join("key1.msk");
+    let key2 = dir.join("key2.msk");
+    std::fs::write(&key1, sk1_text.as_bytes()).unwrap();
+    std::fs::write(&key2, sk2_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key1),
+        "--secondary-private-key".into(),
+        s(&key2),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(code, 0, "双签必须成功\nstderr: {stderr}");
+
+    let manifest = std::fs::read(dir.join("latest.json")).unwrap();
+    let signature = std::fs::read_to_string(dir.join("latest.json.sig")).unwrap();
+    assert_eq!(
+        signature.matches("untrusted comment:").count(),
+        2,
+        "两把私钥都应产生一个签名块"
+    );
+
+    let keys = [pk1.as_str(), pk2.as_str()];
+    assert!(
+        tauri_delta_updater::verify_manifest_signature_multi(
+            &manifest,
+            &signature,
+            &keys,
+            tauri_delta_updater::TrustPolicy::AllOf,
+            true
+        )
+        .is_ok(),
+        "双签清单必须在 AllOf 下通过"
+    );
+
+    let manifest_json: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+    let installer_signature = manifest_json["platforms"]["windows-x86_64"]["signature"]
+        .as_str()
+        .expect("平台条目必须带安装包签名");
+    assert!(
+        tauri_delta_updater::verify_file_signature_multi(
+            &new_exe,
+            installer_signature,
+            &keys,
+            tauri_delta_updater::TrustPolicy::AllOf
+        )
+        .is_ok(),
+        "安装包也必须被两把密钥同时签名"
+    );
+}
+
 /// 计算字节的 SHA-256（小写十六进制）。
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

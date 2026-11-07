@@ -32,10 +32,43 @@ fn parse_public_key(input: &str) -> Result<PublicKey> {
     PublicKey::decode(&text).map_err(|e| DeltaError::SignatureInvalid(format!("公钥无效: {e}")))
 }
 
-/// 解析签名。接受 base64 或原始 `.sig` 文件内容。
-fn parse_signature(input: &str) -> Result<Signature> {
-    let text = decode_minisign_text(input, "签名")?;
-    Signature::decode(&text).map_err(|e| DeltaError::SignatureInvalid(format!("签名无效: {e}")))
+/// 把签名文本拆成独立的 minisign 签名块。
+///
+/// 一个 `.sig` 文件可以包含多个签名（每个都以 `untrusted comment:` 开头），
+/// 用于密钥轮换期的双签名。单签名文件的解析结果与拆分前完全一致。
+fn split_signature_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with(MINISIGN_COMMENT_PREFIX) && !current.is_empty() {
+            blocks.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        blocks.push(current);
+    }
+    blocks
+}
+
+/// 信任策略：多个受信任密钥时，需要满足什么条件。
+///
+/// 密钥轮换的推荐路径：先把新旧两把公钥都固化进客户端（`AnyOf`），
+/// 发布端双签一段时间；确认旧客户端都升级后，再让新版本只信任新密钥。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum TrustPolicy {
+    /// 任意一把受信任密钥的有效签名即可。默认，适合密钥轮换的过渡期。
+    #[default]
+    AnyOf,
+    /// **所有**受信任密钥都必须签名（双签强制）。
+    ///
+    /// 发布端漏签一把就会让所有更新失败；这是有意的强约束，
+    /// 只在确实需要"两把钥匙同时在场"的窗口使用。
+    AllOf,
 }
 
 /// 校验 `latest.json` 的签名，防止中间人劫持篡改 `patches` 中的 `target_hash`。
@@ -67,18 +100,79 @@ pub fn verify_manifest_signature_with(
     public_key_b64: &str,
     allow_legacy: bool,
 ) -> Result<()> {
-    let public_key = parse_public_key(public_key_b64)?;
-    let signature = parse_signature(signature)?;
+    verify_manifest_signature_multi(
+        manifest_content,
+        signature,
+        &[public_key_b64],
+        TrustPolicy::AnyOf,
+        allow_legacy,
+    )
+}
 
-    // `allow_legacy` 对应 minisign-verify 的同名语义：
-    // 同时接受旧格式（非预哈希）与新版预哈希签名。
-    public_key
-        .verify(manifest_content, &signature, allow_legacy)
-        .map_err(|_| {
-            DeltaError::SignatureInvalid(
-                "清单签名校验失败！文件可能已被篡改，已阻断更新。".to_string(),
-            )
-        })
+/// 用一组受信任密钥校验签名（支持双签 / 密钥轮换）。
+///
+/// `keys` 至少包含一把公钥；`policy` 决定任意一把还是全部都要签。
+/// 签名文本可以包含多个 `minisign` 签名块（发布端双签时按块拼接）。
+pub fn verify_manifest_signature_multi(
+    content: &[u8],
+    signature: &str,
+    keys: &[&str],
+    policy: TrustPolicy,
+    allow_legacy: bool,
+) -> Result<()> {
+    if keys.is_empty() {
+        return Err(DeltaError::SignatureInvalid(
+            "没有配置任何受信任公钥".to_string(),
+        ));
+    }
+
+    let text = decode_minisign_text(signature, "签名")?;
+    let blocks = split_signature_blocks(&text);
+    let signatures: Vec<Signature> = blocks
+        .iter()
+        .filter_map(|block| Signature::decode(block).ok())
+        .collect();
+    if signatures.is_empty() {
+        return Err(DeltaError::SignatureInvalid(
+            "签名无效：没有任何可解析的 minisign 签名块".to_string(),
+        ));
+    }
+
+    // 公钥格式错误是配置问题，必须显式报出来，而不是伪装成"签名被篡改"。
+    let mut parsed_keys = Vec::with_capacity(keys.len());
+    for key in keys {
+        parsed_keys.push(parse_public_key(key)?);
+    }
+
+    let verify_one = |key: &PublicKey| {
+        signatures
+            .iter()
+            .any(|signature| key.verify(content, signature, allow_legacy).is_ok())
+    };
+
+    let tampered = || {
+        DeltaError::SignatureInvalid("清单签名校验失败！文件可能已被篡改，已阻断更新。".to_string())
+    };
+
+    match policy {
+        TrustPolicy::AnyOf => {
+            if parsed_keys.iter().any(verify_one) {
+                Ok(())
+            } else {
+                Err(tampered())
+            }
+        }
+        TrustPolicy::AllOf => {
+            let missing = parsed_keys.iter().filter(|key| !verify_one(key)).count();
+            if missing == 0 {
+                Ok(())
+            } else {
+                Err(DeltaError::SignatureInvalid(format!(
+                    "双签校验失败：{missing} 把受信任密钥没有提供有效签名（trust_policy = all 要求全部签名）"
+                )))
+            }
+        }
+    }
 }
 
 /// 从磁盘上的 `.sig` 文件校验 `latest.json` 的签名。
@@ -101,10 +195,23 @@ pub fn verify_manifest_signature_file(
 /// `signature` 与 `public_key_b64` 的格式与 [`verify_manifest_signature`] 相同，
 /// 因此可以直接喂 `latest.json` 里的 `platforms[].signature`。
 pub fn verify_file_signature(file: &Path, signature: &str, public_key_b64: &str) -> Result<()> {
+    verify_file_signature_multi(file, signature, &[public_key_b64], TrustPolicy::AnyOf)
+}
+
+/// 用一组受信任密钥校验磁盘上大文件的签名（支持双签）。
+///
+/// 与 [`verify_manifest_signature_multi`] 使用同一套信任策略；
+/// 用只读 mmap 读取，不把安装包整体读进内存。
+pub fn verify_file_signature_multi(
+    file: &Path,
+    signature: &str,
+    keys: &[&str],
+    policy: TrustPolicy,
+) -> Result<()> {
     let opened = std::fs::File::open(file)?;
     // mmap 只读，文件在验签期间不会被写；所有权由 `opened` 保证。
     let mapped = unsafe { memmap2::Mmap::map(&opened)? };
-    verify_manifest_signature(&mapped, signature, public_key_b64)
+    verify_manifest_signature_multi(&mapped, signature, keys, policy, true)
 }
 
 /// 版本绑定的 trusted comment 前缀。
@@ -129,7 +236,8 @@ const VERSION_BINDING_PREFIX: &str = "tdu:v=";
 /// `signature` 接受 base64 编码或 minisign 原始 `.sig` 文本。
 pub fn manifest_version_binding(signature: &str) -> Option<String> {
     let text = decode_minisign_text(signature, "签名").ok()?;
-    let sig = Signature::decode(&text).ok()?;
+    let block = split_signature_blocks(&text).into_iter().next()?;
+    let sig = Signature::decode(&block).ok()?;
     sig.trusted_comment()
         .strip_prefix(VERSION_BINDING_PREFIX)?
         .split(';')
@@ -139,8 +247,102 @@ pub fn manifest_version_binding(signature: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{manifest_version_binding, verify_manifest_signature};
+    use super::{
+        manifest_version_binding, verify_manifest_signature, verify_manifest_signature_multi,
+        TrustPolicy,
+    };
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    fn keypair() -> (minisign::SecretKey, String) {
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let pk_b64 = STANDARD.encode(kp.pk.to_box().unwrap().to_string().as_bytes());
+        (kp.sk, pk_b64)
+    }
+
+    fn sign_with(keys: &[&minisign::SecretKey], content: &[u8]) -> String {
+        keys.iter()
+            .map(|sk| {
+                minisign::sign(
+                    None,
+                    sk,
+                    std::io::Cursor::new(content),
+                    Some("tdu:v=1.0.0"),
+                    None,
+                )
+                .unwrap()
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 双签的 AnyOf：任意一把受信任密钥的有效签名都接受。
+    #[test]
+    fn any_of_accepts_either_key() {
+        let (sk_old, pk_old) = keypair();
+        let (_sk_new, pk_new) = keypair();
+        let content = b"{\"version\":\"1.0.0\"}";
+
+        let signed_by_old = sign_with(&[&sk_old], content);
+        let keys = [pk_old.as_str(), pk_new.as_str()];
+        assert!(verify_manifest_signature_multi(
+            content,
+            &signed_by_old,
+            &keys,
+            TrustPolicy::AnyOf,
+            true
+        )
+        .is_ok());
+        assert!(
+            verify_manifest_signature_multi(
+                content,
+                &signed_by_old,
+                &keys,
+                TrustPolicy::AllOf,
+                true
+            )
+            .is_err(),
+            "只签一把时 AllOf 必须拒绝"
+        );
+    }
+
+    /// 双签的 AllOf：两把密钥都签名才通过。
+    #[test]
+    fn all_of_requires_both_signatures() {
+        let (sk_old, pk_old) = keypair();
+        let (sk_new, pk_new) = keypair();
+        let content = b"{}";
+        let keys = [pk_old.as_str(), pk_new.as_str()];
+
+        let both = sign_with(&[&sk_old, &sk_new], content);
+        assert!(
+            verify_manifest_signature_multi(content, &both, &keys, TrustPolicy::AllOf, true)
+                .is_ok()
+        );
+
+        // 内容被换掉后，两块签名都必须失效。
+        assert!(verify_manifest_signature_multi(
+            b"{\"v\":2}",
+            &both,
+            &keys,
+            TrustPolicy::AllOf,
+            true
+        )
+        .is_err());
+    }
+
+    /// 多块签名里的版本绑定必须仍可读取（取第一块）。
+    #[test]
+    fn multi_block_version_binding_reads_first_block() {
+        let (sk_old, _pk_old) = keypair();
+        let (sk_new, _pk_new) = keypair();
+        let signed = sign_with(&[&sk_old, &sk_new], b"{}");
+        assert_eq!(
+            manifest_version_binding(&signed).as_deref(),
+            Some("1.0.0"),
+            "双签时版本绑定不能被多块拼接破坏"
+        );
+    }
 
     /// 发布端（minisign 0.7.9）产出的签名必须是 pre-hash 格式。
     ///

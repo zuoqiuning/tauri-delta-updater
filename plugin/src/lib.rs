@@ -228,7 +228,7 @@ mod tests {
     use super::{init, ErrorDto, UpdaterState};
     use crate::config::FileConfig;
     use tauri::Manager;
-    use tauri_delta_updater::{DeltaError, UpdateConfig};
+    use tauri_delta_updater::{DeltaError, TrustPolicy, UpdateConfig};
 
     #[test]
     fn error_dto_carries_stable_code() {
@@ -285,7 +285,9 @@ mod tests {
             "headers": { "X-Auth": "token" },
             "install_mode": "quiet",
             "allow_insecure_transport": false,
-            "install_on_next_launch": true
+            "install_on_next_launch": true,
+            "additional_pubkeys": ["OLD-KEY"],
+            "trust_policy": "all"
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         let config = file.into_update_config("1.0.0").unwrap();
@@ -312,14 +314,17 @@ mod tests {
         assert_eq!(config.install_mode, InstallMode::Quiet);
         assert!(!config.allow_insecure_transport);
         assert!(config.install_on_next_launch);
+        assert_eq!(config.additional_public_keys, vec!["OLD-KEY".to_string()]);
+        assert_eq!(config.trust_policy, TrustPolicy::AllOf);
     }
 
-    /// 非法端点策略/安装模式必须在启动阶段报错，而不是静默忽略。
+    /// 非法端点策略/安装模式/信任策略必须在启动阶段报错，而不是静默忽略。
     #[test]
     fn invalid_runtime_controls_are_rejected() {
         for (key, value) in [
             ("fallback_policy", "sometimes"),
             ("install_mode", "silentish"),
+            ("trust_policy", "majority"),
         ] {
             let mut raw = serde_json::json!({
                 "endpoints": ["https://cdn.example.com/latest.json"],
@@ -365,6 +370,8 @@ mod tests {
         let file = FileConfig {
             endpoints: Vec::new(),
             pubkey: "PK".into(),
+            additional_pubkeys: None,
+            trust_policy: None,
             bundle_endpoint: None,
             bundle_type: None,
             install_id: None,

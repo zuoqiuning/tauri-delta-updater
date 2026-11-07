@@ -1,5 +1,6 @@
 //! 增量更新配置。
 
+use crate::core::verify::TrustPolicy;
 use crate::error::DeltaError;
 use crate::platform::full_install::InstallMode;
 use crate::platform::target::current_platform;
@@ -68,6 +69,13 @@ pub struct UpdateConfig {
     ///
     /// 必须是**固化在应用里**的公钥，不能从服务器下载。
     pub public_key: String,
+    /// 额外的受信任公钥（密钥轮换 / 双签过渡）。
+    ///
+    /// 与 [`Self::public_key`] 组成信任集合；每个公钥都接受 base64 或
+    /// `.pub` 原文。是否要求全部签名由 [`Self::trust_policy`] 决定。
+    pub additional_public_keys: Vec<String>,
+    /// 多钥信任策略，默认 [`TrustPolicy::AnyOf`]（任意一把有效签名即可）。
+    pub trust_policy: TrustPolicy,
     /// 当前运行中的版本号，用于匹配补丁与拒绝降级。
     ///
     /// 必须是语义化版本（与 Tauri 的 `app.package_info().version` 一致）。
@@ -168,6 +176,8 @@ impl UpdateConfig {
             signature_url: default_signature_url(&manifest_url),
             manifest_url,
             public_key: public_key.into(),
+            additional_public_keys: Vec::new(),
+            trust_policy: TrustPolicy::default(),
             current_version: String::new(),
             platform: current_platform().to_string(),
             executable_path: None,
@@ -191,6 +201,18 @@ impl UpdateConfig {
     /// 设置当前版本号。
     pub fn current_version(mut self, version: impl Into<String>) -> Self {
         self.current_version = version.into();
+        self
+    }
+
+    /// 追加受信任公钥（密钥轮换期的旧钥或新钥）。
+    pub fn additional_public_keys(mut self, keys: Vec<String>) -> Self {
+        self.additional_public_keys = keys;
+        self
+    }
+
+    /// 设置多钥信任策略（默认任意一把有效签名即可）。
+    pub fn trust_policy(mut self, policy: TrustPolicy) -> Self {
+        self.trust_policy = policy;
         self
     }
 
@@ -305,6 +327,13 @@ impl UpdateConfig {
         std::iter::once(&self.manifest_url)
             .chain(self.fallback_manifest_urls.iter())
             .any(|url| endpoint_is_insecure(url))
+    }
+
+    /// 完整的受信任公钥集合（主公钥 + 额外公钥）。
+    pub(crate) fn trusted_keys(&self) -> Vec<&str> {
+        std::iter::once(self.public_key.as_str())
+            .chain(self.additional_public_keys.iter().map(|key| key.as_str()))
+            .collect()
     }
 }
 

@@ -3,7 +3,7 @@
 use super::config::default_signature_url;
 use super::DeltaUpdater;
 use crate::core::bundle::BundleManifest;
-use crate::core::verify::verify_manifest_signature_with;
+use crate::core::verify::verify_manifest_signature_multi;
 use crate::error::{DeltaError, Result};
 use crate::models::UpdateManifest;
 use futures_util::StreamExt;
@@ -26,10 +26,11 @@ impl DeltaUpdater {
         let manifest_bytes = manifest_bytes?;
         let signature = signature?;
 
-        verify_manifest_signature_with(
+        verify_manifest_signature_multi(
             &manifest_bytes,
             &signature,
-            &self.config.public_key,
+            &self.config.trusted_keys(),
+            self.config.trust_policy,
             self.config.allow_legacy_signatures,
         )?;
 
@@ -79,10 +80,11 @@ impl DeltaUpdater {
         let manifest_bytes = manifest_bytes?;
         let signature = signature?;
 
-        verify_manifest_signature_with(
+        verify_manifest_signature_multi(
             &manifest_bytes,
             &signature,
-            &self.config.public_key,
+            &self.config.trusted_keys(),
+            self.config.trust_policy,
             self.config.allow_legacy_signatures,
         )?;
 

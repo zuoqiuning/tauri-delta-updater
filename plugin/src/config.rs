@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::{AppHandle, Runtime};
-use tauri_delta_updater::{FallbackPolicy, InstallMode, UpdateConfig};
+use tauri_delta_updater::{FallbackPolicy, InstallMode, TrustPolicy, UpdateConfig};
 
 /// `tauri.conf.json` 里 `plugins.delta-updater` 的配置。
 ///
@@ -16,6 +16,12 @@ pub(crate) struct FileConfig {
     pub(crate) endpoints: Vec<String>,
     /// 固化在应用里的公钥（base64 或 `.pub` 文件内容）。
     pub(crate) pubkey: String,
+    /// 可选：额外的受信任公钥（密钥轮换 / 双签过渡）。
+    #[serde(default)]
+    pub(crate) additional_pubkeys: Option<Vec<String>>,
+    /// 可选：多钥信任策略（`any` 默认 / `all` 要求全部签名）。
+    #[serde(default)]
+    pub(crate) trust_policy: Option<String>,
     /// 可选：整包清单地址（`latest.bundle.json`）。
     #[serde(default)]
     pub(crate) bundle_endpoint: Option<String>,
@@ -76,6 +82,21 @@ impl FileConfig {
             .map(|url| expand_endpoint(&url, current_version, bundle_type))
             .collect::<Result<Vec<_>, _>>()?;
         let mut config = UpdateConfig::new(primary, self.pubkey).current_version(current_version);
+        if let Some(keys) = self.additional_pubkeys {
+            config = config.additional_public_keys(keys);
+        }
+        if let Some(policy) = self.trust_policy {
+            let policy = match policy.trim().to_ascii_lowercase().as_str() {
+                "any" | "any_of" => TrustPolicy::AnyOf,
+                "all" | "all_of" => TrustPolicy::AllOf,
+                other => {
+                    return Err(format!(
+                        "plugins.delta-updater.trust_policy 非法: {other}（any / all）"
+                    ))
+                }
+            };
+            config = config.trust_policy(policy);
+        }
         if !fallbacks.is_empty() {
             config = config.fallback_endpoints(fallbacks);
         }

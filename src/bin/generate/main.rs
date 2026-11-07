@@ -130,6 +130,27 @@ fn main() {
     }
 }
 
+/// 用一把或多把私钥签名；多钥时按 minisign 块拼接（客户端支持多块验签）。
+fn sign_with_keys(
+    keys: &[minisign::SecretKey],
+    content: &[u8],
+    trusted_comment: Option<&str>,
+) -> Result<String, String> {
+    let mut blocks = Vec::with_capacity(keys.len());
+    for key in keys {
+        let signature = minisign::sign(
+            None,
+            key,
+            std::io::Cursor::new(content),
+            trusted_comment,
+            None,
+        )
+        .map_err(|e| format!("签名失败: {e}"))?;
+        blocks.push(signature.to_string());
+    }
+    Ok(blocks.join("\n"))
+}
+
 async fn run(args: Args) -> Result<(), String> {
     println!("[INFO] 开始生成更新清单...");
 
@@ -222,7 +243,28 @@ async fn run(args: Args) -> Result<(), String> {
         &args.private_key,
         args.password.as_deref().filter(|p| !p.is_empty()),
     )?;
-    let public_key = derive_public_key(&secret_key)?;
+    let secondary_key = match &args.secondary_private_key {
+        Some(path) => Some(load_secret_key(
+            path,
+            args.secondary_password.as_deref().filter(|p| !p.is_empty()),
+        )?),
+        None => None,
+    };
+    let mut signing_keys = vec![secret_key];
+    if let Some(secondary) = secondary_key {
+        signing_keys.push(secondary);
+    }
+    let public_key = derive_public_key(&signing_keys[0])?;
+    if let Some(secondary_public) = signing_keys.get(1).map(derive_public_key).transpose()? {
+        if secondary_public
+            .to_box()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            == public_key.to_box().map_err(|e| e.to_string())?.to_string()
+        {
+            println!("[WARN] --secondary-private-key 与主私钥是同一把密钥，双签没有意义");
+        }
+    }
 
     let installer = args.installer.as_deref().unwrap_or(&args.app_binary);
     if args.installer.is_none() {
@@ -383,7 +425,7 @@ async fn run(args: Args) -> Result<(), String> {
         &output_dir,
         &patch_dir,
         &bundle_file,
-        &secret_key,
+        &signing_keys,
     )
     .await?;
 
@@ -401,17 +443,10 @@ async fn run(args: Args) -> Result<(), String> {
     manifest.pub_date = chrono::Utc::now().to_rfc3339();
     manifest.notes = args.notes.clone();
 
-    // 安装包本身的签名，供 Tauri 官方 updater 校验全量下载
+    // 安装包本身的签名，供 Tauri 官方 updater 校验全量下载。
+    // 双签时把多个 minisign 块拼接：客户端支持多块验签。
     let installer_bytes = std::fs::read(installer).map_err(|e| format!("读取安装包失败: {e}"))?;
-    let installer_signature = minisign::sign(
-        None,
-        &secret_key,
-        std::io::Cursor::new(&installer_bytes),
-        None,
-        None,
-    )
-    .map_err(|e| format!("签名安装包失败: {e}"))?
-    .to_string();
+    let installer_signature = sign_with_keys(&signing_keys, &installer_bytes, None)?;
 
     if let Some(entry) = manifest.platforms.get_mut(&platform_key) {
         entry.signature = STANDARD.encode(installer_signature.as_bytes());
@@ -423,15 +458,11 @@ async fn run(args: Args) -> Result<(), String> {
     // 的版本单调性比较（is_newer_than）负责。
     let json_bytes =
         serde_json::to_vec_pretty(&manifest).map_err(|e| format!("序列化清单失败: {e}"))?;
-    let signature_text = minisign::sign(
-        None,
-        &secret_key,
-        std::io::Cursor::new(&json_bytes),
+    let signature_text = sign_with_keys(
+        &signing_keys,
+        &json_bytes,
         Some(&format!("tdu:v={new_version}")),
-        None,
-    )
-    .map_err(|e| format!("签名失败: {e}"))?
-    .to_string();
+    )?;
 
     std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
     std::fs::write(output_dir.join(&manifest_file), &json_bytes)
@@ -442,20 +473,24 @@ async fn run(args: Args) -> Result<(), String> {
     )
     .map_err(|e| format!("写入 {manifest_file}.sig 失败: {e}"))?;
 
-    let public_key_text = public_key
-        .to_box()
-        .map_err(|e| format!("导出公钥失败: {e}"))?
-        .to_string();
-    // 加警告注释：这个文件只供运维查看，客户端绝不能从服务器读取公钥，
+    // 公钥文件只供运维查看；客户端绝不能从服务器读取公钥，
     // 否则攻击者可同时替换清单与公钥。保持 untrusted comment 前缀以兼容解析。
-    let public_key_text = public_key_text.replacen(
-        "untrusted comment:",
-        "untrusted comment: DO NOT TRUST this file fetched from a server; clients must embed the public key. Original comment:",
-        1,
-    );
+    let mut public_key_texts = Vec::with_capacity(signing_keys.len());
+    for key in &signing_keys {
+        let text = derive_public_key(key)
+            .map_err(|e| format!("导出公钥失败: {e}"))?
+            .to_box()
+            .map_err(|e| format!("导出公钥失败: {e}"))?
+            .to_string();
+        public_key_texts.push(text.replacen(
+            "untrusted comment:",
+            "untrusted comment: DO NOT TRUST this file fetched from a server; clients must embed the public key. Original comment:",
+            1,
+        ));
+    }
     std::fs::write(
         output_dir.join(format!("{manifest_file}.pub")),
-        public_key_text,
+        public_key_texts.join("\n"),
     )
     .map_err(|e| format!("写入 {manifest_file}.pub 失败: {e}"))?;
 

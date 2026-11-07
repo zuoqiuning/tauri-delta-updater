@@ -107,10 +107,11 @@ impl DeltaUpdater {
         }
 
         // 安装包可能几十到几百 MB：用 mmap 验签，不把整个文件读进内存。
-        if let Err(e) = crate::core::verify::verify_file_signature(
+        if let Err(e) = crate::core::verify::verify_file_signature_multi(
             &path,
             &full.signature,
-            &self.config.public_key,
+            &self.config.trusted_keys(),
+            self.config.trust_policy,
         ) {
             let _ = tokio::fs::remove_file(&path).await;
             return Err(e);

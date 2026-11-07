@@ -271,8 +271,9 @@ pub use core::safety::{
 };
 pub use core::startup::StartupState;
 pub use core::verify::{
-    manifest_version_binding, verify_file_signature, verify_manifest_signature,
-    verify_manifest_signature_file, verify_manifest_signature_with,
+    manifest_version_binding, verify_file_signature, verify_file_signature_multi,
+    verify_manifest_signature, verify_manifest_signature_file, verify_manifest_signature_multi,
+    verify_manifest_signature_with, TrustPolicy,
 };
 pub use platform::full_install::InstallMode;
 pub use platform::target::{

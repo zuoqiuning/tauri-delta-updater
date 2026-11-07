@@ -123,9 +123,10 @@ timings), `proxy` (`http://127.0.0.1:7890`), `headers` (extra HTTP headers for
 private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
 (`false` rejects pre-0.7 minisign signatures), `fallback_policy`
 (`transport` / `any`), `install_mode` (`passive` / `basicUi` / `quiet`),
-`allow_insecure_transport`, `bundle_type`, `install_id`, and
+`allow_insecure_transport`, `bundle_type`, `install_id`,
 `install_on_next_launch` (install the staged update on the next start; off by
-default).
+default), `additional_pubkeys` (extra trusted keys during rotation), and
+`trust_policy` (`any` default / `all` requires every trusted key to sign).
 
 `endpoints` is an array: the first URL is the primary manifest, the rest are
 backups. With the default `fallback_policy: "transport"`, the updater switches
@@ -361,6 +362,7 @@ Platform support:
 - **Local verification harness** — `simulate_update(old, new, work_dir)` runs generate → apply → dual-hash verification with no network or signing key, so you can see the real patch ratio before integrating.
 - **Environment diagnosis** — `DeltaUpdater::diagnose()` reports work-directory/install-directory writability, platform eligibility, safe-mode state, the exact log path, `last_rollback` (why the last replacement script rolled back, e.g. `update_failed` / `startup_timeout`), `events_path` for the structured stream below, and `user_message()` for a ready-to-display one-line summary. Linux builds also report whether a privilege-drop tool (`runuser` / `su`) was found; Windows builds report `authenticode` (whether the running exe is trusted) and `authenticode_check_skipped` (true when the check could not reach a conclusion, e.g. offline with no cached chain).
 - **Multi-hop delta chains** — when no direct patch exists, `update()` applies up to 3 verified hops (0.1 → 0.2 → 0.3), checking each intermediate result against its signed `target_hash` before it becomes the next hop's input. The planner prefers a direct patch, then the cheapest viable chain, then the full installer; a chain whose total size exceeds 80% of the installer falls back to full. The generator keeps only chainable history (`MAX_DELTA_CHAIN_HOPS`) so manifests don't grow forever.
+- **Key rotation without breaking old clients** — `additional_public_keys` / `additional_pubkeys` extend the trusted set; `trust_policy: "any"` accepts a signature from any of them, `"all"` requires every key to sign (dual-sign window). `.sig` files may contain multiple minisign blocks, and `generate --secondary-private-key` signs both the manifest and the installer with both keys.
 - **Signed percentage rollout** — `generate --rollout 20` writes `platforms[].rollout` into the signed manifest; clients bucket on `sha256(install_id + version) % 100`. Misses get `Deferred` and download nothing; `0` pauses the release, `100` behaves like a normal release. The install ID persists in `tdx_install_id`, or pass `UpdateConfig::install_id(...)`. No server-side bucketing and no second manifest.
 - **Forced minimum version** — `generate --min-version 0.1.5` writes a signed floor into the manifest. Clients below it ignore the rollout percentage and must update, so a bad release can be reversed without waiting for the bucket.
 - **Deterministic startup handshake** — the replacement script writes `staged`, the new process writes `booting`, and `confirm_startup_success_with(|| ...)` writes `committed` only after the host's health check passes. Failure writes `health_check_failed` and rolls back immediately; `diagnose().startup_state` / `last_rollback` distinguish "never started", "crashed before commit", "started but unhealthy" and "committed".
@@ -1036,6 +1038,8 @@ Key arguments:
 | `--zstd-level` | Patch compression level, 1–22 (default 19). Lower it to 15–17 when CI time matters for large patches. |
 | `--existing` | Previous `latest.json`, to preserve other platforms' entries and patches. |
 | `--password` | Private-key password (or `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). |
+| `--secondary-private-key` | Second minisign key; signs the manifest **and** the installer with both keys (`.sig` gets two blocks). Use during key rotation. |
+| `--secondary-password` | Password for the second key. |
 | `--output-dir` | Where `latest.json`, `.sig`, and `.pub` are written (default: current directory). |
 | `--archive-dir` | Copy the current main executable there as the next release's baseline. |
 | `--new-app-dir` | Current app directory (exe + sidecars + resources); enables whole-app bundle patches. |
@@ -1050,6 +1054,14 @@ Key arguments:
 The generator only produces patches for old executables matching the target
 architecture/OS; every patch is **applied and hash-verified** before it is
 written into the manifest, so a bad patch fails CI instead of a user's rollback.
+
+**Rotating the signing key.** Ship the new public key as `additional_pubkeys`
+(or `UpdateConfig::additional_public_keys`) *before* it is needed, then publish
+dual-signed manifests for a release cycle (`--secondary-private-key`). Clients
+on the old key still verify (default `trust_policy: "any"`). Only after old
+clients are gone should a release be signed with the new key alone. Setting
+`trust_policy: "all"` forces dual-signing but makes a forgotten second
+signature a release-wide outage — use it only for the explicit transition window.
 
 <details>
 <summary>GitHub Actions sketch</summary>
@@ -1218,11 +1230,14 @@ fallback, this library is the deeper option.
   keep working. Details: [CHANGELOG.md](CHANGELOG.md).
 - **Unreleased**: `UpdateResult` gained `Ready` (returned by the plugin's
   `prepare` command); `UpdateConfig` gained `headers`, `fallback_endpoints`,
-  `fallback_policy`, `install_mode`, `allow_insecure_transport` and
-  `install_on_next_launch`; `Diagnosis` gained `insecure_transport`; new
-  `PendingUpdate` / `PendingArtifact` types and `pending` / `install_pending`
-  plugin commands. The release workflow now publishes both crates; until the
-  plugin appears on crates.io, `cargo delta init` writes a git dependency.
+  `fallback_policy`, `install_mode`, `allow_insecure_transport`,
+  `install_on_next_launch`, `additional_public_keys` and `trust_policy`;
+  `Diagnosis` gained `insecure_transport`; new `PendingUpdate` / `PendingArtifact`
+  types, `TrustPolicy`, `verify_manifest_signature_multi`,
+  `verify_file_signature_multi`, `MAX_DELTA_CHAIN_HOPS`, and the `pending` /
+  `install_pending` plugin commands. The release workflow now publishes both
+  crates; until the plugin appears on crates.io, `cargo delta init` writes a git
+  dependency.
 
 ## License
 

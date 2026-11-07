@@ -57,6 +57,16 @@ pub(crate) struct Args {
     #[arg(long, env = "TAURI_SIGNING_PRIVATE_KEY_PASSWORD")]
     pub(crate) password: Option<String>,
 
+    /// 第二把 minisign 私钥：用于密钥轮换期的双签（清单与安装包都会双签）。
+    ///
+    /// 客户端需同时固化新旧两把公钥（`trust_policy = any` 即可）。
+    #[arg(long, value_name = "PATH")]
+    pub(crate) secondary_private_key: Option<String>,
+
+    /// 第二把私钥的口令。
+    #[arg(long)]
+    pub(crate) secondary_password: Option<String>,
+
     /// 上一版 latest.json，用于保留其它平台的补丁与条目。
     #[arg(long)]
     pub(crate) existing: Option<PathBuf>,

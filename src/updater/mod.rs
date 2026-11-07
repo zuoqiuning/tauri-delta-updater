@@ -73,6 +73,15 @@ impl DeltaUpdater {
                 "public_key 不能为空：用于校验清单签名".into(),
             ));
         }
+        if config
+            .additional_public_keys
+            .iter()
+            .any(|key| key.trim().is_empty())
+        {
+            return Err(DeltaError::Config(
+                "additional_public_keys 不能包含空公钥".into(),
+            ));
+        }
         if let Some(url) = &config.bundle_manifest_url {
             if url.trim().is_empty() {
                 return Err(DeltaError::Config(
