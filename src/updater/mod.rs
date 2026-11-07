@@ -1,0 +1,625 @@
+//! 高层更新流程。
+//!
+//! 提供三种粒度，接入方按需选择：
+//!
+//! - [`DeltaUpdater::check`]：只检查是否有新版本，不下载任何东西。
+//!   用于 UI 的"发现新版本"阶段。
+//! - [`DeltaUpdater::prepare`]：下载并合并补丁，**不启动替换脚本**。
+//!   用于宿主需要自己控制替换时机（先弹提示、再退出）的场景。
+//! - [`DeltaUpdater::update`]：一步到位，检查 → 下载 → 合并 → 启动替换。
+//!
+//! 只想快速接入时用 [`DeltaUpdater::update`]；
+//! 需要自己控制每一步时，仍可直接使用 `core` 下的各个底层函数。
+
+use crate::core::paths::{default_work_dir, ensure_writable};
+use crate::error::{DeltaError, Result};
+use crate::session::UpdateEvent;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+mod bundle_flow;
+mod config;
+mod delta;
+mod diagnosis;
+mod fetch;
+mod flow;
+mod full;
+mod outcome;
+mod rollout;
+mod simulate;
+mod staged;
+
+pub use config::UpdateConfig;
+pub use diagnosis::{Diagnosis, ScriptEvent};
+pub use outcome::{CheckOutcome, FallbackReason, UpdateCheck, UpdateOutcome, UpdateResult};
+pub use simulate::{simulate_update, SimulationReport};
+pub use staged::{
+    FullDownload, FullDownloadOutcome, Staged, StagedBundle, StagedFullInstaller, StagedRepair,
+};
+
+/// 增量更新器。
+#[derive(Debug)]
+pub struct DeltaUpdater {
+    config: UpdateConfig,
+    executable_path: PathBuf,
+    /// 用户可写的工作目录：补丁、暂存文件、脚本、日志、标志。
+    work_dir: PathBuf,
+    client: reqwest::Client,
+}
+
+impl DeltaUpdater {
+    /// 按配置创建更新器。
+    ///
+    /// 会解析出被更新的可执行文件与工作目录，并**在构造阶段**验证工作目录可写。
+    ///
+    /// 配置里没指定可执行文件时使用当前进程的可执行文件；
+    /// 无法确定时返回错误——退化成相对路径会让补丁与产物落到意料之外的目录，
+    /// 比直接失败更难排查。
+    pub fn new(config: UpdateConfig) -> Result<Self> {
+        let mut config = config;
+
+        // 清单地址与公钥是必需项：留空时错误会以"网络请求失败/签名不匹配"
+        // 的形式出现在很远的地方，先在这里给出明确原因。
+        if config.manifest_url.trim().is_empty() {
+            return Err(DeltaError::Config(
+                "manifest_url 不能为空：它指向 latest.json".into(),
+            ));
+        }
+        if config.public_key.trim().is_empty() {
+            return Err(DeltaError::Config(
+                "public_key 不能为空：用于校验清单签名".into(),
+            ));
+        }
+        if let Some(url) = &config.bundle_manifest_url {
+            if url.trim().is_empty() {
+                return Err(DeltaError::Config(
+                    "bundle_manifest_url 不能为空：它指向 latest.bundle.json".into(),
+                ));
+            }
+        }
+
+        // 与发布端保持同一套版本格式：去掉首尾空白与 `v` 前缀。
+        // 否则 `" 1.2.3 "` 或 `"v1.2.3"` 会与清单里的 `1.2.3` 匹配不上，
+        // 表现为"永远没有补丁"这种最难排查的症状。
+        config.current_version =
+            crate::platform::target::normalize_version(&config.current_version).to_string();
+
+        // current_version 为空时 find_patch 永远返回 None，会静默退化成全量下载；
+        // 不是语义化版本时无法做降级判据。两者都是最难排查的接入错误，
+        // 必须在构造时就拒绝。
+        if config.current_version.is_empty() {
+            return Err(DeltaError::Config(
+                "current_version 不能为空：它决定匹配哪个版本的补丁".into(),
+            ));
+        }
+
+        // 0 秒会让脚本立刻判定"旧进程没有退出"并中止，本质上是配置错误。
+        if config.wait_timeout_secs == 0 || config.confirm_timeout_secs == 0 {
+            return Err(DeltaError::Config(
+                "wait_timeout_secs / confirm_timeout_secs 必须大于 0".into(),
+            ));
+        }
+        semver::Version::parse(&config.current_version).map_err(|e| {
+            DeltaError::Config(format!(
+                "current_version {:?} 不是合法的语义化版本（应形如 1.2.3）: {e}",
+                config.current_version
+            ))
+        })?;
+
+        // 确保 TLS 后端可用：宿主自建客户端时也必须在创建前安装，
+        // 这里提前装好，后续任何客户端都能直接使用。
+        crate::core::crypto::install_crypto_provider();
+
+        let executable_path = match &config.executable_path {
+            Some(path) => path.clone(),
+            // AppImage 下 current_exe() 指向临时挂载点，真正该替换的是 $APPIMAGE。
+            None => crate::platform::target::runtime_executable().map_err(|e| {
+                DeltaError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("无法确定当前可执行文件路径，请显式设置 executable_path: {e}"),
+                ))
+            })?,
+        };
+
+        let work_dir = match &config.work_dir {
+            Some(dir) => dir.clone(),
+            None => default_work_dir(&executable_path),
+        };
+
+        // 构造阶段就验证可写性：系统级安装目录只读时，
+        // 等到下载完成才失败会让用户白等一次，并累计进安全模式。
+        ensure_writable(&work_dir)?;
+
+        // 替换脚本产生的备份必须与目标 exe 同目录，因此 exe 必须在某个目录下
+        if executable_path.parent().is_none() {
+            return Err(DeltaError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "无法确定可执行文件所在目录",
+            )));
+        }
+
+        let client = match config.client.clone() {
+            Some(client) => client,
+            // 默认客户端带超时：连接 15 秒、单次读空闲 60 秒。
+            // 不设总超时——大补丁在慢网络下可能合法地下很久，
+            // 读超时只在"连接挂着但数据彻底停了"时触发。
+            None => reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .read_timeout(Duration::from_secs(60))
+                .build()
+                .map_err(|e| DeltaError::Network(format!("构建默认 HTTP 客户端失败: {e}")))?,
+        };
+
+        Ok(Self {
+            config,
+            executable_path,
+            work_dir,
+            client,
+        })
+    }
+
+    /// 零配置入口：只需清单地址、公钥与当前版本。
+    ///
+    /// 平台键、工作目录、HTTP 客户端全部自动推导。适合 80% 的接入场景；
+    /// 需要自定义代理、工作目录或错误处理时再用 [`Self::new`] + [`UpdateConfig`]。
+    ///
+    /// 版本号传 Tauri 的 `app.package_info().version.to_string()`；
+    /// 非 Tauri 宿主用 [`crate::host_version!`]，它展开为**调用方 crate** 的版本，
+    /// 而不是本库自身的版本。
+    ///
+    /// ```no_run
+    /// # fn example() -> tauri_delta_updater::Result<()> {
+    /// let updater = tauri_delta_updater::DeltaUpdater::auto(
+    ///     "https://cdn.example.com/latest.json",
+    ///     "BASE64_PUBLIC_KEY",
+    ///     tauri_delta_updater::host_version!(),
+    /// )?;
+    /// # let _ = updater;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn auto(
+        manifest_url: impl Into<String>,
+        public_key: impl Into<String>,
+        current_version: impl Into<String>,
+    ) -> Result<Self> {
+        Self::new(UpdateConfig::new(manifest_url, public_key).current_version(current_version))
+    }
+
+    /// 工作目录（补丁、暂存文件、替换脚本与日志所在处）。
+    pub fn work_dir(&self) -> &Path {
+        &self.work_dir
+    }
+
+    /// 配置里的脚本等待时长，生成替换脚本时写入。
+    pub(super) fn script_timings(&self) -> crate::platform::ScriptTimings {
+        crate::platform::ScriptTimings {
+            wait_secs: self.config.wait_timeout_secs,
+            confirm_secs: self.config.confirm_timeout_secs,
+        }
+    }
+}
+
+/// 补丁的最大下载体积（清单未声明 `patch_size` 时的兜底）。
+///
+/// 正常补丁远小于此值；超过它只可能是服务端被劫持或配置错误。
+pub(super) const MAX_PATCH_BYTES: u64 = 512 * 1024 * 1024;
+
+/// 发出阶段事件；没有订阅者时是零开销空操作。
+pub(super) fn emit<'a>(
+    on_event: &mut Option<Box<dyn FnMut(UpdateEvent) + Send + 'a>>,
+    event: UpdateEvent,
+) {
+    if let Some(cb) = on_event.as_mut() {
+        cb(event);
+    }
+}
+
+/// 是否已请求取消。
+pub(super) fn is_cancelled(cancel: Option<&crate::core::cancel::CancelToken>) -> bool {
+    cancel.is_some_and(crate::core::cancel::CancelToken::is_cancelled)
+}
+
+/// 下载补丁并完成续传身份复核、取消处理与哈希校验。
+///
+/// 单文件与整包两条路径共用这一段，只差哈希错误里的标签（`Patch` / `Bundle`）。
+/// 取消检查在下载前后各做一次：最后一块之后取消也要清掉半截文件。
+#[allow(clippy::too_many_arguments)] // 参数是一组独立上下文，合并成结构体反而增加噪音
+pub(super) async fn download_and_verify_patch<'a>(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    meta: &Path,
+    expected_hash: &str,
+    max_bytes: u64,
+    label: &str,
+    cancel: Option<&crate::core::cancel::CancelToken>,
+    on_event: &mut Option<Box<dyn FnMut(UpdateEvent) + Send + 'a>>,
+) -> Result<()> {
+    if is_cancelled(cancel) {
+        emit(on_event, UpdateEvent::Cancelled);
+        return Err(DeltaError::Cancelled);
+    }
+
+    // 之前中断的下载只有在身份一致时才续传，否则从头开始
+    crate::core::downloader::prepare_resume(path, meta, expected_hash).await;
+
+    crate::core::downloader::download_patch_with_progress_controlled(
+        client,
+        url,
+        path,
+        max_bytes,
+        cancel,
+        |downloaded, total| emit(on_event, UpdateEvent::Downloading { downloaded, total }),
+    )
+    .await?;
+
+    // 取消可能发生在下载"最后一块之后"：文件已完整落盘，但仍按取消清理。
+    if is_cancelled(cancel) {
+        let _ = tokio::fs::remove_file(path).await;
+        emit(on_event, UpdateEvent::Cancelled);
+        return Err(DeltaError::Cancelled);
+    }
+
+    let actual = crate::core::hasher::calculate_hash(path).await?;
+    if actual != expected_hash.to_lowercase() {
+        let _ = tokio::fs::remove_file(path).await;
+        return Err(DeltaError::HashMismatch {
+            expected: format!("{label}: {expected_hash}"),
+            actual: format!("{label}: {actual}"),
+        });
+    }
+
+    // 合并 / 解包不可中断：这是进入耗时操作前的最后一次取消窗口。
+    if is_cancelled(cancel) {
+        let _ = tokio::fs::remove_file(path).await;
+        emit(on_event, UpdateEvent::Cancelled);
+        return Err(DeltaError::Cancelled);
+    }
+    emit(on_event, UpdateEvent::Applying);
+    Ok(())
+}
+
+#[cfg(test)]
+mod ui_result_tests {
+    use super::{
+        DeltaUpdater, Diagnosis, FallbackReason, UpdateConfig, UpdateOutcome, UpdateResult,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn maps_up_to_date() {
+        let ui: UpdateResult = UpdateOutcome::UpToDate {
+            version: "1.2.3".into(),
+        }
+        .into();
+        match ui {
+            UpdateResult::UpToDate { version } => assert_eq!(version, "1.2.3"),
+            other => panic!("UpToDate 映射错误: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_fallback() {
+        let ui: UpdateResult = UpdateOutcome::FallbackToFullDownload {
+            full_download_url: Some("https://cdn.example.com/full.exe".into()),
+            reason: FallbackReason::NoMatchingPatch {
+                from: "0.1.0".into(),
+                to: "0.1.1".into(),
+            },
+        }
+        .into();
+        match ui {
+            UpdateResult::RequiresFullDownload { url, reason } => {
+                assert_eq!(url.as_deref(), Some("https://cdn.example.com/full.exe"));
+                assert!(matches!(reason, FallbackReason::NoMatchingPatch { .. }));
+            }
+            other => panic!("Fallback 映射错误: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_safe_mode() {
+        let ui: UpdateResult = UpdateOutcome::SafeMode.into();
+        assert!(matches!(ui, UpdateResult::SafeMode));
+    }
+
+    #[test]
+    fn full_download_picks_platform_entry() {
+        use super::FullDownload;
+
+        let manifest: crate::UpdateManifest = serde_json::from_str(
+            r#"{
+                "version": "2.0.0",
+                "platforms": {
+                    "windows-x86_64": {
+                        "url": "https://cdn.example.com/app.exe",
+                        "signature": "sig-windows"
+                    },
+                    "darwin-aarch64": {
+                        "url": "https://cdn.example.com/app.tar.gz",
+                        "signature": "sig-macos"
+                    }
+                }
+            }"#,
+        )
+        .expect("清单应能解析");
+
+        let win = FullDownload::from_manifest(&manifest, "windows-x86_64").expect("应命中平台");
+        assert_eq!(win.version, "2.0.0");
+        assert_eq!(win.url, "https://cdn.example.com/app.exe");
+        assert_eq!(win.signature, "sig-windows");
+
+        // 清单里没有的平台返回 None，而不是退化成其它平台的安装包
+        assert!(FullDownload::from_manifest(&manifest, "linux-x86_64").is_none());
+    }
+
+    /// 前端拿到的 JSON 形状是公开契约：`kind` 与原因标签都必须是 snake_case。
+    #[test]
+    fn serializes_frontend_contract() {
+        use serde_json::json;
+
+        let updated = UpdateResult::Updated {
+            version: "1.2.3".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&updated).unwrap(),
+            json!({ "kind": "updated", "version": "1.2.3" })
+        );
+
+        let full = UpdateResult::RequiresFullDownload {
+            url: Some("https://cdn.example.com/app.exe".into()),
+            reason: FallbackReason::NoMatchingPatch {
+                from: "1.2.3".into(),
+                to: "1.3.0".into(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&full).unwrap(),
+            json!({
+                "kind": "requires_full_download",
+                "url": "https://cdn.example.com/app.exe",
+                "reason": {
+                    "no_matching_patch": { "from": "1.2.3", "to": "1.3.0" }
+                }
+            })
+        );
+
+        assert_eq!(
+            serde_json::to_value(UpdateResult::RepairRequired {
+                reason: "repaired_partial_update".into()
+            })
+            .unwrap(),
+            json!({ "kind": "repair_required", "reason": "repaired_partial_update" })
+        );
+
+        assert_eq!(
+            serde_json::to_value(UpdateResult::Deferred {
+                version: "1.2.3".into(),
+                percentage: 20
+            })
+            .unwrap(),
+            json!({ "kind": "deferred", "version": "1.2.3", "percentage": 20 })
+        );
+
+        assert_eq!(
+            serde_json::to_value(UpdateResult::SafeMode).unwrap(),
+            json!({ "kind": "safe_mode" })
+        );
+    }
+
+    /// `v` 前缀与首尾空白会破坏补丁匹配，必须在构造阶段规范化掉。
+    #[test]
+    fn normalizes_current_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"x").unwrap();
+
+        let updater = DeltaUpdater::new(
+            UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
+                .current_version(" v0.1.0 ")
+                .executable_path(&exe)
+                .work_dir(dir.path()),
+        )
+        .expect("规范化后的版本应可构造");
+
+        assert_eq!(updater.config.current_version, "0.1.0");
+    }
+
+    /// 诊断页只需要一个结论：现在能不能走增量。
+    #[test]
+    fn diagnosis_reports_delta_eligibility() {
+        let base = Diagnosis {
+            executable: PathBuf::from("app.exe"),
+            work_dir: PathBuf::from("work"),
+            platform: "windows-x86_64".into(),
+            work_dir_writable: true,
+            install_dir_writable: true,
+            fallback_reason: None,
+            bundle_capable: false,
+            safe_mode: false,
+            needs_repair: false,
+            startup_state: None,
+            last_rollback: None,
+            authenticode: None,
+            authenticode_check_skipped: None,
+            log_path: PathBuf::from("work/tdx_update.log"),
+            events_path: PathBuf::from("work/tdx_events.jsonl"),
+            script_events: Vec::new(),
+            privilege_tools_available: None,
+        };
+        assert!(base.can_use_delta());
+        assert_eq!(base.user_message(), "环境正常。");
+        assert!(base.warnings().is_empty(), "正常环境不应有配置警告");
+
+        assert_eq!(
+            Diagnosis {
+                fallback_reason: Some("macOS .app bundle"),
+                ..base.clone()
+            }
+            .warnings(),
+            vec!["当前环境不支持单文件增量，且未配置整包清单：更新将回退为完整安装包下载。"]
+        );
+        assert_eq!(
+            Diagnosis {
+                work_dir_writable: false,
+                ..base.clone()
+            }
+            .warnings(),
+            vec!["更新工作目录不可写：请检查目录权限，否则所有更新都会失败。"]
+        );
+
+        assert!(!Diagnosis {
+            fallback_reason: Some("AppImage"),
+            ..base.clone()
+        }
+        .can_use_delta());
+        assert_eq!(
+            Diagnosis {
+                fallback_reason: Some("AppImage"),
+                ..base.clone()
+            }
+            .user_message(),
+            "当前环境不支持原地增量更新，将使用完整安装包。"
+        );
+        // macOS `.app` 单文件不可增量，但整包可用时仍然能走增量。
+        assert!(Diagnosis {
+            fallback_reason: Some("macOS .app bundle"),
+            bundle_capable: true,
+            ..base.clone()
+        }
+        .can_use_delta());
+        assert!(!Diagnosis {
+            safe_mode: true,
+            ..base.clone()
+        }
+        .can_use_delta());
+        assert_eq!(
+            Diagnosis {
+                safe_mode: true,
+                ..base.clone()
+            }
+            .user_message(),
+            "增量更新已暂停；冷却后会自动重试，也可以手动下载完整安装包。"
+        );
+
+        assert!(!Diagnosis {
+            work_dir_writable: false,
+            ..base
+        }
+        .can_use_delta());
+    }
+
+    /// 回滚原因从脚本写入的文件读取：空白视为没有记录。
+    #[test]
+    fn reads_rollback_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let flag = dir.path().join(crate::core::artifacts::ROLLBACK_FLAG);
+        std::fs::write(&flag, "startup_timeout\n").unwrap();
+        assert_eq!(
+            super::diagnosis::read_rollback_reason(dir.path()).as_deref(),
+            Some("startup_timeout")
+        );
+
+        std::fs::write(&flag, "   \n").unwrap();
+        assert!(super::diagnosis::read_rollback_reason(dir.path()).is_none());
+        std::fs::remove_file(&flag).unwrap();
+        assert!(super::diagnosis::read_rollback_reason(dir.path()).is_none());
+    }
+
+    /// README 的 Tauri 接入依赖两点：更新器能放进 managed state，结果能跨 IPC 序列化。
+    #[test]
+    fn public_types_are_ipc_friendly() {
+        use super::FullDownload;
+
+        fn assert_send_sync<T: Send + Sync>() {}
+        fn assert_serialize<T: serde::Serialize>() {}
+
+        assert_send_sync::<DeltaUpdater>();
+        assert_send_sync::<UpdateResult>();
+        assert_serialize::<UpdateResult>();
+        assert_serialize::<FullDownload>();
+    }
+
+    /// Tauri 的 async command 要求返回的 Future 是 `Send`。
+    /// 这个测试在编译期成立，不需要真的发起更新。
+    #[test]
+    fn update_futures_are_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let updater = DeltaUpdater::new(
+            UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
+                .current_version("0.1.0")
+                .executable_path(&exe)
+                .work_dir(dir.path()),
+        )
+        .unwrap();
+
+        fn assert_send<T: Send>(_: T) {}
+
+        assert_send(updater.install_with_progress(|_, _| {}));
+        assert_send(updater.update_with_progress(|_, _| {}));
+
+        let token = crate::core::cancel::CancelToken::new();
+        assert_send(updater.install_with_events(&token, |_| {}));
+    }
+
+    /// 构造一个"刚被替换脚本拉起"的更新器：exe 旁存在工作目录指针。
+    fn pending_updater(
+        dir: &std::path::Path,
+    ) -> (DeltaUpdater, std::path::PathBuf, std::path::PathBuf) {
+        let exe = dir.join("app.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let marker = dir.join(crate::core::artifacts::WORK_DIR_MARKER);
+        std::fs::write(&marker, work.display().to_string()).unwrap();
+
+        let updater = DeltaUpdater::new(
+            UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
+                .current_version("0.1.0")
+                .executable_path(&exe)
+                .work_dir(&work),
+        )
+        .unwrap();
+        (updater, work, marker)
+    }
+
+    /// 健康检查通过才写成功标志；失败必须立刻落盘回滚原因，而不是等超时。
+    #[test]
+    fn health_check_controls_startup_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (updater, work, marker) = pending_updater(dir.path());
+
+        updater.confirm_startup_success_with(|| Ok(())).unwrap();
+        assert!(!marker.exists(), "确认后必须移除工作目录指针");
+        assert!(work.join(crate::core::artifacts::SUCCESS_FLAG).is_file());
+        assert_eq!(
+            crate::core::startup::read(&work),
+            Some(crate::core::startup::StartupState::Committed)
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let (updater, work, marker) = pending_updater(dir.path());
+        let err = updater
+            .confirm_startup_success_with(|| {
+                Err(crate::DeltaError::Config("database unavailable".into()))
+            })
+            .unwrap_err();
+        assert!(matches!(err, crate::DeltaError::Config(_)));
+        assert!(!marker.exists(), "失败后也必须移除工作目录指针");
+        assert!(
+            !work.join(crate::core::artifacts::SUCCESS_FLAG).is_file(),
+            "健康检查失败不得写成功标志"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join(crate::core::artifacts::ROLLBACK_FLAG)).unwrap(),
+            crate::core::artifacts::HEALTH_CHECK_FAILED
+        );
+        assert_eq!(
+            crate::core::startup::read(&work),
+            Some(crate::core::startup::StartupState::Failed)
+        );
+    }
+}

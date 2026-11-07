@@ -89,6 +89,11 @@ async fn is_zstd_file(path: &Path) -> Result<bool> {
 ///
 /// 压缩用流式两段写：先落盘原始补丁，再流式压成最终文件，
 /// 避免把可能接近全量大小的原始补丁整个抱在内存里。
+///
+/// # 资源约束
+///
+/// 差分任务在独立线程中运行，并预留 **512 MB 栈**（bsdiff 递归深度与文件规模相关）。
+/// **不要在同一进程内并发调用**：每次调用都会预留一份虚拟地址空间。
 pub async fn create_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     old_file: P1,
     new_file: P2,
@@ -186,6 +191,15 @@ pub struct VerifiedArtifact {
 }
 
 impl VerifiedArtifact {
+    /// 由**已通过外部验签**的文件构造（crate 内部使用，目前供 Linux 全量安装复用）。
+    ///
+    /// 全量安装包已经通过 minisign 验签，随后复用同一套替换脚本；
+    /// 这里补上 SHA-256，让脚本仍能在复制前复核字节没有变化。
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_signed_file(path: PathBuf, sha256: String) -> Self {
+        Self { path, sha256 }
+    }
+
     /// 已验证产物的路径。
     pub fn path(&self) -> &Path {
         &self.path
@@ -288,6 +302,11 @@ fn decompress_to_temp(patch_path: &Path, temp_path: &Path, old_size: u64) -> Res
 ///
 /// 成功时返回 [`VerifiedArtifact`]——只有通过全部校验的产物才能
 /// 进入下游（替换脚本、`Staged`），未验证的字节在类型上无法流转。
+///
+/// # 资源约束
+///
+/// 合并任务与 [`create_patch`] 共享同一约束：独立线程预留 **512 MB 栈**，
+/// **不要在同一进程内并发调用**。
 pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     old_file: P1,
     patch_file: P2,

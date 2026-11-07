@@ -1,0 +1,68 @@
+//! 命令返回给前端的 DTO：稳定错误码与全量下载结果。
+
+use serde::Serialize;
+use tauri_delta_updater::{DeltaError, FullDownloadOutcome};
+
+/// 命令失败时返回给前端的结构。
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorDto {
+    /// 稳定错误码，前端按它分支，不要匹配 `message`。
+    pub code: &'static str,
+    /// 面向用户的中文文案。
+    pub message: String,
+    /// 是否属于"稍后再试"类网络错误。
+    pub retryable: bool,
+    /// 是否为安全阻断（签名/哈希校验失败），UI 应据此升级提示语气。
+    pub security: bool,
+}
+
+/// 全量下载的结果（`download_full` 命令）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FullDownloadDto {
+    /// 安装包已下载并通过签名校验；`path` 交给平台安装执行器。
+    Downloaded {
+        /// 目标版本。
+        version: String,
+        /// 安装包在工作目录里的绝对路径。
+        path: String,
+    },
+    /// 已经是最新版本，没有下载。
+    UpToDate {
+        /// 清单声明的版本。
+        version: String,
+    },
+}
+
+impl FullDownloadDto {
+    /// 把库层结果转成前端契约。
+    ///
+    /// `FullDownloadOutcome` 是 `non_exhaustive` 的：库新增变体时不能让插件
+    /// panic，而是返回一个明确的错误码，提示插件版本过旧。
+    pub(crate) fn from_outcome(outcome: FullDownloadOutcome) -> Result<Self, ErrorDto> {
+        match outcome {
+            FullDownloadOutcome::Downloaded { installer } => Ok(Self::Downloaded {
+                version: installer.version().to_string(),
+                path: installer.path().display().to_string(),
+            }),
+            FullDownloadOutcome::UpToDate { version } => Ok(Self::UpToDate { version }),
+            _ => Err(ErrorDto {
+                code: "unsupported_outcome",
+                message: "插件版本过旧，无法识别全量下载结果，请升级插件".into(),
+                retryable: false,
+                security: false,
+            }),
+        }
+    }
+}
+
+impl From<DeltaError> for ErrorDto {
+    fn from(err: DeltaError) -> Self {
+        Self {
+            code: err.code(),
+            message: err.to_string(),
+            retryable: err.is_retryable(),
+            security: err.is_security_blocking(),
+        }
+    }
+}

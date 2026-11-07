@@ -1,4 +1,12 @@
 /target
+# 本地与 CI doctest 专用的隔离目标目录
+/target-doctest
+/tools/zucchini-ab/target
+/plugin/target
+/plugin/Cargo.lock
+/examples/tauri-app/src-tauri/target
+/examples/tauri-app/src-tauri/Cargo.lock
+/examples/tauri-app/src-tauri/gen
 /mock_release
 /test_env
 /test_env_uac
@@ -11,11 +19,17 @@
 *.json
 !Cargo.json
 !package.json
+# 插件权限 schema 由 build.rs 生成，发布包必须带它
+!/plugin/permissions/schemas/schema.json
+# 示例应用只需要两份手写的配置 JSON
+!/examples/tauri-app/src-tauri/tauri.conf.json
+!/examples/tauri-app/src-tauri/capabilities/default.json
 
 # 导出脚本与其产物不入库；docs 下只有源码导出是产物，设计文档要进版本库
 /scripts/
 /docs/项目源码导出.md
 /项目源码导出.md
-# 内部草稿/评审稿不入库（VERSIONING.md 为唯一发布权威）
+# 内部草稿/评审稿不入库；VERSIONING.md 仅保留在本地，不作为公开文档
 /docs/发布.md
 /docs/深度评审报告-*.md
+/VERSIONING.md

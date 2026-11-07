@@ -1,6 +1,6 @@
 name: Release (manual)
 
-# 发布策略见 VERSIONING.md：
+# 发布策略（维护者本地文档约束）：
 # - 禁止 tag push 自动发布
 # - 只允许人工 workflow_dispatch，且 crates.io 发布需 environment 审批
 on:
@@ -50,6 +50,9 @@ jobs:
         run: cargo test --all-targets --all-features --locked
 
       - name: Doc tests
+        env:
+          # 与测试产物隔离，避免元数据混用（同 ci.yml 的独立 doctest job）
+          CARGO_TARGET_DIR: target-doctest
         run: cargo test --doc --all-features --locked
 
       - name: Library-only build

@@ -5,6 +5,330 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+## [0.2.0] - 2026-11-07
+
+### 修复（三平台 CI 验证发现）
+
+- **macOS 整包切换的暂存校验返回码写反**：有效暂存目录被判定为失败
+  （更新被拒绝），被篡改的目录反而通过校验进入切换。`verify_staging`
+  改为按 shell 返回码约定（`_fail=0` 通过、`_fail=1` 失败）。
+- **Windows 回滚路径会继续走成功流程**：`Restart-Old` 里的 `Start-Process`
+  对无效 PE 抛终止性错误后，PowerShell 5.1 会跳过 `catch` 中的 `exit`，
+  脚本继续启动新版本、删除回滚原因并重写 state，60 秒后再二次回滚。
+  `Start-Process` 现在自带 `try/catch`，整包脚本改用 `$failed` 标志在
+  `catch` 外统一回滚。
+- **Windows 8.3 短路径下备份还原写到错误位置**：CI 的 `%TEMP%` 是
+  `C:\Users\RUNNER~1\...`，`Get-ChildItem` 返回长路径时用长度差算相对路径
+  会算错。改用 `Directory.EnumerateFiles`，保证返回路径与备份根目录同形。
+- **可写目录被瞬时占用误判为只读**：写探针文件名带 PID/序号/时间戳，
+  失败后换名重试一次，避免杀毒软件/索引器短暂持有探针文件时返回
+  `WorkDirNotWritable`。
+- **macOS 目标无法编译**：平台层按 6 个参数分发整包更新，但 macOS 实现
+  只接受 5 个；同时修正 `bundle_repair_needed` 在 macOS 分支的未使用参数。
+- **Unix 平台专属 clippy**：把 Unix 启动替换脚本的 `launch_updater` 移到
+  测试模块之前，消除 `items_after_test_module`（Windows 因 `cfg(unix)` 看不到该函数）。
+- **CI 可观测性与依赖**：插件 Ubuntu job 安装 GTK/WebKitGTK 开发依赖；
+  测试失败时把 libtest 失败详情块写成 annotation，无需管理员权限下载日志。
+
+### 升级注意（相对 0.1.0）
+
+0.2.0 是 MINOR 版本，因为新增了若干公开字段与枚举变体：
+
+- `UpdateManifest` 新增 `min_version`；`PlatformInfo` 新增 `size` / `rollout`。
+- `CheckOutcome` 新增 `rollout_percentage` / `deferred_by_rollout`；
+  `UpdateConfig` 新增 `install_id`；`Diagnosis` 新增 `startup_state`。
+- `UpdateOutcome` / `UpdateResult` / `UpdateEvent` 新增 `Deferred`。
+  三者都是 `#[non_exhaustive]`，但按本项目发布策略仍按 MINOR 处理；
+  外部 `match` 请保留通配分支。
+
+兼容性：
+
+- 旧清单没有 `size` / `rollout` / `min_version` 时分别按“未知收益比 / 全量 / 不设门槛”处理；
+  旧客户端读取新清单会忽略未知字段。
+- 现有签名、双端哈希、回滚与安全模式语义不变。
+- 如果宿主用结构体字面量构造上述公开结构体，需要补齐新字段；
+  通过构造器 / `serde` 读取的调用方无需改动。
+- MSRV 仍为 1.88。
+
+### 可观测性与发布端防错
+
+- **结构化回滚事件**：替换 / 修复脚本把回滚写成 JSON Lines
+  （`tdx_events.jsonl`，字段 `event` / `reason` / `time`），`Diagnosis` 新增
+  `events_path` 与 `script_events`（最近 20 条，已解析为 `ScriptEvent`，坏行忽略）。
+  宿主下次启动时可逐行解析完整回滚链路，不必再用正则读自由格式日志。
+- **Unix 单文件回滚原因落盘**：`tdx_update.sh` 现在同时写 `tdx_rollback.txt`，
+  `Diagnosis::last_rollback` 在 Linux / macOS 裸二进制路径上也可用。
+- **`generate` 参数防错**：`--installer` 与 `--app-binary` 内容相同时直接失败，
+  避免补丁基底与全量下载地址指向错误的文件。
+- **官方端点占位符**：插件配置的 `endpoints` / `bundle_endpoint` 支持
+  `{{target}}`、`{{arch}}`、`{{current_version}}` 自动展开；新增可选
+  `bundle_type`（`nsis` / `msi` / `appimage` / `app`）用于展开
+  `{{bundle_type}}`，未配置时启动阶段给出明确错误。
+- **Unix 模板跨平台渲染测试**：`unix_script` 改为跨平台编译（仅 `launch_updater`
+  留在 Unix），Windows CI 也能验证 sh 模板的占位符、回滚标记与事件流路径。
+- **诊断摘要与 Linux 降权探测**：`Diagnosis::user_message()` 返回面向用户的
+  一句话摘要；Linux 上新增 `privilege_tools_available`（是否找到 `runuser`/`su`）。
+- **Authenticode 三态可观测**：`platform::authenticode` 新增 `TrustState`
+  （`Trusted` / `NotTrusted` / `Inconclusive`），`Diagnosis::authenticode_check_skipped`
+  区分"离线导致检查未得出结论"与"确实未签名"。拦截规则不变（`Inconclusive`
+  仍按不可信处理），`authenticode` 字段语义与类型也不变。
+- **清单写入安装包体积**：`generate` 把安装包字节数写入受清单签名保护的
+  `platforms[].size`；新增 `CheckOutcome::patch_size_ratio()` /
+  `patch_size_ratio_for()`，客户端可在下载前得到 `patch_size / size`
+  的真实占比（**数值越低收益越大**）。旧清单没有 `size` 时返回 `None`，不产生猜测值。
+- **签名保护的百分比灰度**：`generate --rollout <0-100>` 写入
+  `platforms[].rollout`；客户端按 `sha256(install_id + version) % 100` 稳定分桶，
+  未命中返回 `UpdateOutcome::Deferred` / `UpdateResult::Deferred` /
+  `UpdateEvent::Deferred`，不请求补丁。安装 ID 持久化在 `tdx_install_id`，
+  也可用 `UpdateConfig::install_id(...)` 注入；0 暂停、100 全量且不写字段。
+- **启动 doctor**：`Diagnosis::warnings()` 返回可操作的配置缺口
+  （工作目录不可写、环境不支持单文件增量且未配整包、Linux 缺少降权工具），
+  插件注册时打印到启动日志。
+- **三态启动指针与健康检查**：替换脚本写 `staged`，新进程写 `booting`，
+  `confirm_startup_success_with(|| ...)` 通过健康检查后才写 `committed`；
+  失败立即落盘 `health_check_failed` 并回滚，不再等满确认超时。
+  `Diagnosis::startup_state` 暴露当前指针，`last_rollback` 区分
+  `startup_not_started` / `startup_crashed` / `health_check_failed` / `startup_timeout`。
+- **回滚原因不再被覆盖**：`Restart-Old` / `restart_old` 保留已经写入的具体原因，
+  不再用笼统的 `update_failed` 覆盖 `startup_timeout` / `health_check_failed`。
+- **最低版本强制更新**：清单新增受签名保护的 `min_version`，
+  `generate --min-version` 写入；低于门槛的客户端无视 `rollout` 比例强制更新。
+- **`cargo delta init/migrate`**：独立的 `cargo-delta` 子命令，把配置、capability
+  与 `src-tauri/Cargo.toml` 依赖一次写好；默认只输出统一 diff，`--apply` 才落盘。
+  `migrate` 默认保留官方插件作为全量回退，`--remove-official` 可完全替代。
+  `init --check` 供 CI 做接入守卫，缺失项以非零状态退出；
+  通过时额外提示当前是双栈（保留 `plugins.updater`）还是单栈。
+- **CI doctest 隔离**：doctest 拆成独立 job 并使用独立 `CARGO_TARGET_DIR`，
+  避免与测试/构建产物混用后出现 `found staticlib instead of rlib`；
+  日志作为 artifact 上传。本机隔离重跑仍受页面文件限制（3/22，`os error 1455`），
+  最终以 CI 结果为准。
+- **跨平台真实文件系统 smoke**：新增 `real-fs-smoke` job，在 Ubuntu/macOS
+  真实执行 `unix_script` / `macos_bundle` 替换脚本，与 Windows 的 12 项
+  PowerShell 真实执行测试对称；签名/公证仍不在覆盖范围。
+- **bsdiff 真实基线**：`docs/bsdiff-baseline-2026-11-07.md` 记录 27 MB PE
+  相邻构建的补丁占比 0.01%，并给出“待采集场景 × 预期范围”矩阵与
+  `old_binaries/` 积累到 5 对后的重采样路径。
+- **Zucchini A/B CI 入口**：`.github/workflows/zucchini-ab.yml`（手动触发，Ubuntu + prebuilt），
+  生成“仅版本串变化 / 一个模块重编译”两份真实 ELF，上传
+  `zucchini-ab-<date>.md` artifact；本地 Windows 用 `--no-default-features` 从源码构建。
+- **验证记录**：`docs/verification-0.2.0.md` 记录本轮实际执行的测试、
+  未验证的平台与复现命令；doctest 结果以 CI 独立 job 为准。
+- **测试补齐**：语义化版本边界（`0.10.0 > 0.9.0`、预发布）、清单签名地址的
+  查询参数、全量安装包后缀推断（带 token / 无扩展名）均有单测；
+  新增灰度分桶单测与"0% 灰度不下载补丁"的端到端测试。
+- **Zucchini A/B 工具**：独立的 `tools/zucchini-ab` crate（不进入主依赖），
+  真实 PE/ELF 上对比 bsdiff+zstd / Zucchini raw / Zucchini+zstd；
+  采集门槛与数据记录格式见 `docs/zucchini-ab-plan.md`。
+- **Web bundle 威胁模型**：`docs/web-bundle-threat-model.md` 定义准入条件，
+  在签名覆盖 URL、路径穿越、原子激活与独立状态机评审通过前不写替换代码；
+  新增 8 个 open questions、Review log 与可直接粘贴的 issue 草稿；
+  并加入与 `tauri-plugin-hot-update` 的逐项对照，明确“不再以三态回滚作为差异化卖点”。
+- **CI**：插件 job 扩展到 Windows + Ubuntu 矩阵（示例应用只在 Windows 检查，
+  Linux 构建需要额外的 webkit2gtk 系统依赖）。
+
+### 整包（多文件）更新引擎
+
+- **确定性整包容器**：`core::bundle` 按路径排序构建归档，同一文件树永远产出
+  同一份字节；构建与提取都流式处理，不把整包读进内存。
+- **文件清单校验**：`BundleFile { path, size, sha256 }` 描述整包布局；
+  应用前先校验本地安装目录，任何缺失或改动都会拒绝应用（回退全量）。
+- **生成/应用 API**：`create_bundle_patch` / `apply_bundle_patch` 完成
+  "目录 → 归档 → 差分 → 提取暂存"闭环，补丁与重建产物都经过双端哈希校验，
+  并拒绝绝对路径、`..` 与盘符等路径穿越。
+
+### 客户端整包更新
+
+- **`UpdateConfig::bundle_manifest_url(...)`**：指向已签名的 `latest.bundle.json`。
+  配置后 `check()` / `update()` / `install()` 优先走整包，覆盖主程序、sidecar 与
+  resources；签名地址自动推导为同名 `.sig`。
+- **`UpdateOutcome::Bundled { staged: StagedBundle }`**：`UpdateResult` 映射为
+  `Updated`；`StagedBundle` 提供暂存目录、文件清单、脚本路径与幂等的 `launch()`。
+- **多文件替换脚本（Windows）**：逐文件校验暂存哈希、备份旧内容、复制变化文件、
+  删除新版本已移除的文件；任一文件失败或启动确认超时都会整体回滚，并写入
+  `event=delta.rollback.triggered`。
+- **macOS `.app` 目录切换**：以整个 `.app` 为单位备份与换位，避免逐文件改写
+  破坏代码签名；切换前对已签名包执行 `codesign --verify --deep --strict`，
+  新版本确认启动时删除备份，未确认则下次整体回滚。应用目录不可写时不做任何
+  文件操作，旧版本继续运行。
+- **整包归档 v2**：条目额外携带类型与 Unix 权限位，符号链接与可执行位可原样
+  重建（macOS `.app` 的框架链接与主程序可执行位是签名/启动的前提）。
+- **安全回退**：整包清单缺失、版本不一致或没有当前版本的补丁时回退全量下载；
+  不支持的平台返回 `EnvironmentUnsupported`，不会只替换主程序留下不匹配的
+  sidecar/resources。
+
+### 发布端
+
+- **基线自动滚动**：`--archive-dir` 在发布成功后把当前主程序归档为下一版基线
+  （文件名已含版本与架构则原样保留，否则补全成 `App_0.1.1_x86_64.exe`），
+  不再需要手工整理 `old_binaries/`。
+- **显式基线**：`--old-binary` 可重复指定，与 `--old-dir` 合并；显式文件的
+  版本/架构/平台校验失败会直接报错，而不是静默跳过。
+- **发布报告**：`--report` 输出 JSON（每个基线的补丁体积、占比、跳过原因），
+  便于 CI 摘要与发布审计。
+- **空补丁闸门**：`--fail-on-empty` 让"一个补丁都没生成"直接失败，
+  防止静默发布一份只能全量下载的清单。
+- **发布通道与灰度**：`generate --channel beta` 输出 `latest-beta.json` /
+  `latest-beta.bundle.json`（stable 保持旧文件名）。客户端把 `manifest_url`
+  指向对应文件即可参与灰度；验证后按 stable 再发一次即完成放量。
+  通道名会进入文件名，因此只允许小写字母、数字、`-`、`_`。
+- **整包发布模式**：`--new-app-dir` + `--old-app-dir`（可重复，目录名带版本）
+  生成目录级补丁，并输出独立签名的 `latest.bundle.json`（含 base/target 文件清单）；
+  旧客户端继续使用 `latest.json`，互不影响。macOS `.app` 的版本号可以写在父目录
+  （`v0.1.1/MyApp.app`），不必给 bundle 改名。
+
+### 全量路径（第 2 阶段：安装执行）
+
+- **`DeltaUpdater::install_full()` / `install_full_with_events()`**：下载 + 验签后
+  直接执行平台安装器并返回 `Updated`（调用方需立即退出进程）。
+- **Windows 安装器执行**：与官方 updater 的约定一致——NSIS 用被动模式
+  ` /P /UPDATE /R`（`/UPDATE` 标记"这是更新"，`/R` 安装后重启应用），
+  MSI 用 `/passive /promptrestart AUTOLAUNCHAPP=True`；提权交给安装器自己的
+  manifest（`ShellExecuteW open`），per-user 安装不会无谓弹 UAC，
+  用户取消提权时同步报错 `full_install_failed`；未知扩展名一律拒绝执行。
+- **macOS `.app.tar.gz`**：系统 `tar` 解包 → 定位 `.app` → 复用整包目录切换脚本
+  （`codesign --verify`、备份换位、启动确认、失败回滚）。
+- **Linux AppImage**：复用单文件替换脚本（备份、覆盖、`chmod +x`、启动确认、回滚），
+  哈希来自验签后的安装包字节。
+- `.deb/.rpm` 与跨平台类型的安装包会被明确拒绝（`full_install_failed`），
+  不尝试用错误的执行器运行。
+
+- **启动确认清理安装包**：新版本确认启动成功后删除工作目录里的全量安装包，
+  避免几十到几百 MB 长期占用用户缓存；用户自己的文件不受影响。
+
+### 全量路径（第 1 阶段：下载与验签）
+
+- **`DeltaUpdater::download_full()`**：从已验签清单取 `platforms[].url`，
+  下载到工作目录（`tdx_full_installer_<version><扩展名>`），
+  再用 `verify_file_signature`（只读 mmap，避免整包读入内存）校验
+  `platforms[].signature`。版本不高于当前版本时返回 `UpToDate`，不发起下载。
+- **`download_full_with_events()`**：发出 `Checking` / `DownloadingFull` 事件，
+  支持 `CancelToken` 取消；失败时删除安装包。
+- **下载前磁盘预检**：拿到 `Content-Length` 后先查剩余空间，避免下到一半才失败。
+- 安装包体积上限 4 GB，防止被劫持的服务端灌盘。
+
+### 安全
+
+- **Windows Authenticode 退化拦截**：应用补丁后、生成脚本前用 `WinVerifyTrust`
+  比较原版本与产物的签名状态。**原版本可信而产物不可信**时返回
+  `DeltaError::AuthenticodeUnsigned`（错误码 `authenticode_unsigned`，
+  归类为安全阻断），避免在企业环境（AppLocker/WDAC）替换后应用直接无法启动。
+  未签名的开发/便携构建不受影响；整包更新检查暂存树里的主程序。
+- **诊断可见**：`Diagnosis::authenticode` 暴露原版本签名状态（非 Windows 为 `None`）。
+
+### 平台覆盖
+
+- **Linux AppImage 支持原地增量**：不再无条件回退全量。运行时用
+  `$APPIMAGE` 定位 `.AppImage` 本体作为替换目标（`current_exe` 只是
+  squashfs 挂载点），复用单文件流程：校验、备份、覆盖、`chmod +x`、重启。
+  只有拿不到本体路径或所在目录不可写时才回退，并在 `fallback_reason` 里
+  说明原因。发布端把 `.AppImage` 作为补丁基底即可。
+- **AppImage 的进程等待不走 `/proc/<pid>/exe`**：该路径指向挂载点，
+  与本体路径永远不相等，贸然沿用会立刻判定旧进程退出并提前替换。
+  脚本新增 `CHECK_EXE_LINK` 开关，AppImage 下按 PID 等待。
+
+### 修复与稳健性
+
+- **整包崩溃恢复备份不再被清理**：`cleanup_previous_updates` 曾删除
+  `tdx_bundle_backup`，让“已替换一半”的安装目录失去唯一可回滚的旧内容。
+  现在只由替换脚本在还原后清理。
+- **Windows 单文件脚本日志改用 `File.AppendAllText`**：与整包脚本一致，
+  避免 `Add-Content` 在文件刚创建/被占用时静默丢行。
+- **启动目录修正**：新版本进程的工作目录改为可执行文件所在目录，
+  不再继承用户缓存目录。
+- **macOS 提前回退**：运行在 App Translocation 或应用目录不可写时，
+  在下载前返回 `EnvironmentUnsupported`，不会先提示“已更新”再失败。
+- **整包磁盘预检**：下载前按补丁 + 旧归档 + 新归档 + 暂存目录的体积做
+  保守检查，避免下完补丁才发现空间不足并累计进安全模式。
+- **macOS 备份隐藏命名**：`.<App>.app.tdx-backup`，减少 Finder 干扰与撞名风险。
+- **回滚原因可见**：脚本整体回滚时把 `update_failed` / `startup_timeout`
+  写入 `tdx_rollback.txt`，`Diagnosis::last_rollback` 直接读取，
+  不再出现“提示更新成功、重启后版本没变且没有线索”。新版本确认启动后自动清除。
+- **中断后自动修复**：检测到上次整包替换未完成（备份或新增文件日志仍在）时，
+  `update()` 不再发起网络请求，直接生成修复脚本并返回
+  `UpdateOutcome::Repair` / `UpdateResult::RepairRequired`。脚本删除上次新增的文件、
+  还原备份并重启旧版本；`Diagnosis::needs_repair` / `CheckOutcome::needs_repair`
+  可让 UI 在启动时提示“需要先完成修复”。
+- **跨进程续传**：半截补丁不再在下次更新时被清理，而是用清单里已签名的
+  `patch_hash` 写入身份记录（`tdx_update.patch.id`）。身份一致才按 `Range`
+  续传，换补丁/换版本或没有身份记录时丢弃重下，绝不把两份补丁拼在一起；
+  记录超过 7 天（`RESUME_MAX_AGE_SECS`）后连同补丁一起清理。
+- **清单与签名请求也会重试**：此前只有补丁下载有退避重试，清单拉取遇到一次
+  502/超时就直接失败。现在小文件请求复用同一套 2s→16s 退避（含抖动），
+  确定性错误（4xx、超限、非法内容）仍然立即返回。
+- **传输中断不再丢进度**：响应体比声明的 `Content-Length` 短时保留半截文件，
+  重试直接带 `Range` 续传；只有服务端多发字节（超出预期）才删除重下。
+- **测试盲区修复**：本地 MockServer 按 `Range: bytes=` 精确大小写匹配，
+  而 reqwest/hyper 发送的是小写头，导致 **206 续传分支实际上从未被覆盖**。
+  改为大小写不敏感并新增"半途断流 → 续传完成"的端到端断言。
+- **替换过程记录新增文件**：整包脚本把新增路径写入 `tdx_bundle_journal.txt`，
+  崩溃回滚与修复都能删除旧版本本来没有的文件。
+
+### Tauri 插件（`tauri-plugin-delta-updater`）
+
+- **独立插件 crate**（`plugin/`）：只做注册命令、事件桥接与启动确认，不复制任何更新逻辑。
+  主库保持框架无关，不启用插件的宿主不会引入 `tauri`。
+- **命令**：`check` / `install` / `download_full` / `install_full` / `diagnose` / `cancel` / `reset_safety`，
+  权限标识随包提供（`delta-updater:default`），前端用
+  `invoke('plugin:delta-updater|install', { onEvent })` 即可。
+- **零 Rust 配置**：`init_from_config()` 从 `tauri.conf.json` 的
+  `plugins.delta-updater`（`endpoints` / `pubkey` / `bundle_endpoint`）读取；
+  找不到时回退到 `plugins.updater`，从官方插件迁移不必改配置。
+- **全量命令**：`download_full` 让回退路径也不再依赖官方插件下载；
+  `install_full` 下载验签后直接启动平台安装器（Windows 走管理员权限的 NSIS/MSI），
+  随后插件自动退出进程。
+- **事件桥接**：`UpdateEvent` 通过 Tauri `Channel` 逐阶段推到前端，
+  不需要在后端写 `emit`；产物就绪后插件自动退出进程（先返回结果，500ms 后退出）。
+- **启动确认前移**：插件的 `setup` 在窗口创建前调用
+  `confirm_startup_success_if_pending()`，并发出 `delta-updater://startup` 事件，
+  宿主不会因为忘了调用而 60 秒后被回滚。
+- **错误契约**：命令错误统一为 `{ code, message, retryable, security }`，
+  前端按 `code` 分支，不必匹配中文文案。
+
+### 更新会话（可观察、可取消）
+
+- **`DeltaUpdater::session()`**：返回 `UpdateSession`，按阶段发出
+  `Checking` / `Downloading` / `Applying` / `Ready` / `UpToDate` / `Fallback` /
+  `SafeMode` / `Cancelled` 事件，事件可按 `stage` 序列化给前端。
+- **`CancelToken`**：可从任意线程触发取消。下载阶段立即中止并删除半截补丁，
+  合并阶段在下一个检查点生效；取消返回 `DeltaError::Cancelled`，
+  **不计入安全模式**，也不留下暂存产物。
+- **Future 现在满足 `Send`**：进度/事件回调加上 `Send` 约束，
+  `install_with_progress` / `update_with_progress` 的返回值可直接放进
+  Tauri 的 async command（此前内部 trait object 未带 `Send`，Future 不是 `Send`）。
+
+### 开发者体验
+
+- **等待时长配置真正生效**：`wait_timeout_secs` / `confirm_timeout_secs` 此前只是
+  配置项，脚本里仍写死 60 秒。现在通过 `ScriptTimings` 传给所有脚本
+  （单文件、整包、修复），0 值在构造阶段直接拒绝；新增 Windows 端到端断言。
+- **稳定错误码**：`DeltaError::code()` 返回 `snake_case` 字符串（如
+  `signature_invalid` / `update_in_progress`），前端与日志按码分支；
+  文案改动不再破坏调用方的判断。新增单测保证码唯一且合法。
+- **默认路径也支持进度**：`install_with_progress(|downloaded, total| ...)` 返回
+  `UpdateResult`，不必为了进度条掉到高级 API。
+- **启动确认可无条件调用**：`PlatformUpdater::confirm_startup_success_if_pending()`
+  只在确实发生过替换时才写标志，普通启动是零写入空操作——避免"忘了确认导致 60 秒后回滚"。
+- **`host_version!()` 宏**：非 Tauri 宿主直接拿到调用方 crate 的版本号，
+  不会误用库自身的 `CARGO_PKG_VERSION`。
+- **类型化全量回退**：`CheckOutcome::full_download()` / `full_download_for(platform)`
+  返回 `FullDownload { version, url, signature }`，直接交给官方 updater
+  或自定义安装流程，不必再从清单里手工挑字段。
+- **`check()` 的原因不再靠猜**：没有匹配补丁时 `fallback_reason` 也会填
+  `NoMatchingPatch{from,to}`，与 `update()` 的回退原因保持一致。
+- **`install()` 语义收紧**：返回 `Updated` 时替换脚本一定已启动；
+  即使配置了 `auto_launch(false)` 也会补上启动，避免"看起来更新了却没有替换"。
+- **接入错误提前暴露**：`manifest_url` / `public_key` 留空、`current_version`
+  非语义化版本时，构造阶段直接报出具体字段；版本号自动去掉 `v`/`V` 前缀与首尾空白，
+  避免"清单里明明有补丁却永远匹配不到"。
+- **诊断结论一步到位**：`Diagnosis::can_use_delta()` 直接回答"当前环境能不能走增量"，
+  UI 诊断页不必自己拼 `fallback_reason` / `safe_mode` / 可写性三个条件。
+- **前后端 JSON 契约统一**：`UpdateResult` 与 `FallbackReason` 都按 `snake_case`
+  序列化，Tauri command 可直接返回给前端按 `kind` 分支
+  （`{"kind":"requires_full_download","reason":{"no_matching_patch":{...}}}`）。
+- README 补充首次接入检查清单、完整 Tauri `setup` + command 接入片段、发布端构建/密钥/旧版本归档步骤与 GitHub Actions 示例。
+
 ## [0.1.0] - 2026-11-06
 
 首个公开版本。面向 Tauri v2 的增量更新引擎：只传输差异，失败路径优先。

@@ -1,50 +1,289 @@
 [![CI](https://github.com/zuoqiuning/tauri-delta-updater/actions/workflows/ci.yml/badge.svg)](https://github.com/zuoqiuning/tauri-delta-updater/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/tauri-delta-updater.svg)](https://crates.io/crates/tauri-delta-updater)
+[![docs.rs](https://img.shields.io/docsrs/tauri-delta-updater)](https://docs.rs/tauri-delta-updater)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 # tauri-delta-updater
 
-> 📦 版本与发布策略见 [VERSIONING.md](VERSIONING.md)。
-
 A high-performance, secure, and fault-tolerant delta update engine for Tauri v2 applications.
 
+### Is this for you?
+
+Five questions, asked before the long docs:
+
+1. **Do you ship only the main executable?** Yes → single-file patches are the sweet spot. No (`externalBin` / `resources`) → configure `bundle_endpoint` and use whole-app deltas.
+2. **Which platforms?** Windows exe/NSIS, macOS `.app`, and Linux bare binaries/AppImage are supported. Linux `.deb` / `.rpm` installs should stay with the package manager; use this engine for notification only.
+3. **Can your app exit when the update is ready?** Yes → three lines (`install()` + exit). Not yet → use `prepare()` and exit when your UI is done.
+4. **Do you need signed manifests, downgrade protection, deterministic rollback?** Yes → this engine. If you only want a smaller download and nothing else, a transparent layer over the official updater is simpler.
+5. **Already running a stable official-updater flow?** Read “Migration cost vs benefit” below before switching; the frontend contract changes.
+
+**Skip it if** your installer is small (roughly under 30 MB) and you release less than once a month: full downloads plus a CDN are simpler, and the extra moving parts (rollback scripts, elevation, installer conventions) are not worth the maintenance.
+
+**Download size is the entry ticket, not the finish line.** The part users
+actually feel is what happens after the bytes arrive: replacing a running
+executable, surviving a power loss mid-swap, and keeping the installed app
+launchable. Most delta options stop before that line.
+
+| | Smaller download | Owns replacement / rollback | Native binary | Frontend-only |
+|---|---|---|---|---|
+| official `tauri-plugin-updater` | no | yes (the installer) | yes | no |
+| `tauri-plugin-updater-delta` | yes | **no** — hands the patch back to the official updater | yes | no |
+| `tauri-plugin-hot-update` | n/a | no | no | yes |
+| **this engine** | yes | yes (script, backup, repair, safe mode) | yes | no |
+
+If you only want smaller downloads and are happy to keep the official updater
+for installation, the transparent layer is the lower-risk choice. If you want
+one component to own the whole update, keep reading.
+
 ## Quick start
+
+Two entry points, one engine. Pick one — you do not need both.
+
+### A. Tauri app — plugin (recommended)
+
+**One command (with diff first).** Install the cargo subcommand, then run it
+from the app root. It writes `plugins.delta-updater`, the capability, and the
+`src-tauri/Cargo.toml` dependency; it prints the one Rust line to add.
+
+```bash
+cargo install tauri-delta-updater --features generator
+cd my-app
+cargo delta init \
+  --endpoint https://cdn.example.com/latest.json \
+  --pubkey "RWQ..."              # dry-run: prints a unified diff, writes nothing
+cargo delta init ... --apply     # writes the files
+cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
+```
+
+Already on the official updater? `cargo delta migrate` copies
+`plugins.updater` into `plugins.delta-updater` and keeps the official plugin as
+the fallback by default. Add `--remove-official` to remove its config and
+`updater:default` permission. Both commands print a diff unless `--apply` is
+passed.
+
+Keep `--check` in CI so the integration cannot silently rot:
+
+```yaml
+- name: Verify delta-updater integration
+  run: |
+    cargo install tauri-delta-updater --features generator
+    cargo delta init --check
+```
+
+`--check` also reports whether `plugins.updater` is still present (dual-stack)
+or absent (single-stack, full fallback owned by `install_full`).
+
+> [!IMPORTANT]
+> **Replacing the official updater is a decision, not an automatic default.**
+> This plugin can cover both delta and full-installer paths, but then installer
+> failures (Windows NSIS/MSI) are owned by the installer, and macOS whole-app
+> updates need an Apple Developer signing/notarization setup to validate in
+> production. If you only want smaller downloads, keeping the official updater
+> and using this engine as the delta layer is the lower-risk default.
+
+`src-tauri/Cargo.toml`:
+
+```toml
+[dependencies]
+tauri-plugin-delta-updater = { path = "../plugin" }   # or git / crates.io
+```
+
+`src-tauri/capabilities/default.json`:
+
+```json
+{ "permissions": ["delta-updater:default"] }
+```
+
+`src-tauri/tauri.conf.json` — same shape as the official updater plugin:
+
+```json
+{
+  "plugins": {
+    "delta-updater": {
+      "endpoints": ["https://cdn.example.com/latest.json"],
+      "pubkey": "RWQ... (pinned, never downloaded)",
+      "bundle_endpoint": "https://cdn.example.com/latest.bundle.json"
+    }
+  }
+}
+```
+
+`src-tauri/src/lib.rs` — the only Rust you write:
+
+```rust
+tauri::Builder::default()
+    .plugin(tauri_plugin_delta_updater::init_from_config())
+    .run(tauri::generate_context!())?;
+```
+
+`init_from_config()` reads `plugins.delta-updater`; when that key is missing it
+falls back to `plugins.updater`, so an app migrating from the official plugin
+keeps its existing `endpoints` / `pubkey` untouched. The `init(UpdateConfig)`
+form remains available when the config has to be computed at runtime.
+
+Frontend:
+
+```ts
+import { invoke, Channel } from '@tauri-apps/api/core';
+
+const events = new Channel();
+events.onmessage = (e) => {
+  // e.stage: checking | downloading | applying | ready | up_to_date
+  //          | deferred | fallback | repairing | safe_mode | cancelled
+  // deferred = a newer version exists, but this install is outside the rollout
+  if (e.stage === 'downloading') setPercent(e.downloaded, e.total);
+};
+
+await invoke('plugin:delta-updater|install', { onEvent: events });
+// 增量不可用时，回退路径也不需要官方插件：
+await invoke('plugin:delta-updater|install_full', { onEvent: events });
+```
+
+The plugin confirms startup before any window opens, streams stage events, and
+exits the process once the swap is ready. Errors arrive as
+`{ code, message, retryable, security }` — branch on `code`, never on `message`.
+
+> [!WARNING]
+> **Single-instance apps: test the exit path once per platform.** The plugin
+> exits with `app.exit(0)` after a short delay so the replacement script can
+> take over the files. If you also run `tauri-plugin-single-instance`, verify
+> that its socket/lock is released; a stale lock makes the relaunched build
+> look like a second instance.
+
+### Replacing the official `tauri-plugin-updater`
+
+The official updater can be removed entirely; this plugin now covers both the
+delta path and the full-installer fallback.
+
+| Step | Remove | Add |
+|---|---|---|
+| Dependency | `tauri-plugin-updater` | `tauri-plugin-delta-updater` |
+| Rust registration | `.plugin(tauri_plugin_updater::Builder::new().build())` | `.plugin(tauri_plugin_delta_updater::init_from_config())` |
+| `tauri.conf.json` | — | keep `plugins.updater` as-is (automatic fallback), or rename the key to `plugins.delta-updater` |
+| Capabilities | `"updater:default"` | `"delta-updater:default"` |
+| Frontend | `import { check } from '@tauri-apps/plugin-updater'` | `invoke('plugin:delta-updater|check')` / `...|install` / `...|install_full` |
+| Fallback | `update.downloadAndInstall()` | `invoke('plugin:delta-updater|install_full', { onEvent })` |
+
+The wire format is unchanged: the same `latest.json`, the same `pubkey`, and the
+same `platforms[].signature`. Known boundaries:
+
+- Linux `.deb` / `.rpm` are refused (`full_install_failed`) — let the package
+  manager update them; AppImage is fully supported.
+- A failed Windows NSIS/MSI install cannot be rolled back by us; the installer
+  owns that. We surface `full_install_failed` and the log path.
+- Windows installer arguments follow Tauri's own conventions (`/P /UPDATE /R`
+  for NSIS, `/passive /promptrestart AUTOLAUNCHAPP=True` for MSI), so updates
+  are not mistaken for first-time installs.
+- `endpoints` may use the official updater's `{{target}}` (windows / darwin /
+  linux), `{{arch}}`, `{{current_version}}` and `{{bundle_type}}` placeholders.
+  The first three expand automatically; `{{bundle_type}}` requires an extra
+  `"bundle_type": "nsis"` (or `msi` / `appimage` / `app`) in the plugin config —
+  without it startup fails with a clear error instead of sending a URL that
+  contains literal braces.
+- `install_full` returns `Updated`, then the plugin exits — the installer is
+  already running and will relaunch the app.
+
+**Migration cost vs benefit.** The migration is mostly a **frontend rewrite**:
+this plugin streams `{ stage, ... }` events over a `Channel`, while
+`@tauri-apps/plugin-updater` uses a `(downloaded, total)` callback — the
+progress UI has to be adapted, not just re-imported. Checklist:
+
+1. replace the capability with `delta-updater:default`;
+2. rewrite the progress listener to stage events;
+3. exit after `Updated` / `RepairRequired` (the script waits for the old process);
+4. set `bundle_endpoint` if you ship sidecars or resources.
+
+In exchange you get signed manifests (the official updater signs only binaries),
+semantic-version downgrade protection, deterministic rollback with crash
+recovery, safe mode, and a built-in full-installer path that replaces the
+official updater entirely. If you only need smaller downloads and your current
+flow is stable, keeping the official updater is the lower-cost choice.
+
+**Do not register both plugins unless you own the hand-off.** Two plugins fetch
+the manifest independently, so the manifest can be read twice (and change
+between reads), and this engine's manifest signature / version binding does not
+propagate into the official installer path. Pick one: this plugin's
+`install_full` already covers the fallback.
+
+### B. Any Rust host — library
 
 ```rust
 use tauri_delta_updater::{DeltaUpdater, UpdateResult};
 
+// Once per launch, before anything else. A no-op unless the previous run
+// actually swapped in a new version, so it is safe to call unconditionally.
+let _ = tauri_delta_updater::PlatformUpdater::confirm_startup_success_if_pending()?;
+
 let updater = DeltaUpdater::auto(
     "https://cdn.example.com/latest.json",
     "BASE64_PUBLIC_KEY",
-    app.package_info().version.to_string(),
+    env!("CARGO_PKG_VERSION"),
 )?;
 
 match updater.install().await? {
     UpdateResult::Updated { .. } => std::process::exit(0),
+    // A previous whole-app swap died halfway: the repair script is already
+    // running. Exit so it can restore the backup and relaunch the old version.
+    UpdateResult::RepairRequired { .. } => std::process::exit(0),
     UpdateResult::UpToDate { .. } => {}
-    UpdateResult::RequiresFullDownload { .. } => { /* hand off to the official updater */ }
+    UpdateResult::Deferred { .. } => { /* newer version exists, but this install is not in the rollout yet */ }
+    UpdateResult::RequiresFullDownload { .. } => { /* install_full(), or hand off to the official updater */ }
     UpdateResult::SafeMode => { /* prompt for a manual install */ }
+    // `UpdateResult` is non_exhaustive: new outcomes won't break your build.
+    _ => {}
 }
 ```
 
-That is the whole default path. The library derives the platform, a user-writable
-work directory, and the HTTP client; "no delta available" is a normal outcome,
-not an error you have to assemble yourself.
+The library derives the platform, a user-writable work directory, and the HTTP
+client; "no delta available" is a normal outcome, not an error you assemble
+yourself.
+
+Before integrating anything, see what a patch would actually save you — no
+network or signing key needed:
+
+```bash
+cargo run --example simulate_update -- old.exe new.exe target/delta-sim
+```
+
+### Three things that are easy to miss
+
+1. **Confirm startup** (library path) — call
+   `PlatformUpdater::confirm_startup_success_if_pending()` once at launch.
+   Without it, the replacement script waits 60 seconds and rolls the update back.
+   The plugin does this for you. If your app can be "up but unhealthy" (DB
+   migration, license check), use `confirm_startup_success_with(|| ...)`: a
+   failed check writes `health_check_failed` and the script rolls back
+   immediately instead of waiting for the timeout.
+2. **Exit after `Updated` / `RepairRequired`** — the script waits for the old
+   process to exit before it can replace files. `install_and_exit()` or the
+   plugin handles it.
+3. **Handle `RequiresFullDownload`** — either call `install_full()` (this plugin
+   downloads, verifies and runs the platform installer for you), or pass `url` /
+   `reason` to your installer flow. If you call `check()` first,
+   `info.full_download()` returns `{ version, url, signature }` as a typed value.
+   This path is taken for an AppImage whose install directory is read-only, and
+   for a macOS `.app` when no bundle manifest is configured.
 
 ## Overview
 
-`tauri-delta-updater` is a Rust library that implements incremental (delta) updates for Tauri v2 applications. Instead of downloading the full installer on every release, clients download a small binary patch and merge it locally — dramatically reducing bandwidth and wait time. It extends the standard `latest.json` manifest used by the official `tauri-plugin-updater`, so both update channels can coexist.
+`tauri-delta-updater` is a **standalone incremental update engine** for Tauri v2 applications: a Rust library plus a Tauri plugin that own the entire update flow. Instead of downloading the full installer on every release, clients download a small binary patch and merge it locally. When a delta is not available (no matching patch, read-only AppImage, macOS `.app` without a bundle manifest), the engine downloads, verifies and runs the full installer itself — `tauri-plugin-updater` is not required.
 
-**Positioning: an incremental accelerator, not a parallel update stack.** Register the official `tauri-plugin-updater` as usual, and let this library take over when a safe delta exists. When it doesn't — no compatible delta, or an environment where in-place replacement isn't safe — the library reports that a full download is required, with a structured reason, and the official updater does what it always does. Falling back is not a failure; correctness comes first.
+**Positioning: one engine, not a download accelerator.** The manifest format stays compatible with the official updater (`latest.json`, `pubkey`, `platforms[].signature`), so migration is a dependency swap, but the engine also replaces the replacement/rollback responsibilities the official plugin used to own. Falling back is not a failure; correctness comes first, and every fallback is a typed reason you can display or `match` on. If you keep the official plugin instead, you own the hand-off — see “Do not register both plugins” above.
 
 Platform support:
 
 | Platform | Status | Notes |
 |---|---|---|
-| Windows | **Stable** | Single-file exe is the sweet spot; the replacement script runs on PowerShell, handles elevation, special-character install paths, and relaunches through `explorer.exe` with **only the target path** (explorer ignores extra arguments) so the app does not inherit the admin token |
-| macOS | Limited | Bare (non-bundle) binaries only, experimental. Inside a `.app` bundle the library **automatically falls back** — in-place replacement would lose the developer signature and notarization. The replacement script refuses to run on bundles rather than silently ad-hoc re-signing |
-| Linux | Limited | Bare binaries; **AppImage automatically falls back** (the executable lives on a temporary squashfs mount). `.deb` installs elevate via passwordless `sudo` or `pkexec`, then **drop privileges back** via `runuser` (falling back to `su`) and return file ownership to the original user |
+| Windows | **Stable** | Single-file exe is the sweet spot; the replacement script runs on PowerShell, handles elevation, special-character install paths, and relaunches through `explorer.exe` with **only the target path** (explorer ignores extra arguments) so the app does not inherit the admin token. Signed builds keep their Authenticode guarantee: a patched artifact that loses it is rejected before any file is touched |
+| macOS | **Stable** (whole-app) | **Whole-app bundles** (requires `bundle_endpoint`; production validation needs an Apple Developer signing + notarization setup): the complete `.app` is swapped as a directory (old bundle renamed to `.<App>.app.tdx-backup`, staged tree moved in), so every signed file and symlink stays byte-identical and the signature/notarization remains valid; the reconstructed bundle is `codesign --verify --deep --strict`'d before any file is touched. The app directory must be writable; otherwise the old version keeps running. **Single-file patches** inside a `.app` automatically fall back instead of silently ad-hoc re-signing (bare binaries are experimental) |
+| Linux | **Stable** | Bare binaries and **AppImages** (the `.AppImage` file itself is patched in place, `chmod +x`, then relaunched; only a read-only install directory falls back). `.deb` installs elevate via passwordless `sudo` or `pkexec`, then **drop privileges back** via `runuser` (falling back to `su`) and return file ownership to the original user |
 
 > [!IMPORTANT]
+> **macOS whole-app updates need a real signed build.** CI executes the directory-swap script
+> against synthetic bundles, which verifies file hashes, rollback and relaunch but cannot prove
+> Gatekeeper/notarization behaviour for your Developer ID. Validate the whole flow once on a
+> signed and notarized app installed under `/Applications` before shipping.
+>
 > **Scope of what a patch covers.** The patch's base and product are the **main
 > executable**. Apps using `externalBin` (sidecars) or `resources` are outside
 > this scope. The manifest now marks every patch with
@@ -70,27 +309,94 @@ Platform support:
 
 - **High compression ratio** — powered by `qbsdiff`. A 1 MB change inside a 20 MB binary produced a 210-byte patch in our benchmark. Actual ratios depend on how similar the two binaries are; see [Patch size expectations](#patch-size-expectations).
 - **Security first** — dual SHA-256 verification: the downloaded patch *and* the merged result are both hash-checked. The staged artifact's hash is handed to the replacement script, which verifies it again before and after the copy (closing the verification→swap TOCTOU window).
+- **Authenticode guard (Windows)** — if the running build is signed and the patched artifact is not, the update is blocked with `DeltaError::AuthenticodeUnsigned`. A hash-correct but unsigned binary would be refused by AppLocker/WDAC and "update" would brick the app. Unsigned builds (dev/portable) are unaffected.
+- **Built-in full-installer path** — `download_full()` downloads `platforms[].url`, verifies `platforms[].signature` with mmap (no 200 MB read into RAM), and `install_full()` runs it: NSIS/MSI with elevation on Windows, `.app.tar.gz` unpack + directory swap on macOS, AppImage replacement on Linux. The official updater is no longer required for the fallback path.
 - **Signed manifests** — Ed25519 (minisign) signatures on `latest.json` prevent man-in-the-middle tampering. Signature failures are reported as a distinct error so tampering can be told apart from a corrupted download.
 - **Downgrade protection, three layers, on by default** — (1) the **manifest itself is signed**, so an attacker cannot repoint it at an old installer without breaking the signature; (2) after verification, `manifest.version` is compared against the running version with **semantic versioning**, and a non-newer manifest returns `UpdateOutcome::UpToDate` instead of handing the host an old installer URL; (3) the generator's version binding in the trusted comment catches publisher-side "signature from A on manifest B" mistakes. The first two layers block replay; the third is defense in depth. None of them depends on an optional switch.
 - **Typed fallback reasons** — `FallbackReason::NoMatchingPatch` / `EnvironmentUnsupported`, instead of a free-form string that forces UI code to match Chinese prose.
+- **Download-cost visibility** — `generate` stamps `platforms[].size` into the signed manifest, so `CheckOutcome::patch_size_ratio()` returns `patch_size / installer_size` before any download. **Lower is better**: `0.1` means the patch is 10% of the installer; values near `1.0` mean the delta saves little and the full installer may be faster. Manifests without `size` return `None` instead of a guessed number.
 - **Local verification harness** — `simulate_update(old, new, work_dir)` runs generate → apply → dual-hash verification with no network or signing key, so you can see the real patch ratio before integrating.
-- **Environment diagnosis** — `DeltaUpdater::diagnose()` reports work-directory/install-directory writability, platform eligibility, safe-mode state, and the exact log path.
+- **Environment diagnosis** — `DeltaUpdater::diagnose()` reports work-directory/install-directory writability, platform eligibility, safe-mode state, the exact log path, `last_rollback` (why the last replacement script rolled back, e.g. `update_failed` / `startup_timeout`), `events_path` for the structured stream below, and `user_message()` for a ready-to-display one-line summary. Linux builds also report whether a privilege-drop tool (`runuser` / `su`) was found; Windows builds report `authenticode` (whether the running exe is trusted) and `authenticode_check_skipped` (true when the check could not reach a conclusion, e.g. offline with no cached chain).
+- **Signed percentage rollout** — `generate --rollout 20` writes `platforms[].rollout` into the signed manifest; clients bucket on `sha256(install_id + version) % 100`. Misses get `Deferred` and download nothing; `0` pauses the release, `100` behaves like a normal release. The install ID persists in `tdx_install_id`, or pass `UpdateConfig::install_id(...)`. No server-side bucketing and no second manifest.
+- **Forced minimum version** — `generate --min-version 0.1.5` writes a signed floor into the manifest. Clients below it ignore the rollout percentage and must update, so a bad release can be reversed without waiting for the bucket.
+- **Deterministic startup handshake** — the replacement script writes `staged`, the new process writes `booting`, and `confirm_startup_success_with(|| ...)` writes `committed` only after the host's health check passes. Failure writes `health_check_failed` and rolls back immediately; `diagnose().startup_state` / `last_rollback` distinguish "never started", "crashed before commit", "started but unhealthy" and "committed".
+- **Startup doctor** — `diagnose().warnings()` returns actionable configuration gaps; the plugin prints them to the startup log on first run (work directory not writable, macOS `.app` without a bundle manifest, Linux without `runuser` / `su`).
+- **Structured rollback events** — replacement scripts append one JSON line per rollback (and the repair path) to `tdx_events.jsonl` (`{ event, reason, time }`). `diagnose().events_path` points at the file and `diagnose().script_events` already returns the last 20 parsed entries as typed `ScriptEvent` values, so the UI can explain what happened without parsing a free-form log. Malformed or future lines are ignored.
 - **Optional structured events** — enable the `tracing` feature to receive `delta.check`, `delta.patch.matched`, `delta.patch.rejected`, `delta.fallback`, `delta.safety_mode.entered`, `delta.safety_mode.cooldown_active`, and `delta.patched` events; zero cost when disabled.
 - **Zero-config constructor** — `DeltaUpdater::auto(url, pubkey, version)` derives the platform, user work directory, and HTTP client.
-- **UI-level default path** — `install()` returns `UpdateResult::{Updated, UpToDate, RequiresFullDownload, SafeMode}`; the advanced `update()` still returns the full `UpdateOutcome` when you need patch-level control.
+- **UI-level default path** — `install()` returns `UpdateResult::{Updated, RepairRequired, UpToDate, Deferred, RequiresFullDownload, SafeMode}`; the advanced `update()` still returns the full `UpdateOutcome` when you need patch-level control.
 - **Platform-scoped patches** — patches are grouped per platform key, so an x64 client never picks up an arm64 patch.
 - **Staged rollout APIs** — `check()` to query without downloading, `prepare()` to download and merge without launching the swap, and `Staged::launch()` to trigger the swap when you're ready.
 - **Auto-rollback with a real restart** — if the new version fails to write its startup flag within the timeout, the script stops the new process, restores the backup, **and relaunches the old version**. The same recovery runs when elevation is declined or a copy fails.
 - **Crash-safe replacement** — if a previous run was interrupted between "rename exe → `.bak`" and the swap, the next script run restores the backup first; a leftover `.bak` next to an intact target is never restored.
 - **Safe mode with automatic recovery** — after 3 consecutive *deterministic* failures (bad signature, hash mismatch, disk full...), delta updates pause. Transient network errors don't count. After a 6-hour cooldown a single new attempt is allowed automatically; hosts can also call `reset_safety()`.
 - **Concurrency protection** — a cross-process file lock prevents parallel updaters from corrupting state. Lock contention surfaces as `DeltaError::UpdateInProgress`, not a generic worker error.
-- **Network resilience** — HTTP Range resumption (only trusted with `206 Partial Content`; a `200` answer restarts the download cleanly) and exponential-backoff retries **with jitter**.
+- **Network resilience** — HTTP Range resumption (only trusted with `206 Partial Content`; a `200` answer restarts the download cleanly), **resumable across app restarts** (the partial patch is kept and tagged with the signed `patch_hash`, so a leftover from another version is discarded rather than concatenated), and exponential-backoff retries **with jitter** — applied to the manifest/signature requests too, so a single CDN 502 does not surface as "check failed".
 - **Injectable HTTP client** — pass your own `reqwest::Client`, or build it with `client_builder()` which installs the TLS backend for you.
 - **zstd-compressed patches** — raw bsdiff output is zstd-compressed at generation time and sniffed by magic on apply, so legacy uncompressed patches keep working.
 - **Bounded downloads and bounded expansion** — the patch limit derives from the signed `patch_size` (+1 MB); manifests are capped at 10 MB. Compressed patches are streamed to a temp file and memory-mapped, with a decompressed-size ceiling, so a 2 GB target can't turn into multi-GB RSS.
 - **Memory-mapped delta** — old files and patches are read via read-only `mmap`; the merged result is written straight to disk.
 - **Scoped cleanup** — only artifacts this project created are removed. An unrelated `notes.txt.bak` in the install directory survives.
 - **Crash-tolerant auto cleanup** — patch, staging, script, expanded-patch temp, and the target's own `.bak` are reclaimed on the next update.
+- **Whole-app bundles** (`core::bundle` + `UpdateConfig::bundle_manifest_url`) —
+  diffs an entire app directory (main exe + sidecars + resources) through a
+  deterministic, path-sorted archive. Every file is hash-checked before archiving
+  and after extraction, and archive paths are rejected if they are absolute or
+  contain `..`. Opt in by passing the signed `latest.bundle.json` URL; the updater
+  then downloads the directory patch, extracts a verified staging tree, and
+  generates a swap script that backs up, replaces, and rolls back as a unit.
+  Windows replaces changed files one by one (and deletes removed ones); macOS
+  swaps the whole `.app` directory, preserving symlinks, executable bits and
+  the code signature. Other platforms fall back to the full download.
+- **Interrupted-swap repair** — if a previous swap died halfway, the next call
+  returns `UpdateOutcome::Repair` / `UpdateResult::RepairRequired` **without any
+  network request**: a repair script removes files added by the failed update,
+  restores the backup, and relaunches the old version. `diagnose().needs_repair`
+  and `last_rollback` let the UI explain what happened.
+
+## Security boundaries
+
+The official `tauri-plugin-updater` verifies the installer bytes but **not the
+manifest** ([CVE-2026-95625](https://nvd.nist.gov/vuln/detail/cve-2026-95625)).
+An attacker who can serve the update endpoint can pair a higher unsigned
+`version` with an older, validly signed installer and force a downgrade without
+the signing key. This engine signs the manifest itself, then applies semantic
+version monotonicity after verification — a replayed old manifest lands on
+`UpToDate` and never hands the host an old installer URL.
+
+### Threat matrix
+
+| Attack | official `tauri-plugin-updater` | `tauri-plugin-updater-delta` | this engine |
+|---|---|---|---|
+| CDN serves a newer-version manifest pointing at an older, validly signed installer | [CVE-2026-95625](https://nvd.nist.gov/vuln/detail/cve-2026-95625): the manifest is never signed, so the unsigned `version` can be raised while keeping an old signed installer | Delegated to the official check, same outcome | Blocked: the **manifest itself is signed**, `version` is bound in the trusted comment, and `is_newer_than` runs in Rust |
+| Frontend XSS flips the downgrade switch through IPC | [CVE-2026-95624](https://nvd.nist.gov/vuln/detail/cve-2026-95624): `allowDowngrades` was reachable from JS | Inherits the official check | No such IPC parameter: downgrade rejection is a Rust-side invariant, not an option the webview can set |
+| Patch bytes replaced in transit | n/a (no patch) | Local hash check | Double SHA-256 + the signed manifest anchors both hashes |
+| Power loss or crash mid-swap | The installer owns it | Does not own replacement | `.bak` recovery, a repair script, safe mode, and a `staged → booting → committed` state pointer |
+| Process starts but is unhealthy (DB migration, license check) | Not observable | Not observable | Host health check blocks the commit and writes `health_check_failed`, so the script rolls back immediately |
+
+The engine's security model is described above (signed manifests, version
+binding, dual hashes, typed artifacts). These boundaries are deliberate and
+worth knowing before an audit:
+
+- **The startup success flag is plaintext.** Any process that can write the
+  install directory or work directory can forge it and make the script keep the
+  new version. That is inside the "the machine is already compromised" threat
+  model; it is not a security boundary for the updater.
+- **Legacy minisign signatures are accepted.** `verify_manifest_signature`
+  accepts the legacy format (`allow_legacy = true`) for compatibility with
+  minisign 0.7. After the release pipeline moves to the pre-hash format, tighten
+  this; keep it on the release checklist rather than leaving it only in a
+  source comment.
+- **The Windows Authenticode check is offline** (`WTD_CACHE_ONLY_URL_RETRIEVAL`).
+  A trusted original whose artifact is unsigned is blocked; when the cache has
+  no chain for an otherwise valid artifact, the check is skipped rather than
+  blocking every offline machine. `diagnose().authenticode` exposes the current
+  state; `diagnose().authenticode_check_skipped` tells you when the result was
+  skipped (offline / chain not cached) rather than an actual "unsigned" verdict,
+  so the residual risk is observable instead of silent.
+- **Scripts run with the privileges they request.** UAC / polkit elevation
+  happens after the app exits; the trust anchors are the signed manifest and
+  the staged artifact's hash, not the script text.
 
 ## Patch size expectations
 
@@ -105,6 +411,15 @@ A patch is always verified against both hashes, so a poor-ratio patch is still *
 ### Memory and file size limits
 
 `qbsdiff` needs the old and new files available while computing or applying a patch; its working memory is roughly `max(17 × old_size, 9 × old_size + new_size)`, which is why large files are rejected rather than attempted. Single files larger than `MAX_INCREMENTAL_FILE_BYTES` (2 GB) are rejected with `DeltaError::IncrementalNotApplicable` — fall back to the full installer for those. Old files and patches are memory-mapped, the merged result is streamed to disk, and decompressed patch size is capped at `2 × old_size + 128 MB`.
+
+Each patch task runs on a dedicated thread that reserves a **512 MB stack** (bsdiff recursion depth scales with file size). That is virtual address space, not RSS, but it means **do not run two patch generations concurrently in one process**. Applying a patch is the same constraint.
+
+To measure your own app: build two releases and run
+`cargo run --example simulate_update -- old.exe new.exe target/delta-sim`.
+Compare `patch_size` with the installer size; `generate --report` writes the
+same ratio per baseline into the release report. Very similar builds produce a
+few hundred bytes; a full recompile with a different toolchain can approach the
+full installer size (skip those with `--max-patch-ratio`).
 
 ## Test scenarios
 
@@ -126,12 +441,15 @@ The manifest is a superset of the Tauri official `latest.json` format:
 ```json
 {
   "version": "0.1.1",
+  "min_version": "0.1.0",
   "notes": "Update notes",
   "pub_date": "2026-11-04T16:35:22.903Z",
   "platforms": {
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6...",
-      "url": "https://example.com/Sereno_0.1.1_x64-setup.exe"
+      "url": "https://example.com/Sereno_0.1.1_x64-setup.exe",
+      "size": 20971520,
+      "rollout": { "percentage": 20 }
     }
   },
   "patches": {
@@ -152,20 +470,38 @@ The manifest is a superset of the Tauri official `latest.json` format:
 
 `patches` is grouped by platform key, matching the keys in `platforms`. The legacy flat-array form is still accepted when reading, so manifests published by earlier versions keep working.
 
+`platforms[].size` is optional and written by `generate`: the installer size in
+bytes, covered by the manifest signature. It lets the client compute
+`patch_size_ratio()` before downloading anything, without guessing.
+
+`platforms[].rollout` is optional and signed. `"percentage": 20` admits ~20% of
+installs (stable `sha256(install_id + version) % 100`); `0` pauses the release
+and `100` is a normal full release. A client outside the bucket gets
+`Deferred` and downloads nothing. Old manifests without the field are treated
+as 100%.
+
+`min_version` is optional and signed. A client below it **ignores the rollout
+percentage and must update** — the emergency brake for pulling users off a bad
+release. Omit it to clear the floor on the next publish.
+
 ## Usage guide
 
 ### 1. Add the dependency
 
 ```toml
 [dependencies]
-tauri-delta-updater = "0.1"
+tauri-delta-updater = "0.2"
 ```
+
+Inside a Tauri app, `tauri-plugin-delta-updater` (the `plugin/` crate) wraps this
+one and exposes the same engine as commands and events, so you never touch the
+types below. Continue here if you want the library directly.
 
 The library has **no default features**. If you need the `generate` CLI, enable the
 publisher tooling explicitly:
 
 ```toml
-tauri-delta-updater = { version = "0.1", features = ["generator"] }
+tauri-delta-updater = { version = "0.2", features = ["generator"] }
 ```
 
 `rust-version = "1.88"` (the real floor of the `reqwest 0.13` → `url` → `icu_*`
@@ -183,6 +519,17 @@ let updater = tauri_delta_updater::DeltaUpdater::auto(
 )?;
 ```
 
+For a non-Tauri host (CLI, service, tray app), `host_version!()` expands to the
+**caller crate's** `CARGO_PKG_VERSION`:
+
+```rust
+let updater = tauri_delta_updater::DeltaUpdater::auto(
+    "https://cdn.example.com/latest.json",
+    "BASE64_PUBLIC_KEY",
+    tauri_delta_updater::host_version!(),
+)?;
+```
+
 The default path returns UI-level outcomes — no patch URL, hash, or staging file
 type to handle:
 
@@ -196,6 +543,11 @@ match updater.install().await? {
         std::process::exit(0);
     }
     UpdateResult::UpToDate { .. } => { /* nothing to do */ }
+    UpdateResult::Deferred { percentage, .. } => {
+        // A newer version exists, but this install is outside the rollout.
+        // Show "will update automatically" rather than "already up to date".
+        let _ = percentage;
+    }
     UpdateResult::RequiresFullDownload { url, reason } => {
         // hand off to tauri-plugin-updater; `reason` explains why
         let _ = (url, reason);
@@ -204,8 +556,161 @@ match updater.install().await? {
 }
 ```
 
+For a progress bar, use `install_with_progress(|downloaded, total| ...)` — it
+returns the same `UpdateResult`, so you do not have to drop down to the advanced
+API just to show a progress bar. The callback covers the **download** only; once
+`downloaded == total`, the patch is being merged and verified, so switch the UI
+to an "installing" state.
+
 `install_and_exit()` does the same but exits automatically after a successful
 update.
+
+### Returning the result to the frontend
+
+`UpdateResult` is `Serialize` with a `kind` tag (`snake_case`), so a command can
+hand it straight to the UI and the UI can switch on `kind`:
+
+```json
+{"kind":"up_to_date","version":"1.2.3"}
+{"kind":"deferred","version":"1.2.3","percentage":20}
+{"kind":"requires_full_download","url":"https://...","reason":{"no_matching_patch":{"from":"1.2.3","to":"1.3.0"}}}
+{"kind":"safe_mode"}
+```
+
+For `updated`, the backend exits the process so the swap script can run — emit an
+event before exiting instead of trying to return a value.
+
+<details>
+<summary>Complete Tauri wiring (setup + command)</summary>
+
+```rust
+use tauri::{Emitter, Manager};
+use tauri_delta_updater::{DeltaUpdater, PlatformUpdater, UpdateResult};
+
+fn main() {
+    tauri::Builder::default()
+        .setup(|app| {
+            // No-op on normal launches; only acts after a real swap.
+            let _ = PlatformUpdater::confirm_startup_success_if_pending();
+
+            let updater = DeltaUpdater::auto(
+                "https://cdn.example.com/latest.json",
+                "BASE64_PUBLIC_KEY",
+                app.package_info().version.to_string(),
+            )?;
+            app.manage(updater); // DeltaUpdater is Send + Sync
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![install_update])
+        .run(tauri::generate_context!())
+        .expect("failed to run app");
+}
+
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    updater: tauri::State<'_, DeltaUpdater>,
+) -> Result<UpdateResult, String> {
+    let result = updater
+        .install_with_progress(|downloaded, total| {
+            let _ = app.emit("update://progress", (downloaded, total));
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if matches!(
+        result,
+        UpdateResult::Updated { .. } | UpdateResult::RepairRequired { .. }
+    ) {
+        // The swap script is already running: tell the UI, then exit so it can
+        // replace the executable. Do not use `install_and_exit()` here — it
+        // exits before the command can return anything.
+        let _ = app.emit("update://ready", ());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        std::process::exit(0);
+    }
+
+    Ok(result)
+}
+```
+
+The frontend calls `invoke('install_update')`, gets the same JSON shape above, and
+listens for `update://progress` (download bytes) and `update://ready` (restart).
+
+</details>
+
+### Cancellable updates (session)
+
+`install()` is a single call. When the UI needs to know each phase or offer a
+cancel button, use a session:
+
+```rust
+use tauri_delta_updater::UpdateEvent;
+
+let session = updater.session();
+let token = session.cancel_token(); // clone it for the UI / another command
+
+let result = session
+    .run(|event| match event {
+        UpdateEvent::Downloading { downloaded, total } => { /* progress bar */ }
+        UpdateEvent::Applying => { /* switch to "installing" */ }
+        UpdateEvent::Ready { version } => { /* tell the user to restart */ }
+        _ => {}
+    })
+    .await?;
+
+// `token.cancel()` from anywhere stops the update.
+```
+
+`UpdateEvent` is `Serialize` with a `stage` tag (`{"stage":"downloading","downloaded":123,"total":456}`), so
+it can be emitted to the frontend directly. Cancelling returns
+`DeltaError::Cancelled`, removes partial files, and does **not** count toward safe
+mode. Cancellation is cooperative: it stops during download and at phase
+boundaries; it cannot interrupt the merge itself, and it cannot undo an
+already-launched swap.
+
+<details>
+<summary>Handing a full download to the official updater</summary>
+
+```rust
+use tauri_delta_updater::UpdateResult;
+
+match updater.install().await? {
+    UpdateResult::RequiresFullDownload { url: Some(url), reason } => {
+        // install() has returned, so the update lock is already released and the
+        // official updater can take over safely. `reason` is a typed enum: log or
+        // show it to the user, then let the official updater / installer flow run.
+        let _ = (url, reason);
+    }
+    _ => {}
+}
+```
+
+If you went through `check()` first, `CheckOutcome::full_download()` gives the
+same handoff as a typed value — `{ version, url, signature }` — so the installer
+flow gets the signature without re-parsing the manifest:
+
+```rust
+let info = updater.check().await?;
+if !info.has_patch {
+    if let Some(full) = info.full_download() {
+        // full.url + full.signature + full.version → tauri-plugin-updater
+    }
+}
+```
+
+The fallback can also stay inside this engine: `install_full()` downloads,
+verifies and runs the installer (NSIS/MSI, `.app.tar.gz`, AppImage). If you keep
+the official updater instead, hand it `url` + `signature` as above. **Do not run
+both plugins concurrently**: the manifest can be fetched twice and the security
+models do not compose.
+
+If you use `check()` before installing, `info.full_download()` returns
+`{ version, url, signature }` as a typed value. With the one-call `install()`
+path you only get `url` + `reason`; when you need the installer signature
+for the official updater, go through `check()` first.
+
+</details>
 
 ```rust
 use tauri_delta_updater::{DeltaUpdater, UpdateConfig, UpdateOutcome};
@@ -223,6 +728,11 @@ let updater = DeltaUpdater::new(
 match updater.update().await? {
     UpdateOutcome::Patched { staged } => {
         println!("Updated to {}", staged.manifest().version);
+    }
+    UpdateOutcome::Bundled { staged } => {
+        // Whole-app update (main exe + sidecars + resources) when
+        // `bundle_manifest_url` is configured.
+        println!("Updated whole app to {}", staged.manifest().version);
     }
     UpdateOutcome::UpToDate { version } => {
         println!("Already up to date ({version})");
@@ -264,12 +774,13 @@ For download progress, use `updater.update_with_progress(|downloaded, total| { .
 > see a stale lock, emit an `update-ready` event, wait briefly, then
 > `app.exit(0)`.
 
-Once the new version has started, call `PlatformUpdater::confirm_startup_success()`
-once. If you set a custom `UpdateConfig::work_dir`, call
-`updater.confirm_startup_success()` (the instance method) instead — it writes to
-the configured directory. The replacement script also drops a `tdx_update_dir`
-pointer next to the executable, so the static call can resolve custom directories
-on its own.
+Once the new version has started, call
+`PlatformUpdater::confirm_startup_success_if_pending()` (or the plain
+`confirm_startup_success()` if you prefer). If you set a custom
+`UpdateConfig::work_dir`, call `updater.confirm_startup_success()` (the instance
+method) instead — it writes to the configured directory. The replacement script
+also drops a `tdx_update_dir` pointer next to the executable, so the static call
+can resolve custom directories on its own.
 
 <details>
 <summary>Staged integration (check first, download after user confirmation)</summary>
@@ -278,20 +789,39 @@ on its own.
 // 1. Check only — nothing is downloaded.
 let info = updater.check().await?;
 if info.is_newer {
-    println!(
-        "New version {} available, patch {} bytes",
-        info.version,
-        info.patch_size.unwrap_or(0)
-    );
+    if info.has_patch {
+        println!(
+            "New version {} available, patch {} bytes",
+            info.version,
+            info.patch_size.unwrap_or(0)
+        );
+    } else {
+        // No usable patch (cross-version upgrade, read-only AppImage, macOS bundle, ...).
+        // `full_download()` returns `{ version, url, signature }` for the current
+        // platform, ready to hand to the official updater or your own installer.
+        let full = info.full_download().expect("manifest lists this platform");
+        println!("Full installer: {} ({})", full.url, full.version);
+    }
 }
 
 // 2. After the user confirms: download and merge, but don't swap yet.
-if let UpdateOutcome::Patched { staged } = updater.prepare().await? {
-    println!("Restarting to finish the update...");
-    staged.launch()?;   // One-shot: a second successful launch is rejected.
-    std::process::exit(0);
+match updater.prepare().await? {
+    UpdateOutcome::Patched { staged } => {
+        println!("Restarting to finish the update...");
+        staged.launch()?;   // One-shot: a second successful launch is rejected.
+        std::process::exit(0);
+    }
+    UpdateOutcome::Bundled { staged } => {
+        // Same lifecycle for whole-app updates.
+        staged.launch()?;
+        std::process::exit(0);
+    }
+    _ => {}
 }
 ```
+
+`full_download_for(platform)` does the same for an explicit manifest key, which is
+useful when a single release build inspects several targets.
 
 `UpdateConfig::auto_launch(false)` also stops `update()` from launching the swap script automatically.
 
@@ -343,7 +873,25 @@ cargo build --release --features generator --bin generate
 > `--app-binary` / `--old-dir` are the patch base and product. `--installer`
 > supplies `platforms[].url` and `platforms[].signature` for the full-download
 > path. Feeding the NSIS/MSI installer as the patch base produces a patch that
-> can never match the installed `app.exe`.
+> can never match the installed `app.exe`. For AppImage targets, the baseline is
+> the `.AppImage` file itself (that is what the client replaces).
+
+```bash
+# Build the publisher once (the `generate` binary is behind a feature):
+cargo build --release --features generator --bin generate
+
+# Generate a minisign-compatible signing key once:
+cargo tauri signer generate -w ~/.tauri/myapp.key
+```
+
+`--old-dir` contains your **previous app executables**, not installers, and the
+version is parsed from the filename — for example:
+
+```text
+old_binaries/
+  MyApp_0.1.0_x64.exe
+  MyApp_0.1.1_x64.exe
+```
 
 ```bash
 ./target/release/generate \
@@ -354,14 +902,69 @@ cargo build --release --features generator --bin generate
   --base-url https://your-cos-endpoint.com \
   --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
   --notes "What's new" \
-  --output-dir ./dist
+  --output-dir ./dist \
+  --archive-dir ./old_binaries \
+  --report ./dist/release-report.json \
+  --fail-on-empty
 ```
+
+`--archive-dir` closes the loop: after a successful release it copies the current
+main executable into the baseline directory (keeping the original name when it
+already contains version + arch, otherwise writing `App_0.1.1_x86_64.exe`). The
+next release can reuse the same `--old-dir` without any manual file shuffling.
+`--report` writes a machine-readable summary of every baseline (patch size, ratio,
+skip reason), and `--fail-on-empty` turns "no patch was produced" into a CI
+failure instead of a silently full-download-only release.
+
+**Whole-app bundles.** If the app ships sidecars or resources, add
+`--new-app-dir` and one or more `--old-app-dir` (the directory name must contain
+the version, e.g. `build/v0.1.1`):
+
+```bash
+./target/release/generate ... \
+  --new-app-dir ./build/app-0.1.2 \
+  --old-app-dir ./build/app-0.1.1
+```
+
+This also writes `latest.bundle.json` + `.sig` next to `latest.json`. Every
+`bundles[]` entry carries `base_files` / `target_files` (path, size, SHA-256) and
+points at a directory-level patch.
+
+Clients opt in by pointing at the signed bundle manifest:
+
+```rust
+let updater = DeltaUpdater::new(
+    UpdateConfig::new("https://cdn.example.com/latest.json", "BASE64_PUBLIC_KEY")
+        .current_version("0.1.1")
+        .bundle_manifest_url("https://cdn.example.com/latest.bundle.json"),
+)?;
+
+match updater.update().await? {
+    UpdateOutcome::Bundled { staged } => {
+        println!("whole app -> {}", staged.manifest().version);
+        // Exit the process so the swap script can replace every file.
+        std::process::exit(0);
+    }
+    _ => {}
+}
+```
+
+The updater verifies the local layout, rebuilds the old archive, applies the
+patch, and extracts a hash-checked staging tree. On Windows the generated script
+backs up each changed file, copies the new bytes, deletes files removed in the
+target version, and restores the whole backup directory if any step fails.
+On macOS the script swaps the entire `.app` directory atomically, so the
+reconstructed bundle keeps its code signature and notarization; the app directory
+must be writable. Other platforms fall back to the full installer. The
+lower-level `core::bundle` APIs remain available if you want to drive the staging
+step yourself.
 
 Key arguments:
 
 | Argument | Meaning |
 |---|---|
 | `--old-dir` | Directory of **old main executables**. Every matching version gets a patch. |
+| `--old-binary` | One explicit baseline (repeatable), merged with `--old-dir`. Invalid explicit baselines fail loudly. |
 | `--app-binary` | The new main executable (patch target / `target_hash`). |
 | `--installer` | The new full installer; used for the full-download URL and its signature. Defaults to `--app-binary` for portable single-file apps. |
 | `--version` | Target version; a leading `v` is normalized. |
@@ -371,15 +974,81 @@ Key arguments:
 | `--existing` | Previous `latest.json`, to preserve other platforms' entries and patches. |
 | `--password` | Private-key password (or `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). |
 | `--output-dir` | Where `latest.json`, `.sig`, and `.pub` are written (default: current directory). |
+| `--archive-dir` | Copy the current main executable there as the next release's baseline. |
+| `--new-app-dir` | Current app directory (exe + sidecars + resources); enables whole-app bundle patches. |
+| `--old-app-dir` | Previous app directory (repeatable). The directory name must contain the version; for macOS `.app` bundles the version may live in the parent directory (`v0.1.1/MyApp.app`). |
+| `--report` | Write a JSON release report (patch sizes, ratios, skipped baselines). |
+| `--channel` | Release channel (default `stable`). Other names write `latest-<channel>.json` / `latest-<channel>.bundle.json`. |
+| `--rollout` | Signed rollout percentage, 0–100 (default 100). Values below 100 write `platforms[].rollout`; `0` pauses the release. |
+| `--min-version` | Signed minimum version. Clients below it bypass `rollout` and must update. Omitting it clears the previous floor. |
+| `--fail-on-empty` | Exit non-zero when no patch was produced (CI guard). |
 | `--dry-run` | Plan and verify without writing files. |
 
 The generator only produces patches for old executables matching the target
 architecture/OS; every patch is **applied and hash-verified** before it is
 written into the manifest, so a bad patch fails CI instead of a user's rollback.
 
+<details>
+<summary>GitHub Actions sketch</summary>
+
+```yaml
+- name: Generate delta manifest
+  env:
+    TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  run: |
+    cargo build --release --features generator --bin generate
+    ./target/release/generate \
+      --old-dir old_binaries \
+      --app-binary src-tauri/target/release/MyApp.exe \
+      --installer src-tauri/target/release/bundle/nsis/MyApp_0.1.2_x64-setup.exe \
+      --version 0.1.2 \
+      --base-url https://cdn.example.com/releases \
+      --output-dir dist \
+      --archive-dir old_binaries \
+      --report dist/release-report.json \
+      --fail-on-empty
+```
+
+Upload `dist/` together with the installer, and persist `old_binaries/` (cache or
+artifact) so the next run keeps its baselines. The `release-report.json` is handy
+as a CI job summary.
+
+</details>
+
 **Maximize hit rate with a rolling window**: keep the last 5–8 old executables in
 `old_binaries/`. Patches are immutable — cache them on your CDN with
 `Cache-Control: immutable, max-age=31536000`.
+
+**Channel isolation.** Publish to a beta channel (`--channel beta`), point a test
+client at `latest-beta.json`, and when you are happy publish the same artifacts
+as `stable` (no `--channel`, or `--channel stable`). Clients only ever see the
+manifest URL you give them, so this is a hard gate rather than a percentage.
+
+```bash
+generate ... --channel beta        # writes latest-beta.json + .sig
+# validate a test client against https://cdn.example.com/latest-beta.json
+aws s3 cp dist/latest-beta.json     s3://bucket/latest.json
+aws s3 cp dist/latest-beta.json.sig s3://bucket/latest.json.sig
+```
+
+**Percentage rollout without a server.** Add `--rollout` to the same command:
+
+```bash
+generate ... --rollout 20     # signed platforms[].rollout = { "percentage": 20 }
+generate ... --rollout 50     # raise the percentage when the first cohort is healthy
+generate ... --rollout 100    # full release (field omitted, old clients unaffected)
+```
+
+The client computes `sha256(install_id + version) % 100` and only proceeds when
+it falls inside the percentage. The bucket is stable for one install on one
+version and reshuffles when the version changes, so the same users are not
+always first or last. Installs outside the bucket receive
+`UpdateOutcome::Deferred` / `UpdateResult::Deferred` / the `deferred` stage and
+download nothing. The install ID lives in `tdx_install_id` in the work
+directory; hosts that already have a stable identifier can set
+`plugins.delta-updater.install_id` (or `UpdateConfig::install_id(...)` in the
+library path). `--rollout 0` pauses the release without deleting the manifest.
 
 > [!IMPORTANT]
 > **The tag and the manifest version must use the same format.** The client
@@ -393,14 +1062,21 @@ written into the manifest, so a bad patch fails CI instead of a user's rollback.
 
 ### Manifest compatibility
 
-`latest.json` with grouped `patches`, `patch_size`, `scope`, version monotonicity,
-and a user-writable work directory. Older manifests with a flat `patches` array
-and no `patch_size` are still accepted when reading.
+`latest.json` with grouped `patches`, `patch_size`, `scope`, `size`, `rollout`,
+version monotonicity, and a user-writable work directory. Older manifests with a
+flat `patches` array and no `patch_size` / `size` / `rollout` are still accepted
+when reading; a missing `rollout` means 100%.
 
 ### 5-minute local verification
 
 You do not need a network, a signed manifest, or a Tauri app to see whether delta
 updates actually work. Put two versions of your executable anywhere, then:
+
+```bash
+cargo run --example simulate_update -- old.exe new.exe target/delta-sim
+```
+
+Or call it from your own test:
 
 ```rust
 #[tokio::main]
@@ -428,14 +1104,15 @@ different for a delta to help.
 
 ### Integration comparison
 
-| | `tauri-delta-updater` | official `tauri-plugin-updater` | `tauri-plugin-updater-delta` |
-|---|---|---|---|
-| Integration | library call (2–3 lines) | plugin registration | plugin registration |
-| Delta algorithm | qbsdiff + zstd, PE-agnostic | full download | patch over official `Update` |
-| Fallback | typed `FallbackReason`, host decides | n/a | transparent |
-| Security model | own manifest signature + double hash + rollback | official signature/installer | official signature + local hash |
-| Rollback | own script, crash recovery, startup confirm | installer | installer |
-| Platform reach | Windows stable; macOS bundle/AppImage fall back | all Tauri targets | all Tauri targets |
+| | `tauri-delta-updater` | official `tauri-plugin-updater` | `tauri-plugin-updater-delta` | `tauri-plugin-hot-update` |
+|---|---|---|---|---|
+| Integration | Tauri plugin (`tauri-plugin-delta-updater`) or a library call (2–3 lines) | plugin registration | plugin registration | plugin registration |
+| Delta algorithm | qbsdiff + zstd, PE-agnostic | full download | patch over official `Update` | JS/CSS/HTML only |
+| Owns replacement / rollback | yes (script, backup, repair, safe mode) | yes (the installer) | **no** — hands the patch back | no |
+| Manifest signed | yes (Ed25519 over `latest.json`) | no: only the installer is signed | inherits official | n/a |
+| Downgrade guard | Rust-side semver invariant; no IPC switch | `allowDowngrades` was reachable from JS (CVE-2026-95624) | inherits official | n/a |
+| Rollout | signed `platforms[].rollout` percentage | channel / CDN path only | inherited | n/a |
+| Platform reach | Windows (exe + whole app); macOS `.app` only as a whole-app bundle; Linux bare binary + AppImage | all Tauri targets | all Tauri targets | web assets only |
 
 If you only want "make the download smaller" and nothing else, the official
 updater plus a transparent layer is the simpler choice. If you want a manifest
@@ -448,14 +1125,19 @@ fallback, this library is the deeper option.
 |---|---|
 | Always falls back to full download | Manifest key doesn't match what the client looks up. Use `current_platform()` on the client and let `generate` infer the key. |
 | Always falls back to full download | `to_version` doesn't match `manifest.version`, or the client version differs in format. The generator normalizes the `v` prefix. |
-| `DeltaError::Config` at startup | `current_version` is empty or not semver. |
+| Always returns `Deferred` | The manifest's `platforms[].rollout` percentage excludes this install (stable bucket). Raise `--rollout`, publish `100`, or remember that `0` pauses the release. |
+| `DeltaError::Config` at startup | `current_version` is empty/not semver, or `manifest_url` / `public_key` is empty. Whitespace and a `v` prefix in the version are normalized. |
 | `DeltaError::WorkDirNotWritable` | A custom `work_dir` is not writable by the user. Omit it to use the user cache. |
 | `DeltaError::IncrementalNotApplicable` | The file exceeds the 2 GB incremental limit; use the full installer. |
 | `DeltaError::ManifestInvalid` | The signed manifest is malformed (bad JSON / not semver). |
 | `DeltaError::ResponseTooLarge` | A manifest or signature response exceeded 10 MB. Deterministic; not retried. |
 | `DeltaError::UpdateInProgress` | Another updater holds the lock. Prompt "try again later"; not an anomaly. |
+| Need a code instead of prose | `DeltaError::code()` returns a stable `snake_case` string (`signature_invalid`, `update_in_progress`, …). Plugin errors already carry `{ code, message, retryable, security }`. |
 | `DeltaError::SafeMode` from `check()` | Three deterministic failures; wait for the 6-hour cooldown or call `reset_safety()`. |
-| New version gets rolled back | Startup success was never confirmed. Call `confirm_startup_success()` early, and exit the process after launching the update. |
+| `DeltaError::AuthenticodeUnsigned` on Windows | The running build is signed but the patched artifact is not — usually a release that forgot to sign the new executable. Blocked on purpose: AppLocker/WDAC would refuse to start it. Sign the new build (or ship the full installer) and republish; `diagnose().authenticode` shows the current state. |
+| `plugin:delta-updater\|check` not found / denied at runtime | The capability is missing. Add `"delta-updater:default"` to `src-tauri/capabilities/default.json` and restart. |
+| After a crash, the app reports `RepairRequired` / `needs_repair` | A previous whole-app swap was interrupted. Exit the process (or call `install()`); the repair script restores the backup and relaunches the old version — no network needed. |
+| "It said updated, but the version is still old after restart" | Read `diagnose().last_rollback` (`update_failed` / `startup_timeout`): the new version never confirmed startup, so the script restored the old one. Parse `diagnose().events_path` (`tdx_events.jsonl`) for the structured rollback event; details are in `tdx_update.log`. Usually the app exits before `confirm_startup_success*` runs, or the new build crashes at launch. |
 | Update "silently disappears" | The user declined elevation. The old version is relaunched; see `tdx_update.log` next to the install directory (and in the work directory). |
 | Extra `tdx_update.ps1` / `tdx_update.sh` in the work directory | Normal: scripts don't delete themselves; the next update reclaims them. |
 | `Apps & Features` / `dpkg` still shows the old version | In-place exe replacement bypasses installer/package metadata. Use the full-download path for managed deployments. |

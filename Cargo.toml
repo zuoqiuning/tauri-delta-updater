@@ -1,12 +1,12 @@
 [package]
 name = "tauri-delta-updater"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # 实际下限由依赖决定：reqwest 0.13 → url → idna → icu_* 系列声明要求 1.88。
 # 声明低版本会让 `cargo +1.81 check` 直接失败，是虚假的兼容承诺；
 # 这里按真实依赖链的下限声明，并由 CI 的 MSRV job 验证。
 rust-version = "1.88"
-description = "A high-performance Rust library for delta (incremental) updates in Tauri v2."
+description = "Standalone delta (incremental) update engine for Tauri v2: signed manifests, deterministic rollback, and a built-in full-installer fallback."
 license = "MIT"
 authors = ["丘屿知宁 (zuoqiuning)"]
 repository = "https://github.com/zuoqiuning/tauri-delta-updater"
@@ -25,7 +25,7 @@ generator = [
     "dep:walkdir",
     "dep:chrono",
     "dep:clap",
-    "dep:windows-sys",
+    "dep:similar",
 ]
 # 可选的结构化事件：宿主可桥接到 tracing / 日志 / 监控。
 # 不启用时零依赖、零开销。
@@ -73,16 +73,34 @@ regex = { version = "1.10", optional = true }
 walkdir = { version = "2.4", optional = true }
 chrono = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
+# `cargo-delta init/migrate` 的 dry-run 统一 diff（仅 generator feature）。
+similar = { version = "2", optional = true }
 # 可选可观测性：默认不引入，启用 `tracing` feature 后才编译。
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
-# 让命令行输出在中文 Windows 环境下也正确显示
-windows-sys = { version = "0.60", features = ["Win32_System_Console"], optional = true }
+# Win32 绑定同时供两处使用：
+# - 命令行输出在中文 Windows 环境下正确显示（Win32_System_Console）
+# - 更新产物的 Authenticode 校验（WinVerifyTrust）：企业环境（AppLocker/WDAC）
+#   会拒绝启动未签名程序，替换成未签名的产物等于把应用变砖。
+# 因此它不再是 generator 可选依赖，而是 Windows 上的常驻依赖。
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_Security_WinTrust",
+    "Win32_System_Console",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [[bin]]
 name = "generate"
-path = "src/bin/generate.rs"
+path = "src/bin/generate/main.rs"
+required-features = ["generator"]
+
+[[bin]]
+name = "cargo-delta"
+path = "src/bin/cargo_delta/main.rs"
 required-features = ["generator"]
 
 [dev-dependencies]

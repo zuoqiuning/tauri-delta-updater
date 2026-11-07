@@ -1,0 +1,206 @@
+//! Tauri 命令：检查、更新、全量回退、诊断、取消与安全模式重置。
+
+use std::time::Duration;
+
+use tauri::ipc::Channel;
+use tauri::plugin::{Builder, TauriPlugin};
+use tauri::{AppHandle, Runtime, State};
+use tauri_delta_updater::{
+    CancelToken, CheckOutcome, Diagnosis, UpdateConfig, UpdateEvent, UpdateResult,
+};
+
+use crate::config::read_file_config;
+use crate::dto::{ErrorDto, FullDownloadDto};
+use crate::register;
+use crate::UpdaterState;
+
+/// 只检查是否有新版本，不下载任何内容。
+#[tauri::command]
+pub(crate) async fn check(state: State<'_, UpdaterState>) -> Result<CheckOutcome, ErrorDto> {
+    state.updater.check().await.map_err(ErrorDto::from)
+}
+
+/// 执行更新，并把阶段事件推到 `on_event`。
+///
+/// 更新产物就绪后**插件会自动退出进程**：替换脚本在等旧进程退出，
+/// 不退出更新永远不生效。退出前留出 500ms 让最后一条事件到达前端。
+#[tauri::command]
+pub(crate) async fn install<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, UpdaterState>,
+    on_event: Channel<UpdateEvent>,
+) -> Result<UpdateResult, ErrorDto> {
+    let session = state.updater.session();
+    let token = session.cancel_token();
+    set_cancel(&state, Some(token));
+
+    let result = session
+        .run(|event| {
+            let _ = on_event.send(event);
+        })
+        .await;
+    set_cancel(&state, None);
+
+    let result = result.map_err(ErrorDto::from)?;
+
+    if matches!(
+        result,
+        UpdateResult::Updated { .. } | UpdateResult::RepairRequired { .. }
+    ) {
+        exit_soon(&app);
+    }
+
+    Ok(result)
+}
+
+/// 下载全量安装包并校验签名，**不执行安装**。
+///
+/// 用于"增量不可用"的回退：前端拿到 `path` 后交给平台安装流程
+/// （Windows NSIS/MSI、macOS `.app.tar.gz`、Linux AppImage）。
+/// 安装执行器会在后续版本内置到插件；当前阶段先保证下载与验签是走我们自己的。
+#[tauri::command]
+pub(crate) async fn download_full(
+    state: State<'_, UpdaterState>,
+    on_event: Channel<UpdateEvent>,
+) -> Result<FullDownloadDto, ErrorDto> {
+    let token = CancelToken::new();
+    set_cancel(&state, Some(token.clone()));
+
+    let result = state
+        .updater
+        .download_full_with_events(&token, |event| {
+            let _ = on_event.send(event);
+        })
+        .await;
+    set_cancel(&state, None);
+
+    result
+        .map_err(ErrorDto::from)
+        .and_then(FullDownloadDto::from_outcome)
+}
+
+/// 执行全量更新：下载 + 验签 + 启动平台安装器。
+///
+/// 只用于"增量不可用"的回退。与 `install` 一样，产物就绪/安装器启动后
+/// 插件会自动退出进程：Windows 安装器需要接管正在运行的可执行文件。
+#[tauri::command]
+pub(crate) async fn install_full<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, UpdaterState>,
+    on_event: Channel<UpdateEvent>,
+) -> Result<UpdateResult, ErrorDto> {
+    let token = CancelToken::new();
+    set_cancel(&state, Some(token.clone()));
+
+    let result = state
+        .updater
+        .install_full_with_events(&token, |event| {
+            let _ = on_event.send(event);
+        })
+        .await;
+    set_cancel(&state, None);
+
+    let result = result.map_err(ErrorDto::from)?;
+    if matches!(result, UpdateResult::Updated { .. }) {
+        exit_soon(&app);
+    }
+    Ok(result)
+}
+
+/// 环境诊断：可写性、平台适用性、安全模式、是否需要修复。不发起网络请求。
+#[tauri::command]
+pub(crate) async fn diagnose(state: State<'_, UpdaterState>) -> Result<Diagnosis, ErrorDto> {
+    Ok(state.updater.diagnose().await)
+}
+
+/// 注册插件（配置由宿主代码提供）。
+///
+/// `config` 的 `current_version` 通常传 [`tauri_delta_updater::host_version!`]；
+/// 工作目录用默认值即可（用户缓存目录）。
+pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
+    Builder::new("delta-updater")
+        .setup(move |app, _api| register(app, config))
+        .invoke_handler(tauri::generate_handler![
+            check,
+            install,
+            download_full,
+            install_full,
+            diagnose,
+            cancel,
+            reset_safety
+        ])
+        .build()
+}
+
+/// 注册插件，配置从 `tauri.conf.json` 读取（宿主 Rust 侧零代码）。
+///
+/// 读取 `plugins.delta-updater`；找不到时**回退到 `plugins.updater`**，
+/// 因此从官方插件迁移只需替换依赖，配置（`endpoints` / `pubkey`）原样可用。
+///
+/// ```json
+/// {
+///   "plugins": {
+///     "delta-updater": {
+///       "endpoints": ["https://cdn.example.com/latest.json"],
+///       "pubkey": "RWQ...",
+///       "bundle_endpoint": "https://cdn.example.com/latest.bundle.json"
+///     }
+///   }
+/// }
+/// ```
+pub fn init_from_config<R: Runtime>() -> TauriPlugin<R> {
+    Builder::new("delta-updater")
+        .setup(|app, _api| {
+            let config = read_file_config(app)?;
+            register(app, config)
+        })
+        .invoke_handler(tauri::generate_handler![
+            check,
+            install,
+            download_full,
+            install_full,
+            diagnose,
+            cancel,
+            reset_safety
+        ])
+        .build()
+}
+
+/// 取消正在进行的更新。返回 `false` 表示当前没有可取消的会话。
+#[tauri::command]
+pub(crate) fn cancel(state: State<'_, UpdaterState>) -> bool {
+    match state.cancel.lock() {
+        Ok(mut slot) => match slot.take() {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// 手动退出安全模式（UI 提供"重试"按钮时使用）。
+#[tauri::command]
+pub(crate) async fn reset_safety(state: State<'_, UpdaterState>) -> Result<(), ErrorDto> {
+    state.updater.reset_safety().await;
+    Ok(())
+}
+
+fn set_cancel(state: &State<'_, UpdaterState>, token: Option<CancelToken>) {
+    if let Ok(mut slot) = state.cancel.lock() {
+        *slot = token;
+    }
+}
+
+/// 稍后退出进程：先让命令的返回值与最后一条事件到达前端，再退出。
+///
+/// 立即退出会杀掉 IPC，前端收不到最终状态；500ms 对本地 IPC 足够宽裕。
+fn exit_soon<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        app.exit(0);
+    });
+}

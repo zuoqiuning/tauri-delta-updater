@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Capabilities for the delta-updater example app.",
+  "windows": ["main"],
+  "permissions": ["core:default", "delta-updater:default"]
+}

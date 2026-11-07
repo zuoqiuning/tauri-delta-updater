@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-reset-safety"
+description = "Enables the reset_safety command without any pre-configured scope."
+commands.allow = ["reset_safety"]
+
+[[permission]]
+identifier = "deny-reset-safety"
+description = "Denies the reset_safety command without any pre-configured scope."
+commands.deny = ["reset_safety"]

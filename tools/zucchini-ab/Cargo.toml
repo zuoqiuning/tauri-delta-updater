@@ -1,0 +1,18 @@
+[package]
+name = "zucchini-ab"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# CI/Linux 默认链接上游预编译库，不需要 clang/cmake/ninja。
+# Windows 本地没有 prebuilt 时用 --no-default-features 从源码构建（需要 clang）。
+default = ["prebuilt"]
+prebuilt = ["zucchini/prebuilt"]
+
+[dependencies]
+# 只在独立工具里使用：不进入主 crate 的依赖，也不要求所有贡献者安装 clang。
+tauri-delta-updater = { path = "../.." }
+zucchini = "0.1.1"
+zstd = "0.13"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

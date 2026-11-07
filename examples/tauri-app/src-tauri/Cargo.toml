@@ -1,0 +1,16 @@
+[package]
+name = "delta-example"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal Tauri app wired to tauri-plugin-delta-updater."
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-delta-updater = { path = "../../../plugin" }
+tauri-delta-updater = { path = "../../.." }
+# tauri::generate_context! 读取配置时需要它
+serde_json = "1"

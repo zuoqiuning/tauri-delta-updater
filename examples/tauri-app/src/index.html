@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>delta-example</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        display: grid;
+        gap: 16px;
+      }
+      h1 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 0;
+      }
+      #status {
+        font-size: 14px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+      progress {
+        width: 100%;
+        height: 8px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      button {
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid currentColor;
+        background: transparent;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>增量更新示例</h1>
+    <div class="row">
+      <button id="check">检查更新</button>
+      <button id="install">下载并安装</button>
+      <button id="cancel" disabled>取消</button>
+    </div>
+    <progress id="bar" max="100" value="0" hidden></progress>
+    <div id="status">点击「检查更新」开始。</div>
+
+    <script type="module">
+      // No bundler needed: `withGlobalTauri` exposes the same API as @tauri-apps/api.
+      const { invoke, Channel } = window.__TAURI__.core;
+
+      const $ = (id) => document.getElementById(id);
+      const status = $('status');
+      const bar = $('bar');
+      const buttons = [$('check'), $('install')];
+
+      const log = (text) => (status.textContent = text);
+      const busy = (on) => {
+        buttons.forEach((b) => (b.disabled = on));
+        $('cancel').disabled = !on;
+      };
+
+      $('check').onclick = async () => {
+        try {
+          const info = await invoke('plugin:delta-updater|check');
+          log(
+            info.is_newer
+              ? `发现 ${info.version}（增量${info.has_patch ? '可用' : '不可用'}，补丁 ${info.patch_size ?? '?'} 字节）`
+              : `已是最新版本 ${info.version}`,
+          );
+        } catch (err) {
+          log(`检查失败：${err.code} / ${err.message}`);
+        }
+      };
+
+      $('install').onclick = async () => {
+        busy(true);
+        bar.hidden = false;
+        const events = new Channel();
+        events.onmessage = (e) => {
+          switch (e.stage) {
+            case 'checking':
+              log('正在检查清单…');
+              break;
+            case 'downloading':
+              bar.max = e.total || 1;
+              bar.value = e.downloaded;
+              log(`下载补丁 ${e.downloaded} / ${e.total || '?'}`);
+              break;
+            case 'applying':
+              log('正在合并并校验…');
+              break;
+            case 'ready':
+              log(`已更新到 ${e.version}，即将重启…`);
+              break;
+            case 'repairing':
+              log(`需要先修复上次中断的更新（${e.reason}），即将重启…`);
+              break;
+            default:
+              log(JSON.stringify(e));
+          }
+        };
+
+        try {
+          const result = await invoke('plugin:delta-updater|install', { onEvent: events });
+          if (result.kind !== 'updated' && result.kind !== 'repair_required') {
+            log(JSON.stringify(result));
+          }
+        } catch (err) {
+          log(`更新失败：${err.code} / ${err.message}`);
+        } finally {
+          busy(false);
+        }
+      };
+
+      $('cancel').onclick = async () => {
+        await invoke('plugin:delta-updater|cancel');
+        log('已请求取消');
+      };
+    </script>
+  </body>
+</html>

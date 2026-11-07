@@ -15,6 +15,14 @@ pub fn file_name(path: &Path) -> Result<String> {
         .ok_or_else(|| DeltaError::PatchApplyFailed(format!("无效的文件名: {}", path.display())))
 }
 
+/// 调试构建下的模板守卫：所有 `__PLACEHOLDER__` 必须被替换。
+///
+/// 漏替换不会让脚本生成失败，只会在真机执行时才暴露；
+/// 每次渲染后扫一遍，CI 的测试运行会立即失败。
+pub(crate) fn assert_rendered(script: &str) {
+    debug_assert!(!script.contains("__"), "脚本模板存在未替换的占位符");
+}
+
 /// 转义要写入 shell 脚本的单引号字符串。
 ///
 /// 单引号字符串里只有 `'` 需要转义（写成 `'\''`），
@@ -37,21 +45,112 @@ pub fn ps_literal(value: &str) -> String {
 /// 因此即使宿主通过 `UpdateConfig::work_dir` 指定了自定义目录也能正确落位。
 /// 没有指针时退回到由可执行文件路径推导的默认工作目录。
 pub fn confirm_startup_success() -> Result<()> {
-    let exe_path = std::env::current_exe().map_err(DeltaError::Io)?;
-    let exe_dir = exe_path.parent();
-
-    let work_dir = exe_dir
-        .map(|dir| dir.join(artifacts::WORK_DIR_MARKER))
-        .filter(|marker| marker.is_file())
-        .and_then(|marker| std::fs::read_to_string(marker).ok())
-        .map(|content| PathBuf::from(content.trim_start_matches('\u{feff}').trim()))
-        .unwrap_or_else(|| crate::core::paths::default_work_dir(&exe_path));
-
-    if let Some(dir) = exe_dir {
-        let _ = std::fs::remove_file(dir.join(artifacts::WORK_DIR_MARKER));
+    let (work_dir, marker) = resolve_work_dir()?;
+    if let Some(marker) = marker {
+        let _ = std::fs::remove_file(marker);
     }
-
     confirm_startup_success_in(&work_dir)
+}
+
+/// 带健康检查的启动确认：只有检查通过才写成功标志。
+///
+/// 检查失败时立刻写回滚原因 `health_check_failed`，替换脚本会尽快回滚，
+/// 而不是等满 `confirm_timeout_secs` 才判定超时。
+pub fn confirm_startup_success_with<F>(health: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    let (work_dir, marker) = resolve_work_dir()?;
+    confirm_startup_success_with_in(&work_dir, marker.as_deref(), health)
+}
+
+/// 在指定工作目录执行健康检查并确认启动。
+pub fn confirm_startup_success_with_in<F>(
+    work_dir: &Path,
+    marker: Option<&Path>,
+    health: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    match health() {
+        Ok(()) => {
+            if let Some(marker) = marker {
+                let _ = std::fs::remove_file(marker);
+            }
+            confirm_startup_success_in(work_dir)
+        }
+        Err(err) => {
+            // 只有本次确实是"替换后的首次启动"才写回滚标记；
+            // 普通启动的健康检查失败不应污染下一次更新的状态。
+            if let Some(marker) = marker {
+                let _ = std::fs::remove_file(marker);
+                mark_health_check_failed(work_dir);
+            }
+            Err(err)
+        }
+    }
+}
+
+/// 健康检查失败：写状态与回滚原因，交由替换脚本回滚。
+pub fn mark_health_check_failed(work_dir: &Path) {
+    let _ = crate::core::startup::write(work_dir, crate::core::startup::StartupState::Failed);
+    let _ = std::fs::write(
+        work_dir.join(artifacts::ROLLBACK_FLAG),
+        artifacts::HEALTH_CHECK_FAILED,
+    );
+}
+
+/// 解析本次启动的工作目录指针。
+///
+/// 返回 `(工作目录, 指针文件路径)`；指针不存在时第二项为 `None`，
+/// 工作目录退回默认值。
+fn resolve_work_dir() -> Result<(PathBuf, Option<PathBuf>)> {
+    let exe_path = crate::platform::target::runtime_executable().map_err(DeltaError::Io)?;
+    let Some(exe_dir) = exe_path.parent() else {
+        return Ok((crate::core::paths::default_work_dir(&exe_path), None));
+    };
+    let marker = exe_dir.join(artifacts::WORK_DIR_MARKER);
+    if !marker.is_file() {
+        return Ok((crate::core::paths::default_work_dir(&exe_path), None));
+    }
+    let work_dir = std::fs::read_to_string(&marker)
+        .map(|content| PathBuf::from(content.trim_start_matches('\u{feff}').trim()))
+        .ok()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| crate::core::paths::default_work_dir(&exe_path));
+    Ok((work_dir, Some(marker)))
+}
+
+/// 仅当本次启动确实来自一次替换时才确认成功。
+///
+/// 替换脚本会在启动新版本前写入工作目录指针（[`artifacts::WORK_DIR_MARKER`]）。
+/// 该指针不存在，说明这不是更新后的首次启动，函数直接返回 `Ok(false)`，
+/// **不做任何写入**。因此可以无条件下放在 `main` / `setup` 开头，
+/// 不会污染普通启动，也不会在只读安装目录里报错。
+///
+/// ```no_run
+/// # fn main() -> tauri_delta_updater::Result<()> {
+/// let confirmed = tauri_delta_updater::PlatformUpdater::confirm_startup_success_if_pending()?;
+/// # let _ = confirmed;
+/// # Ok(())
+/// # }
+/// ```
+pub fn confirm_startup_success_if_pending() -> Result<bool> {
+    let exe = crate::platform::target::runtime_executable().map_err(DeltaError::Io)?;
+    let Some(dir) = exe.parent() else {
+        return Ok(false);
+    };
+    if !dir.join(artifacts::WORK_DIR_MARKER).is_file() {
+        return Ok(false);
+    }
+    // 新进程已经执行到宿主代码：先把状态推进到 booting，再等待宿主的确认。
+    // 健康检查失败时 `confirm_startup_success_with` 会把它改成 failed。
+    if let Ok((work_dir, _)) = resolve_work_dir() {
+        let _ = crate::core::startup::write(&work_dir, crate::core::startup::StartupState::Booting);
+    }
+    confirm_startup_success()?;
+    Ok(true)
 }
 
 /// 在指定工作目录写入启动成功标志，并清除连续失败计数。
@@ -72,8 +171,16 @@ pub fn confirm_startup_success_in(work_dir: &Path) -> Result<()> {
 
     std::fs::create_dir_all(work_dir).map_err(DeltaError::Io)?;
     std::fs::write(work_dir.join(artifacts::SUCCESS_FLAG), "ok").map_err(DeltaError::Io)?;
+    let _ = crate::core::startup::write(work_dir, crate::core::startup::StartupState::Committed);
+    // 新版本已经启动成功：上一次回滚的旧原因不再代表当前状态。
+    let _ = std::fs::remove_file(work_dir.join(artifacts::ROLLBACK_FLAG));
 
-    if let Ok(exe) = std::env::current_exe() {
+    // 全量安装包已完成使命（Windows 安装器退出 / macOS-Linux 已替换），
+    // 这里删除，避免用户缓存目录长期占用几十到几百 MB。
+    crate::core::disk::cleanup_full_installers_sync(work_dir);
+
+    // 老版本脚本在目标文件（AppImage 下是 .AppImage 本体）旁边等旧标志名
+    if let Ok(exe) = crate::platform::target::runtime_executable() {
         if let Some(dir) = exe.parent() {
             let _ = std::fs::write(dir.join(artifacts::LEGACY_SUCCESS_FLAG), "ok");
         }

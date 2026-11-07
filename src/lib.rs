@@ -44,8 +44,9 @@
 //!         println!("已是最新版本 {version}");
 //!     }
 //!     UpdateOutcome::FallbackToFullDownload { full_download_url, reason } => {
-//!         // 增量不可用（无匹配补丁，或平台不适合增量如 AppImage/macOS bundle），
-//!         // 交回 tauri-plugin-updater 走全量下载
+//!         // 增量不可用（无匹配补丁，或环境不适合单文件增量如只读 AppImage、
+//!         // macOS `.app` bundle），交回 tauri-plugin-updater 走全量下载。
+//!         // 配置整包清单后，macOS `.app` 改走目录切换，不再落在这里。
 //!         let _ = (full_download_url, reason);
 //!     }
 //!     UpdateOutcome::SafeMode => {
@@ -62,6 +63,17 @@
 //! 用于解锁安全模式并让替换脚本保留新版本。若通过
 //! [`UpdateConfig::work_dir`] 自定义了工作目录，改调
 //! [`DeltaUpdater::confirm_startup_success`]（实例方法）。
+//!
+//! 更推荐无条件调用 [`PlatformUpdater::confirm_startup_success_if_pending`]：
+//! 它只在本次启动确实来自一次替换时才写标志，普通启动零写入，
+//! 不会因为"忘了确认"导致脚本在 60 秒后回滚。
+//!
+//! ## 首次接入检查清单
+//!
+//! 1. 启动时调用 `confirm_startup_success_if_pending()`；
+//! 2. `install()` 返回 `Updated` 或 `RepairRequired` 后退出进程
+//!    （或直接用 `install_and_exit()`）；
+//! 3. 把 `RequiresFullDownload` 交给官方 updater 或安装流程。
 //!
 //! ## 接入前先本地验证
 //!
@@ -111,6 +123,7 @@
 //! // 1. 只检查，不下载
 //! let info = updater.check().await?;
 //! println!("发现新版本 {}，补丁 {}", info.version, info.has_patch);
+//! // 增量不可用时，info.full_download() 直接给出 { version, url, signature }
 //!
 //! // 2. 用户确认后下载并合并，但先不启动替换
 //! if let UpdateOutcome::Patched { staged } = updater.prepare().await? {
@@ -119,6 +132,35 @@
 //!     staged.launch()?;   // 由宿主决定何时触发替换
 //!     std::process::exit(0);
 //! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## 可观察 / 可取消
+//!
+//! [`DeltaUpdater::session`] 返回 [`UpdateSession`]：按阶段回调
+//! [`UpdateEvent`]（`Checking` / `Downloading` / `Applying` / `Ready` …），
+//! 并用 [`CancelToken`] 从任意线程取消。取消会清理半截文件，
+//! 且不计入安全模式。
+//!
+//! ## 覆盖 sidecar / resources（整包增量）
+//!
+//! 单文件补丁只覆盖主程序。使用 `externalBin` 或 `resources` 的应用，配置
+//! [`UpdateConfig::bundle_manifest_url`]（指向发布端生成的 `latest.bundle.json`）
+//! 后改走整包：Windows 逐文件替换，macOS 以整个 `.app` 目录切换并保留代码
+//! 签名。结果返回 [`UpdateOutcome::Bundled`]。
+//!
+//! ```no_run
+//! # fn example() -> tauri_delta_updater::Result<()> {
+//! let updater = tauri_delta_updater::DeltaUpdater::new(
+//!     tauri_delta_updater::UpdateConfig::new(
+//!         "https://cdn.example.com/latest.json",
+//!         "BASE64_PUBLIC_KEY",
+//!     )
+//!     .current_version("0.1.0")
+//!     .bundle_manifest_url("https://cdn.example.com/latest.bundle.json"),
+//! )?;
+//! # let _ = updater;
 //! # Ok(())
 //! # }
 //! ```
@@ -136,6 +178,7 @@
 //!     version: "0.1.2".to_string(),
 //!     notes: String::new(),
 //!     pub_date: String::new(),
+//!     min_version: None,
 //!     platforms: Default::default(),
 //!     patches: Default::default(),
 //! };
@@ -178,13 +221,39 @@ pub mod error;
 pub mod models;
 /// 各平台适配。
 pub mod platform;
+/// 可观察、可取消的更新会话。
+pub mod session;
 /// 高层更新流程。
 pub mod updater;
 
 pub use error::{DeltaError, Result};
-pub use models::{PatchInfo, PatchScope, PlatformInfo, UpdateManifest};
+pub use models::{PatchInfo, PatchScope, PlatformInfo, Rollout, UpdateManifest};
+pub use session::{UpdateEvent, UpdateSession};
 
+pub use core::bundle::{
+    apply_bundle_patch, build_archive, create_bundle_patch, describe_dir, extract_archive,
+    list_archive, verify_layout, BundleFile, BundleManifest, BundlePatch,
+};
+pub use core::cancel::CancelToken;
 pub use core::crypto::{client_builder, install_crypto_provider};
+/// 在**调用方 crate** 展开为它的 `CARGO_PKG_VERSION`。
+///
+/// 库内部的 `env!("CARGO_PKG_VERSION")` 会得到库自己的版本，不是宿主应用的版本；
+/// 这个宏在调用处展开，因此拿到的是宿主的版本号，适合非 Tauri 的 CLI/服务端宿主：
+///
+/// ```
+/// assert_eq!(
+///     tauri_delta_updater::host_version!(),
+///     env!("CARGO_PKG_VERSION")
+/// );
+/// ```
+#[macro_export]
+macro_rules! host_version {
+    () => {
+        env!("CARGO_PKG_VERSION")
+    };
+}
+
 pub use core::diff::{
     apply_patch, create_patch, create_patch_with_level, VerifiedArtifact,
     MAX_INCREMENTAL_FILE_BYTES,
@@ -198,14 +267,19 @@ pub use core::safety::{
     clear_failed_attempts, get_failed_attempts, is_safe_mode_active, record_failed_attempt,
     reset_safety, safe_mode_remaining, should_abort,
 };
+pub use core::startup::StartupState;
 pub use core::verify::{
-    manifest_version_binding, verify_manifest_signature, verify_manifest_signature_file,
+    manifest_version_binding, verify_file_signature, verify_manifest_signature,
+    verify_manifest_signature_file,
 };
 pub use platform::target::{
     current_platform, detect_arch, incremental_fallback_reason, normalize_version,
 };
 pub use platform::PlatformUpdater;
+/// 替换脚本的等待时长（由 `UpdateConfig` 的 timeout 配置写入脚本）。
+pub use platform::ScriptTimings;
 pub use updater::{
-    simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackReason, SimulationReport,
-    Staged, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
+    simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackReason, FullDownload,
+    FullDownloadOutcome, ScriptEvent, SimulationReport, Staged, StagedBundle, StagedFullInstaller,
+    StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
 };

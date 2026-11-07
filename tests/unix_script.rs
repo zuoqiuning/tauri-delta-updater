@@ -190,6 +190,49 @@ fn test_unix_script_pkexec_requires_graphics_session() {
     );
 }
 
+/// AppImage：目标是 `.AppImage` 本体，脚本不能用 `/proc/<pid>/exe` 作为
+/// "旧进程是否退出"的判据——AppImage 下它指向 squashfs 挂载点，永远不会等于
+/// 本体路径，开着会立即判定旧进程已退出并提前替换。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_appimage_script_skips_exe_link_check() {
+    let dir = tempdir_path();
+    let current_exe = dir.join("tdx-app.AppImage");
+    std::fs::write(&current_exe, b"OLD").unwrap();
+    let staged = dir.join("tdx-app-new");
+
+    let script = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let artifact = make_verified(&dir, &current_exe, b"NEW", &staged).await;
+            tauri_delta_updater::platform::unix_script::generate(
+                &current_exe,
+                &artifact,
+                &dir,
+                999_999,
+                true,
+                false,
+                tauri_delta_updater::ScriptTimings::default(),
+            )
+            .unwrap()
+        });
+    let content = std::fs::read_to_string(&script).unwrap();
+
+    assert!(
+        content.contains("CHECK_EXE_LINK=0"),
+        "AppImage 必须关闭 /proc/<pid>/exe 判定"
+    );
+    assert!(
+        content.contains("chmod +x \"$TARGET_EXE\""),
+        "替换 .AppImage 后必须补回可执行位"
+    );
+    assert!(
+        content.contains("tdx-app.AppImage.bak"),
+        "备份必须是 .AppImage 本体旁边的文件"
+    );
+}
+
 /// 生成一个临时目录。
 fn tempdir_path() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};

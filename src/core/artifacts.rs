@@ -31,6 +31,45 @@ pub const FAILURE_COUNTER: &str = "update_failures.txt";
 /// 增量补丁文件。
 pub const PATCH_FILE: &str = "tdx_update.patch";
 
+/// 补丁身份记录：内容是清单里已签名的 `patch_hash`。
+///
+/// 跨进程续传必须能回答"残留的半截文件还是同一个补丁吗"：
+/// 直接按 Range 追加到上一个版本的补丁上，只会拼出一个哈希必然不符的文件。
+pub const PATCH_META: &str = "tdx_update.patch.id";
+
+/// 整包补丁文件。
+pub const BUNDLE_PATCH_FILE: &str = "tdx_update.bundle.patch";
+
+/// 整包补丁身份记录。
+pub const BUNDLE_PATCH_META: &str = "tdx_update.bundle.patch.id";
+
+/// 全量安装包的文件名前缀。
+///
+/// 实际文件名是 `tdx_full_installer_<version><扩展名>`：版本在名字里，
+/// 天然区分"同一个安装包"与"上一个版本的残留"，续传不会拼错文件。
+pub const FULL_INSTALLER_PREFIX: &str = "tdx_full_installer";
+
+/// 全量安装的临时解包目录（macOS `.app.tar.gz` 解到这里的 `.app`）。
+pub const FULL_STAGING_DIR: &str = "tdx_full_staging";
+
+/// 整包暂存目录：解压出的新版本文件在这里逐项校验后才进入替换脚本。
+///
+/// macOS 使用 `.app` 后缀，让 `codesign --verify` 把暂存目录当作 bundle 校验；
+/// 目录名本身不参与签名，只用于工作目录内定位与清理。
+pub fn bundle_staging_dir() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "tdx_bundle_staging.app"
+    } else {
+        "tdx_bundle_staging"
+    }
+}
+
+/// 整包替换前的备份目录。
+///
+/// 放在工作目录而不是安装目录：系统级安装目录对普通用户只读，
+/// 备份写不进去会让替换在第一步就失败；脚本成功后自动清理。
+pub const BUNDLE_BACKUP_DIR: &str = "tdx_bundle_backup";
+
 /// 合并后的新版本可执行文件的文件名。
 ///
 /// 按平台选择：Windows 上带 `.exe` 后缀（符合惯例，也便于杀软白名单），
@@ -46,6 +85,39 @@ pub fn staged_file() -> &'static str {
 /// 更新脚本日志。
 pub const LOG_FILE: &str = "tdx_update.log";
 
+/// 替换脚本的结构化事件流（JSON Lines，一行一个事件）。
+///
+/// 回滚发生在宿主退出之后，进程内只能看到最终原因；关键阶段同时写入
+/// 这个文件，宿主下次启动时可以逐行解析，而不必用正则去读自由格式日志。
+/// 目前记录回滚事件（`delta.rollback.triggered`），字段固定为
+/// `event` / `reason` / `time`，未知字段应被忽略以兼容后续扩展。
+pub const EVENTS_FILE: &str = "tdx_events.jsonl";
+
+/// 整包替换日志：记录本次运行新增了哪些文件（崩溃后修复时删除它们）。
+///
+/// 备份目录只保存"被覆盖/被删除"的旧文件；新版本新增的文件没有旧副本，
+/// 必须靠日志才能知道该删哪些，否则修复后旧版本会看到多余的新文件。
+pub const BUNDLE_JOURNAL_FILE: &str = "tdx_bundle_journal.txt";
+
+/// 启动状态指针：`staged` → `booting` → `committed`，回滚时写 `rolled_back`。
+///
+/// 替换脚本在启动新版本前写 `staged`；新版本启动早期写 `booting`；
+/// 宿主健康检查通过并调用确认后写 `committed`。下次启动的 `diagnose()`
+/// 据此区分"从未启动"、"启动了但未确认"与"已提交"。
+pub const UPDATE_STATE_FILE: &str = "tdx_update_state";
+
+/// 回滚原因：新版本启动成功但在宿主的健康检查阶段失败。
+pub const HEALTH_CHECK_FAILED: &str = "health_check_failed";
+
+/// 回滚原因：新版本进程从未执行到宿主的启动代码。
+pub const STARTUP_NOT_STARTED: &str = "startup_not_started";
+
+/// 回滚标记：替换脚本整体回滚时写入原因，供下一次启动的 `diagnose()` 展示。
+///
+/// 更新失败发生在宿主退出之后的脚本里，进程内无法上报；把原因落盘，
+/// 才不会表现为“提示更新成功、重启后版本没变”且没有任何线索。
+pub const ROLLBACK_FLAG: &str = "tdx_rollback.txt";
+
 /// 工作目录指针文件（写在 exe 旁边）。
 ///
 /// 新版本启动后据此知道该去哪个目录写启动成功标志：
@@ -60,6 +132,24 @@ pub fn updater_script() -> &'static str {
         "tdx_update.ps1"
     } else {
         "tdx_update.sh"
+    }
+}
+
+/// 整包（多文件）替换脚本文件名（按平台）。
+pub fn bundle_updater_script() -> &'static str {
+    if cfg!(windows) {
+        "tdx_bundle.ps1"
+    } else {
+        "tdx_bundle.sh"
+    }
+}
+
+/// 整包修复脚本文件名（按平台）。
+pub fn bundle_repair_script() -> &'static str {
+    if cfg!(windows) {
+        "tdx_repair.ps1"
+    } else {
+        "tdx_repair.sh"
     }
 }
 

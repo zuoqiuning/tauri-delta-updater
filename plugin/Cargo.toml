@@ -1,0 +1,27 @@
+[package]
+name = "tauri-plugin-delta-updater"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Tauri v2 plugin for tauri-delta-updater: delta updates, full-installer fallback, events and permissions."
+license = "MIT"
+authors = ["丘屿知宁 (zuoqiuning)"]
+repository = "https://github.com/zuoqiuning/tauri-delta-updater"
+links = "tauri-plugin-delta-updater"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+# 插件是可选外壳：不启用插件的宿主不会引入 tauri，主库本身保持框架无关。
+# 插件只需要 core API（命令、事件、Channel），不拉 wry/webview 依赖；
+# 宿主自己的 tauri 依赖会把需要的 feature 补齐。
+tauri = { version = "2", default-features = false, features = [] }
+tauri-delta-updater = { version = "0.2.0", path = ".." }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# mock runtime：不需要窗口/WebView 也能验证插件的注册与状态。
+# 保持 default-features = false，测试二进制就不会依赖 WebView2Loader.dll。
+tauri = { version = "2", default-features = false, features = ["test"] }

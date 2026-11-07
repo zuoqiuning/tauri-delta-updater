@@ -160,6 +160,7 @@ fn test_find_patch_is_platform_scoped() {
         version: "0.2.0".to_string(),
         notes: String::new(),
         pub_date: String::new(),
+        min_version: None,
         platforms: Default::default(),
         patches: Default::default(),
     };
@@ -211,6 +212,7 @@ fn test_find_patch_ignores_stale_target_version() {
         version: "0.2.0".to_string(),
         notes: String::new(),
         pub_date: String::new(),
+        min_version: None,
         platforms: Default::default(),
         patches: Default::default(),
     };
@@ -422,6 +424,16 @@ async fn test_cleanup_preserves_failure_counter_and_success_flag() {
         .await
         .unwrap();
 
+    // 整包崩溃恢复备份：脚本可能在替换中途被杀，备份是唯一的旧版本副本，
+    // 清理流程不得删除它（由下一次脚本还原后自行清理）。
+    let bundle_backup = dir
+        .path()
+        .join(tauri_delta_updater::core::artifacts::BUNDLE_BACKUP_DIR);
+    fs::create_dir_all(&bundle_backup).await.unwrap();
+    fs::write(bundle_backup.join("app.exe"), b"old bundle")
+        .await
+        .unwrap();
+
     tauri_delta_updater::cleanup_previous_updates(dir.path(), &exe).await;
 
     assert!(!patch.exists(), "补丁文件应被清理");
@@ -431,6 +443,38 @@ async fn test_cleanup_preserves_failure_counter_and_success_flag() {
         "本项目产生的备份应被清理"
     );
     assert!(user_backup.exists(), "不得删除用户自己的 .bak 文件");
+    assert!(
+        bundle_backup.join("app.exe").exists(),
+        "整包崩溃恢复备份必须保留，直到替换脚本还原"
+    );
+
+    // 跨进程续传：有身份记录且新鲜的半截补丁必须保留，下载才能接着下
+    let meta = dir
+        .path()
+        .join(tauri_delta_updater::core::artifacts::PATCH_META);
+    fs::write(&meta, "deadbeef").await.unwrap();
+    fs::write(&patch, b"partial").await.unwrap();
+
+    tauri_delta_updater::cleanup_previous_updates(dir.path(), &exe).await;
+
+    assert!(patch.exists(), "有身份记录的半截补丁应保留供续传");
+    assert!(meta.exists(), "身份记录与补丁成对保留");
+}
+
+#[tokio::test]
+async fn test_confirm_startup_success_removes_full_installer() {
+    // 全量安装包在新版本确认启动后已无用：Windows 安装器早已退出，
+    // macOS/Linux 已完成替换。留着只会占几十到几百 MB。
+    let dir = tempdir().unwrap();
+    let installer = dir.path().join("tdx_full_installer_0.2.0.exe");
+    let unrelated = dir.path().join("notes.txt");
+    fs::write(&installer, b"installer").await.unwrap();
+    fs::write(&unrelated, b"user data").await.unwrap();
+
+    tauri_delta_updater::PlatformUpdater::confirm_startup_success_in(dir.path()).unwrap();
+
+    assert!(!installer.exists(), "确认启动后必须删除全量安装包");
+    assert!(unrelated.exists(), "不得删除用户自己的文件");
 }
 
 #[tokio::test]
@@ -503,6 +547,15 @@ fn test_retryable_classification_drives_failure_counting() {
 }
 
 #[test]
+fn test_normalize_version_strips_prefix_and_whitespace() {
+    use tauri_delta_updater::normalize_version;
+
+    assert_eq!(normalize_version("  v1.2.3 "), "1.2.3");
+    assert_eq!(normalize_version("V1.2.3"), "1.2.3");
+    assert_eq!(normalize_version("1.2.3"), "1.2.3");
+}
+
+#[test]
 fn test_incremental_fallback_reason_suitable_by_default() {
     // Windows 单 exe 是甜点区；macOS/Linux 的测试进程也不在 bundle/AppImage 里，
     // 默认环境必须判定为适合增量（若 CI runner 环境异常会在此暴露）
@@ -548,9 +601,12 @@ fn spawn_server(body: Vec<u8>, honor_range: bool) -> String {
             let request = String::from_utf8_lossy(&buf);
 
             let range_start = if honor_range {
-                request
-                    .find("Range: bytes=")
-                    .and_then(|i| request[i + 13..].split('-').next())
+                // 头部名大小写由 HTTP 客户端决定（reqwest/hyper 发送小写），
+                // 按原样匹配 "Range: bytes=" 会让续传分支永远走不到。
+                let lower = request.to_lowercase();
+                lower
+                    .find("range: bytes=")
+                    .and_then(|i| lower[i + 13..].split('-').next())
                     .and_then(|s| s.trim().parse::<usize>().ok())
             } else {
                 None
@@ -579,6 +635,95 @@ fn spawn_server(body: Vec<u8>, honor_range: bool) -> String {
         }
     });
     format!("http://{addr}/file.bin")
+}
+
+/// 第一次响应只发一半就断开，第二次按 Range 返回剩余内容。
+///
+/// 返回 `(url, 第二次请求是否带 Range)`：用来证明"传输中断后重试是接着下"，
+/// 而不是丢掉已有进度从头再来。
+fn spawn_truncating_server(
+    body: Vec<u8>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let saw_range = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&saw_range);
+    let half = body.len() / 2;
+
+    std::thread::spawn(move || {
+        // 第一次：声明完整长度，却只写一半就关闭连接
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 2048];
+        let _ = stream.read(&mut buf);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&body[..half]).unwrap();
+        stream.flush().unwrap();
+        drop(stream);
+
+        // 第二次：续传请求。若客户端没有带 Range，就从 0 重发，
+        // 测试会发现 saw_range 为 false。
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 2048];
+        let _ = stream.read(&mut buf);
+        let request = String::from_utf8_lossy(&buf);
+        let lower = request.to_lowercase();
+        let start = lower
+            .find("range: bytes=")
+            .and_then(|i| lower[i + 13..].split('-').next())
+            .and_then(|s| s.trim().parse::<usize>().ok());
+        if start.is_some() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        let start = start.unwrap_or(0).min(half);
+        let chunk = &body[start..];
+        let head = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+            chunk.len(),
+            start,
+            body.len() - 1,
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(chunk).unwrap();
+        stream.flush().unwrap();
+    });
+
+    (format!("http://{addr}/file.bin"), saw_range)
+}
+
+#[tokio::test]
+async fn test_download_resume_after_truncated_response() {
+    // 关键回归：传输中断（实际字节少于声明的 Content-Length）时，
+    // 必须保留已下载的部分，重试才能用 Range 接着下；删掉文件等于从头再来。
+    use std::sync::atomic::Ordering;
+
+    let body: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+    let (url, saw_range) = spawn_truncating_server(body.clone());
+
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("patch.bin");
+    let client = tauri_delta_updater::client_builder().build().unwrap();
+
+    let mut last = 0u64;
+    tauri_delta_updater::download_patch_with_progress(&client, &url, &target, 0, |d, _| {
+        assert!(d >= last, "进度不得回退");
+        last = d;
+    })
+    .await
+    .expect("中断后应自动重试并完成下载");
+
+    assert!(
+        saw_range.load(Ordering::Relaxed),
+        "重试必须带 Range 续传，而不是从头下载"
+    );
+    assert_eq!(fs::read(&target).await.unwrap(), body);
 }
 
 #[tokio::test]
@@ -966,6 +1111,21 @@ async fn test_diagnose_reports_environment() {
     assert_eq!(diag.work_dir, work);
     assert!(diag.work_dir_writable);
     assert_eq!(diag.executable, exe);
+}
+
+/// 普通启动（没有 `tdx_update_dir` 指针）时，启动确认必须是零写入的空操作。
+#[test]
+fn test_confirm_startup_if_pending_is_noop_without_marker() {
+    let exe = std::env::current_exe().unwrap();
+    let marker = exe.parent().unwrap().join("tdx_update_dir");
+    if marker.exists() {
+        // 测试环境恰好残留指针时不做断言，避免误报
+        return;
+    }
+    assert!(
+        !tauri_delta_updater::PlatformUpdater::confirm_startup_success_if_pending().unwrap(),
+        "没有指针时必须返回 false"
+    );
 }
 
 /// 历史未压缩补丁（无 zstd 魔数）必须仍然可用——旧清单不需要迁移。

@@ -1,224 +1,21 @@
-//! 端到端测试：用本地 HTTP 服务器模拟完整的发布与更新流程。
-//!
-//! 验证 `DeltaUpdater` 这一行接入路径真的能跑通，
-//! 而不只是编译通过。
+//! 端到端：单文件增量、检查/准备/启动、会话、取消与配置校验。
+
+mod common;
+use common::*;
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use tauri_delta_updater::{DeltaUpdater, UpdateConfig, UpdateOutcome};
+use tauri_delta_updater::{
+    DeltaError, DeltaUpdater, UpdateConfig, UpdateEvent, UpdateOutcome, UpdateResult,
+};
 use tempfile::tempdir;
-
-/// 一个静态文件服务器，按路径返回内容，并记录收到的每个请求路径。
-struct MockServer {
-    base_url: String,
-    served: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
-    requested: Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-impl MockServer {
-    fn start(files: HashMap<String, Vec<u8>>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let served = Arc::new(std::sync::Mutex::new(files));
-        let requested: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
-        let handler_state = Arc::clone(&served);
-        let handler_requested = Arc::clone(&requested);
-
-        std::thread::spawn(move || {
-            for stream in listener.incoming().take(16) {
-                let Ok(mut stream) = stream else { continue };
-                let mut buf = [0u8; 2048];
-                let _ = stream.read(&mut buf);
-                let request = String::from_utf8_lossy(&buf);
-                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
-                handler_requested.lock().unwrap().push(path.clone());
-
-                let body = handler_state.lock().unwrap().get(&path).cloned();
-                let response = match body {
-                    Some(body) => {
-                        // Connection: close 让 reqwest 不复用连接。服务端每个响应后
-                        // 即关闭连接，若客户端仍把连接放回池子，复用时恰好撞上 FIN
-                        // 就会报 "error sending request"——真实复现过的偶发失败。
-                        let head = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            body.len()
-                        );
-                        [head.as_bytes().to_vec(), body].concat()
-                    }
-                    None => {
-                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                            .to_vec()
-                    }
-                };
-
-                let _ = stream.write_all(&response);
-                let _ = stream.flush();
-            }
-        });
-
-        Self {
-            base_url: format!("http://{addr}"),
-            served,
-            requested,
-        }
-    }
-
-    /// 某个路径是否被请求过。
-    ///
-    /// 用于堵"delta 从不 delta"的测试盲区：一个永远走全量回退的增量更新器，
-    /// 与正常工作的增量更新器，在只断言产物正确时看起来一模一样。
-    /// 增量命中的测试必须证明全量安装包**从未被请求**。
-    fn was_requested(&self, path: &str) -> bool {
-        self.requested.lock().unwrap().iter().any(|p| p == path)
-    }
-
-    /// 服务启动后更新某个路径的内容。
-    ///
-    /// 用于"manifest 引用自身的 URL"这类先有鸡还是先有蛋的场景：
-    /// 先起服务拿到端口，再往里放引用该端口的清单。
-    fn set(&self, path: &str, body: Vec<u8>) {
-        self.served.lock().unwrap().insert(path.to_string(), body);
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
-    }
-}
-
-/// 生成一对签名密钥，返回 (私钥, 公钥 base64)。
-fn signing_keypair() -> (minisign::SecretKey, String) {
-    let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
-    let pk_b64 = STANDARD.encode(kp.pk.to_box().unwrap().to_string().as_bytes());
-    (kp.sk, pk_b64)
-}
-
-/// 对内容签名，返回 minisign 签名字符串。
-fn sign(sk: &minisign::SecretKey, content: &[u8]) -> String {
-    minisign::sign(None, sk, std::io::Cursor::new(content), None, None)
-        .unwrap()
-        .to_string()
-}
-
-/// 对内容签名并写入 trusted comment（版本绑定的载体）。
-fn sign_bound(sk: &minisign::SecretKey, content: &[u8], trusted_comment: &str) -> String {
-    minisign::sign(
-        None,
-        sk,
-        std::io::Cursor::new(content),
-        Some(trusted_comment),
-        None,
-    )
-    .unwrap()
-    .to_string()
-}
-
-/// 构造一份已签名、含补丁的清单。
-///
-/// `base_url` 指向 MockServer：全量安装包地址也落在 mock 上（`/full.exe`，
-/// 故意**不**提供内容），这样测试能通过请求日志证明"增量命中时全量从未被请求"。
-fn build_manifest(
-    sk: &minisign::SecretKey,
-    base_url: &str,
-    version: &str,
-    platform: &str,
-    patch_hash: &str,
-    target_hash: &str,
-    patch_size: Option<u64>,
-) -> (Vec<u8>, String) {
-    let manifest = serde_json::json!({
-        "version": version,
-        "notes": "test",
-        "pub_date": "2026-01-01T00:00:00Z",
-        "platforms": {
-            platform: {
-                "signature": "dummy",
-                "url": format!("{base_url}/full.exe")
-            }
-        },
-        "patches": {
-            platform: [{
-                "from_version": "0.1.0",
-                "to_version": version,
-                "patch_url": format!("{base_url}/update.patch"),
-                "patch_hash": patch_hash,
-                "target_hash": target_hash,
-                "patch_size": patch_size
-            }]
-        }
-    });
-
-    let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let sig = sign(sk, &bytes);
-    (bytes, sig)
-}
 
 /// 端到端：清单 + 补丁 → 一次调用 → 生成新版本。
 #[tokio::test]
 async fn test_end_to_end_delta_update() {
-    let dir = tempdir().unwrap();
-    let work_dir = dir.path().to_path_buf();
-
-    // 模拟"旧版本"可执行文件
-    let old_bytes: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
-    let old_exe = work_dir.join("app.exe");
-    std::fs::write(&old_exe, &old_bytes).unwrap();
-
-    // 模拟"新版本"可执行文件
-    let new_bytes: Vec<u8> = (0..4096u32).map(|i| (i % 241) as u8).collect();
-    let new_exe = work_dir.join("app_new.exe");
-    std::fs::write(&new_exe, &new_bytes).unwrap();
-    let new_hash = {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(&new_bytes);
-        format!("{:x}", h.finalize())
-    };
-
-    // 生成补丁
-    let patch_path = dir.path().join("update.patch");
-    tauri_delta_updater::create_patch(&old_exe, &new_exe, &patch_path)
-        .await
-        .unwrap();
-    let patch_bytes = std::fs::read(&patch_path).unwrap();
-    let patch_hash = {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(&patch_bytes);
-        format!("{:x}", h.finalize())
-    };
-
-    // 签名清单
-    let (sk, pk_b64) = signing_keypair();
-    let platform = tauri_delta_updater::current_platform();
-    let patch_size = patch_bytes.len() as u64;
-
-    // 先起服务拿到端口，再往里放引用该端口的清单与签名
-    let server = MockServer::start(HashMap::from([("/update.patch".to_string(), patch_bytes)]));
-    let (manifest_bytes, sig) = build_manifest(
-        &sk,
-        &server.base_url,
-        "0.2.0",
-        platform,
-        &patch_hash,
-        &new_hash,
-        Some(patch_size),
-    );
-    server.set("/latest.json", manifest_bytes);
-    server.set("/latest.json.sig", sig.into_bytes());
-
-    // 一次调用完成整个流程
-    let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), pk_b64)
-            .current_version("0.1.0")
-            .executable_path(&old_exe)
-            .work_dir(&work_dir),
-    )
-    .unwrap();
+    let (_dir, updater, server, new_bytes) = delta_fixture().await;
 
     let outcome = updater.update().await.unwrap();
 
@@ -240,6 +37,173 @@ async fn test_end_to_end_delta_update() {
         }
         other => panic!("应当完成增量更新，实际得到: {other:?}"),
     }
+}
+
+/// 灰度 0%：更新必须停在 Deferred，且不发起任何补丁下载。
+#[tokio::test]
+async fn test_rollout_defers_update_before_download() {
+    let (_dir, updater, server, _new_bytes) = delta_fixture_with_rollout(Some(0)).await;
+
+    match updater.update().await.unwrap() {
+        UpdateOutcome::Deferred {
+            version,
+            percentage,
+        } => {
+            assert_eq!(version, "0.2.0");
+            assert_eq!(percentage, 0);
+        }
+        other => panic!("0% 灰度必须返回 Deferred，实际得到: {other:?}"),
+    }
+    assert!(
+        !server.was_requested("/update.patch"),
+        "未命中灰度时不得下载补丁"
+    );
+
+    let check = updater.check().await.unwrap();
+    assert!(check.is_newer, "新版本确实存在");
+    assert!(check.deferred_by_rollout, "check 必须如实报告灰度未命中");
+    assert!(!check.has_patch, "灰度未命中时不应展示可下载补丁");
+    assert!(
+        check.full_download_url.is_none(),
+        "灰度未命中时不得引导宿主绕过比例下载全量包"
+    );
+    assert_eq!(check.rollout_percentage, Some(0));
+}
+
+/// `min_version` 必须压过灰度比例：低于门槛的客户端即使未命中桶位也强制更新。
+#[tokio::test]
+async fn test_min_version_overrides_rollout() {
+    let (_dir, updater, server, new_bytes) = delta_fixture_with_rollout_and_min(0, "0.1.1").await;
+
+    match updater.update().await.unwrap() {
+        UpdateOutcome::Patched { staged } => {
+            assert_eq!(
+                std::fs::read(staged.staged_exe()).unwrap(),
+                new_bytes,
+                "低于 min_version 时必须完成更新"
+            );
+        }
+        other => panic!("min_version 必须强制更新，实际得到: {other:?}"),
+    }
+    assert!(
+        server.was_requested("/update.patch"),
+        "强制更新必须实际下载补丁"
+    );
+}
+
+/// 端到端：会话按阶段发出事件，最后一条是结果。
+#[tokio::test]
+async fn test_session_emits_phase_events() {
+    let (_dir, updater, _server, _new_bytes) = delta_fixture().await;
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+
+    let result = updater
+        .session()
+        .run(move |event| sink.lock().unwrap().push(event))
+        .await
+        .unwrap();
+
+    assert!(matches!(result, UpdateResult::Updated { .. }));
+
+    let events = events.lock().unwrap();
+    assert!(
+        matches!(events.first(), Some(UpdateEvent::Checking)),
+        "第一条事件必须是 Checking，实际: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UpdateEvent::Downloading { .. })),
+        "必须发出下载进度事件，实际: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, UpdateEvent::Applying)),
+        "必须发出合并阶段事件，实际: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(UpdateEvent::Ready { version }) if version.as_str() == "0.2.0"),
+        "最后一条事件必须是 Ready(0.2.0)，实际: {events:?}"
+    );
+}
+
+/// 取消发生在开始之前：不发任何网络请求，也不计入失败次数。
+#[tokio::test]
+async fn test_session_cancel_before_start_skips_network() {
+    let server = MockServer::start(HashMap::new());
+
+    let dir = tempdir().unwrap();
+    let work_dir = dir.path().join("work");
+    let old_exe = dir.path().join("app.exe");
+    std::fs::write(&old_exe, b"old").unwrap();
+
+    let updater = DeltaUpdater::new(
+        UpdateConfig::new(server.url("/latest.json"), "PK")
+            .current_version("0.1.0")
+            .executable_path(&old_exe)
+            .work_dir(&work_dir),
+    )
+    .unwrap();
+
+    let session = updater.session();
+    session.cancel();
+
+    let mut events = Vec::new();
+    let err = session.run(|event| events.push(event)).await.unwrap_err();
+
+    assert!(matches!(err, DeltaError::Cancelled));
+    assert_eq!(events, vec![UpdateEvent::Cancelled]);
+    assert!(
+        !server.was_requested("/latest.json"),
+        "取消后不得再发起网络请求"
+    );
+    assert_eq!(
+        tauri_delta_updater::get_failed_attempts(&work_dir).await,
+        0,
+        "用户取消不应计入安全模式"
+    );
+}
+
+/// 取消发生在传输中：清掉半截补丁与暂存产物，且不计入失败次数。
+#[tokio::test]
+async fn test_session_cancel_during_transfer_cleans_up() {
+    let (_dir, updater, _server, _new_bytes) = delta_fixture().await;
+    let work_dir = updater.work_dir().to_path_buf();
+
+    let session = updater.session();
+    let token = session.cancel_token();
+    // 第一个下载事件到达时立刻取消：覆盖"下载中途/下载刚结束"两种时序。
+    let cancel_from_event = token.clone();
+
+    let err = session
+        .run(move |event| {
+            if matches!(event, UpdateEvent::Downloading { .. }) {
+                cancel_from_event.cancel();
+            }
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, DeltaError::Cancelled));
+    assert!(token.is_cancelled());
+    assert_eq!(
+        tauri_delta_updater::get_failed_attempts(&work_dir).await,
+        0,
+        "用户取消不应计入安全模式"
+    );
+    assert!(
+        !work_dir
+            .join(tauri_delta_updater::core::artifacts::PATCH_FILE)
+            .exists(),
+        "取消后不得留下半截补丁"
+    );
+    assert!(
+        !work_dir
+            .join(tauri_delta_updater::core::artifacts::staged_file())
+            .exists(),
+        "取消后不得留下暂存产物"
+    );
 }
 
 /// 端到端：check() 只检查不下载，且能拿到版本与更新说明。
@@ -577,265 +541,26 @@ fn test_new_rejects_empty_current_version() {
     }
 }
 
-/// 端到端：没有匹配补丁时应当回退到全量下载，而不是报错。
-#[tokio::test]
-async fn test_end_to_end_falls_back_when_no_patch() {
-    let dir = tempdir().unwrap();
-    let work_dir = dir.path().to_path_buf();
-
-    let old_exe = work_dir.join("app.exe");
-    std::fs::write(&old_exe, b"old").unwrap();
-
-    let (sk, pk_b64) = signing_keypair();
-    let platform = tauri_delta_updater::current_platform();
-
-    let manifest = serde_json::json!({
-        "version": "0.2.0",
-        "notes": "test",
-        "pub_date": "2026-01-01T00:00:00Z",
-        "platforms": {
-            platform: {
-                "signature": "dummy",
-                "url": "https://cdn.example.com/full.exe"
-            }
-        },
-        "patches": { platform: [] }
-    });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let sig = sign(&sk, &manifest_bytes);
-
-    let server = MockServer::start(HashMap::from([
-        ("/latest.json".to_string(), manifest_bytes),
-        ("/latest.json.sig".to_string(), sig.into_bytes()),
-    ]));
-
-    let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), pk_b64)
-            .current_version("0.1.0")
-            .executable_path(&old_exe)
-            .work_dir(&work_dir),
-    )
-    .unwrap();
-
-    match updater.update().await.unwrap() {
-        UpdateOutcome::FallbackToFullDownload {
-            full_download_url,
-            reason,
-        } => {
-            assert_eq!(
-                full_download_url.as_deref(),
-                Some("https://cdn.example.com/full.exe"),
-                "回退时必须带上清单里声明的全量下载地址"
-            );
-            assert!(
-                reason.to_string().contains("没有从 0.1.0 到 0.2.0"),
-                "无补丁回退必须说明原因，实际: {reason}"
-            );
-            assert!(
-                matches!(
-                    reason,
-                    tauri_delta_updater::FallbackReason::NoMatchingPatch { .. }
-                ),
-                "原因必须是可机读的 NoMatchingPatch"
-            );
+/// 必需的清单地址与公钥留空时，必须在构造阶段给出明确原因。
+#[test]
+fn test_new_rejects_empty_manifest_url_and_key() {
+    let err = DeltaUpdater::new(UpdateConfig::new("", "PK").current_version("0.1.0")).unwrap_err();
+    match err {
+        tauri_delta_updater::DeltaError::Config(msg) => {
+            assert!(msg.contains("manifest_url"), "错误信息必须指明字段: {msg}")
         }
-        other => panic!("应当回退到全量下载，实际得到: {other:?}"),
+        other => panic!("空的 manifest_url 应返回 Config 错误，实际: {other}"),
     }
-}
 
-/// 端到端：清单签名不匹配时必须阻断更新。
-#[tokio::test]
-async fn test_end_to_end_rejects_bad_signature() {
-    let dir = tempdir().unwrap();
-    let work_dir = dir.path().to_path_buf();
-
-    let old_exe = work_dir.join("app.exe");
-    std::fs::write(&old_exe, b"old").unwrap();
-
-    let (sk, _) = signing_keypair();
-    let (_, other_pk_b64) = signing_keypair();
-    let platform = tauri_delta_updater::current_platform();
-
-    let manifest = serde_json::json!({
-        "version": "0.2.0",
-        "platforms": { platform: { "signature": "d", "url": "u" } },
-        "patches": { platform: [] }
-    });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let sig = sign(&sk, &manifest_bytes);
-
-    let server = MockServer::start(HashMap::from([
-        ("/latest.json".to_string(), manifest_bytes),
-        ("/latest.json.sig".to_string(), sig.into_bytes()),
-    ]));
-
-    let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), other_pk_b64)
-            .current_version("0.1.0")
-            .executable_path(&old_exe)
-            .work_dir(&work_dir),
+    let err = DeltaUpdater::new(
+        UpdateConfig::new("https://cdn.example.com/latest.json", "").current_version("0.1.0"),
     )
-    .unwrap();
-
-    let result = updater.update().await;
-    assert!(result.is_err(), "公钥不匹配时必须拒绝更新，不得放行");
-    assert!(matches!(
-        result,
-        Err(tauri_delta_updater::DeltaError::SignatureInvalid(_))
-    ));
-}
-
-/// 端到端：签名合法但版本绑定与清单不符时必须拒绝（防重放过期清单）。
-///
-/// 攻击模型：攻击者拿到一份旧的、签名合法的清单（例如包含已知漏洞版本的
-/// 补丁），原样重放。签名本身能通过验签，但 generate 写入签名的 trusted
-/// comment 里的版本绑定对不上清单声明版本，必须硬阻断。
-#[tokio::test]
-async fn test_end_to_end_rejects_version_binding_mismatch() {
-    let dir = tempdir().unwrap();
-    let work_dir = dir.path().to_path_buf();
-
-    let old_exe = work_dir.join("app.exe");
-    std::fs::write(&old_exe, b"old").unwrap();
-
-    // 清单声明 0.2.0，签名却是 0.1.9 版的合法签名（trusted comment 写 0.1.9）
-    let (sk, pk_b64) = signing_keypair();
-    let platform = tauri_delta_updater::current_platform();
-    let manifest = serde_json::json!({
-        "version": "0.2.0",
-        "platforms": { platform: { "signature": "d", "url": "https://cdn.example.com/full.exe" } },
-        "patches": { platform: [] }
-    });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let sig = sign_bound(&sk, &manifest_bytes, "tdu:v=0.1.9");
-
-    let server = MockServer::start(HashMap::from([
-        ("/latest.json".to_string(), manifest_bytes),
-        ("/latest.json.sig".to_string(), sig.into_bytes()),
-    ]));
-
-    let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), pk_b64)
-            .current_version("0.1.0")
-            .executable_path(&old_exe)
-            .work_dir(&work_dir),
-    )
-    .unwrap();
-
-    let result = updater.update().await;
-    assert!(result.is_err(), "版本绑定不符时必须拒绝更新");
-    match result {
-        Err(tauri_delta_updater::DeltaError::SignatureInvalid(msg)) => {
-            assert!(
-                msg.contains("0.1.9") && msg.contains("0.2.0"),
-                "错误信息必须同时指出绑定版本与清单版本，实际: {msg}"
-            );
+    .unwrap_err();
+    match err {
+        tauri_delta_updater::DeltaError::Config(msg) => {
+            assert!(msg.contains("public_key"), "错误信息必须指明字段: {msg}")
         }
-        other => panic!("应当返回 SignatureInvalid，实际: {other:?}"),
-    }
-}
-
-/// 端到端：版本绑定与清单一致时正常放行（确认绑定校验不误伤）。
-#[tokio::test]
-async fn test_end_to_end_accepts_matching_version_binding() {
-    let dir = tempdir().unwrap();
-    let work_dir = dir.path().to_path_buf();
-
-    let old_exe = work_dir.join("app.exe");
-    std::fs::write(&old_exe, b"old").unwrap();
-
-    let (sk, pk_b64) = signing_keypair();
-    let platform = tauri_delta_updater::current_platform();
-    let manifest = serde_json::json!({
-        "version": "0.2.0",
-        "platforms": { platform: { "signature": "d", "url": "https://cdn.example.com/full.exe" } },
-        "patches": { platform: [] }
-    });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let sig = sign_bound(&sk, &manifest_bytes, "tdu:v=0.2.0");
-
-    let server = MockServer::start(HashMap::from([
-        ("/latest.json".to_string(), manifest_bytes),
-        ("/latest.json.sig".to_string(), sig.into_bytes()),
-    ]));
-
-    let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), pk_b64)
-            .current_version("0.1.0")
-            .executable_path(&old_exe)
-            .work_dir(&work_dir),
-    )
-    .unwrap();
-
-    // 无补丁 → 走回退分支，但必须是通过了全部校验的正常回退
-    match updater.update().await.unwrap() {
-        UpdateOutcome::FallbackToFullDownload { .. } => {}
-        other => panic!("绑定一致时应正常进入回退分支，实际得到: {other:?}"),
-    }
-}
-
-/// 连续失败达到上限后必须停止尝试增量更新。
-#[tokio::test]
-async fn test_end_to_end_safe_mode_after_repeated_failures() {
-    let dir = tempdir().unwrap();
-    let work_dir = dir.path().to_path_buf();
-
-    let old_exe = work_dir.join("app.exe");
-    std::fs::write(&old_exe, b"old").unwrap();
-
-    // 签名错误的清单，每次都会失败（签名密钥与校验公钥必须是不同密钥对）
-    let (sk, _) = signing_keypair();
-    let (_, other_pk_b64) = signing_keypair();
-    let platform = tauri_delta_updater::current_platform();
-    let manifest = serde_json::json!({
-        "version": "0.2.0",
-        "platforms": { platform: { "signature": "d", "url": "u" } },
-        "patches": { platform: [] }
-    });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let sig = sign(&sk, &manifest_bytes);
-
-    let server = MockServer::start(HashMap::from([
-        ("/latest.json".to_string(), manifest_bytes),
-        ("/latest.json.sig".to_string(), sig.into_bytes()),
-    ]));
-
-    let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), other_pk_b64)
-            .current_version("0.1.0")
-            .executable_path(&old_exe)
-            .work_dir(&work_dir),
-    )
-    .unwrap();
-
-    // 连续失败，失败计数应被记录。
-    //
-    // ⚠️ 不要改回"固定调用 3 次并断言计数 == 3"：0.2.5 起暂态网络错误
-    // （Timeout/Network/5xx）按设计不计入失败计数，CI 环境偶发一次网络
-    // 抖动就会让计数停在 2（macOS 实际复现过）。正确写法是按"计数达到
-    // 阈值"驱动，暂态错误只是多试一轮。
-    let mut attempts = 0;
-    while tauri_delta_updater::get_failed_attempts(&work_dir).await < 3 {
-        attempts += 1;
-        assert!(
-            attempts <= 8,
-            "反复尝试仍未能累计到安全模式阈值，疑似确定性错误未被计数"
-        );
-        match updater.update().await {
-            Err(e) => eprintln!("[attempt {attempts}] update 失败: {e:?}"),
-            Ok(UpdateOutcome::SafeMode) => {} // 计数恰在本轮达到阈值
-            Ok(other) => panic!("签名错误的清单必须导致更新失败，实际得到: {other:?}"),
-        }
-    }
-    assert!(
-        attempts >= 3,
-        "至少需要 3 次确定性失败才能达到阈值，实际只尝试了 {attempts} 次"
-    );
-
-    // 达到上限后进入安全模式，不再发起网络请求
-    match updater.update().await.unwrap() {
-        UpdateOutcome::SafeMode => {}
-        other => panic!("应当进入安全模式，实际得到: {other:?}"),
+        other => panic!("空的 public_key 应返回 Config 错误，实际: {other}"),
     }
 }
 
@@ -1128,6 +853,23 @@ fn test_update_lock_rejects_second_process() {
         Err(tauri_delta_updater::DeltaError::UpdateInProgress) => {}
         other => panic!("另一个进程持锁时本进程必须收到 UpdateInProgress，实际: {other:?}"),
     }
+}
+
+/// 清单拉取的瞬时故障必须自动重试。
+///
+/// CDN 抖动返回一次 502 不该让用户看到"检查更新失败"；
+/// 清单与补丁走同一套退避策略。
+#[tokio::test]
+async fn test_manifest_fetch_retries_transient_5xx() {
+    let (_dir, updater, server, _new_bytes) = delta_fixture().await;
+    server.fail_next("/latest.json", 1);
+
+    let info = updater.check().await.expect("一次 502 之后应重试成功");
+    assert!(info.is_newer, "重试后必须拿到正常结果");
+    assert!(
+        server.request_count("/latest.json") >= 2,
+        "必须确实重试过，而不是服务端恰好没失败"
+    );
 }
 
 /// 供 [`test_update_lock_rejects_second_process`] 启动的子进程：

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-install-full"
+description = "Enables the install_full command without any pre-configured scope."
+commands.allow = ["install_full"]
+
+[[permission]]
+identifier = "deny-install-full"
+description = "Denies the install_full command without any pre-configured scope."
+commands.deny = ["install_full"]

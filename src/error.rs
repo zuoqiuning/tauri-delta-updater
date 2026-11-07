@@ -130,6 +130,35 @@ pub enum DeltaError {
     #[error("另一个更新进程正在运行，请稍后再试")]
     UpdateInProgress,
 
+    /// 更新被调用方主动取消。
+    ///
+    /// 用户取消不是故障：不计入安全模式的失败次数，也不会自动重试。
+    /// 半截补丁与暂存产物会在返回前清理。
+    #[error("更新已取消")]
+    Cancelled,
+
+    /// 整包（多文件）更新数据非法。
+    ///
+    /// 覆盖路径穿越、条目损坏、归档与文件清单不一致等情况。
+    /// 属于确定性错误：重试没有意义，应回退全量下载。
+    #[error("整包更新数据非法: {0}")]
+    BundleInvalid(String),
+
+    /// 重建的产物没有有效的 Authenticode 签名，而原版本是签名的。
+    ///
+    /// 内容哈希可能完全正确，但在开启 AppLocker / WDAC / SmartScreen 严格模式
+    /// 的机器上，未签名程序会被直接拒绝启动——替换后应用等于变砖。
+    /// 这通常意味着发布端漏签了新版本；调用方应回退全量或联系发布方。
+    #[error("更新产物缺少有效的 Authenticode 签名（原版本已签名），已阻断更新")]
+    AuthenticodeUnsigned,
+
+    /// 全量安装器执行失败：启动失败、用户取消提权、安装器不接受空参数等。
+    ///
+    /// 与 [`DeltaError::Io`] 区分：这是"安装包已经验签通过，但装不上"，
+    /// UI 应提示用户手动运行安装包，而不是重试下载。
+    #[error("全量安装失败: {0}")]
+    FullInstallFailed(String),
+
     /// 连续更新失败次数已达上限，已进入安全模式。
     ///
     /// [`crate::DeltaUpdater::check`] 用它表示"检查无法进行"——此时连清单
@@ -144,6 +173,49 @@ pub enum DeltaError {
 }
 
 impl DeltaError {
+    /// 稳定的机器可读错误码（`snake_case`）。
+    ///
+    /// 文案会改，错误码不会：宿主/前端应按本方法的返回值分支，
+    /// 而不是对 `Display` 的中文做字符串匹配。新增变体只会增加新码，
+    /// 已发布的码保持含义不变。
+    ///
+    /// ```
+    /// use tauri_delta_updater::DeltaError;
+    /// let err = DeltaError::UpdateInProgress;
+    /// assert_eq!(err.code(), "update_in_progress");
+    /// ```
+    pub fn code(&self) -> &'static str {
+        match self {
+            DeltaError::Io(_) => "io",
+            DeltaError::Network(_) => "network",
+            DeltaError::Timeout(_) => "timeout",
+            DeltaError::HttpStatus(_) => "http_status",
+            DeltaError::PatchGenFailed(_) => "patch_gen_failed",
+            DeltaError::PatchApplyFailed(_) => "patch_apply_failed",
+            DeltaError::SignatureInvalid(_) => "signature_invalid",
+            DeltaError::ManifestInvalid(_) => "manifest_invalid",
+            DeltaError::InvalidResponse(_) => "invalid_response",
+            DeltaError::ResumeRejected => "resume_rejected",
+            DeltaError::PatchTooLarge { .. } => "patch_too_large",
+            DeltaError::PatchExpandedTooLarge { .. } => "patch_expanded_too_large",
+            DeltaError::ResponseTooLarge { .. } => "response_too_large",
+            DeltaError::HashMismatch { .. } => "hash_mismatch",
+            DeltaError::TargetExists(_) => "target_exists",
+            DeltaError::InsufficientDiskSpace => "insufficient_disk_space",
+            DeltaError::Config(_) => "config",
+            DeltaError::WorkDirNotWritable(_) => "work_dir_not_writable",
+            DeltaError::VersionInvalid(_) => "version_invalid",
+            DeltaError::IncrementalNotApplicable { .. } => "incremental_not_applicable",
+            DeltaError::WorkerFailed(_) => "worker_failed",
+            DeltaError::UpdateInProgress => "update_in_progress",
+            DeltaError::Cancelled => "cancelled",
+            DeltaError::BundleInvalid(_) => "bundle_invalid",
+            DeltaError::AuthenticodeUnsigned => "authenticode_unsigned",
+            DeltaError::FullInstallFailed(_) => "full_install_failed",
+            DeltaError::SafeMode => "safe_mode",
+        }
+    }
+
     /// 判断该错误是否值得重试。
     ///
     /// 只对"网络暂时不可用"类错误重试；校验失败、文件已存在等属于确定性错误，
@@ -162,16 +234,82 @@ impl DeltaError {
     /// 绝不能静默降级成"普通失败"或默默走全量下载。
     ///
     /// - [`DeltaError::SignatureInvalid`]：清单被篡改或公钥不对，意味着可能正被攻击；
-    /// - [`DeltaError::HashMismatch`]：内容与签名锚定的哈希不符，可能被替换或损坏。
+    /// - [`DeltaError::HashMismatch`]：内容与签名锚定的哈希不符，可能被替换或损坏；
+    /// - [`DeltaError::AuthenticodeUnsigned`]：产物签名状态比原版本退化了，
+    ///   在受管环境里会直接无法启动，同样属于必须硬性阻断的情况。
     ///
     /// 其余错误（网络、磁盘、配置）是普通失败，可按需重试或回退全量。
     pub fn is_security_blocking(&self) -> bool {
         matches!(
             self,
-            DeltaError::SignatureInvalid(_) | DeltaError::HashMismatch { .. }
+            DeltaError::SignatureInvalid(_)
+                | DeltaError::HashMismatch { .. }
+                | DeltaError::AuthenticodeUnsigned
         )
     }
 }
 
 /// 增量更新操作的结果类型。
 pub type Result<T> = std::result::Result<T, DeltaError>;
+
+#[cfg(test)]
+mod tests {
+    use super::DeltaError;
+
+    /// 每个变体各构造一个实例：新增变体时这里没跟着加就会编译失败，
+    /// 强迫作者显式决定它的错误码。
+    fn all_variants() -> Vec<DeltaError> {
+        use DeltaError as E;
+        vec![
+            E::Io(std::io::Error::other("x")),
+            E::Network(String::new()),
+            E::Timeout(String::new()),
+            E::HttpStatus(500),
+            E::PatchGenFailed(String::new()),
+            E::PatchApplyFailed(String::new()),
+            E::SignatureInvalid(String::new()),
+            E::ManifestInvalid(String::new()),
+            E::InvalidResponse(String::new()),
+            E::ResumeRejected,
+            E::PatchTooLarge { max_bytes: 1 },
+            E::PatchExpandedTooLarge { max_bytes: 1 },
+            E::ResponseTooLarge {
+                url: String::new(),
+                limit: 1,
+            },
+            E::HashMismatch {
+                expected: String::new(),
+                actual: String::new(),
+            },
+            E::TargetExists(String::new()),
+            E::InsufficientDiskSpace,
+            E::Config(String::new()),
+            E::WorkDirNotWritable(std::path::PathBuf::new()),
+            E::VersionInvalid(String::new()),
+            E::IncrementalNotApplicable { size: 1 },
+            E::WorkerFailed(String::new()),
+            E::UpdateInProgress,
+            E::Cancelled,
+            E::BundleInvalid(String::new()),
+            E::AuthenticodeUnsigned,
+            E::FullInstallFailed(String::new()),
+            E::SafeMode,
+        ]
+    }
+
+    #[test]
+    fn codes_are_unique_snake_case() {
+        let mut codes: Vec<&'static str> = all_variants().iter().map(DeltaError::code).collect();
+        for code in &codes {
+            assert!(
+                code.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "错误码必须是 snake_case: {code}"
+            );
+            assert!(!code.starts_with('_') && !code.ends_with('_'), "{code}");
+        }
+        let total = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), total, "错误码必须唯一，否则前端无法分支");
+    }
+}

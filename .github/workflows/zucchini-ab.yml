@@ -1,0 +1,70 @@
+name: Zucchini A/B
+
+# 手动触发：不进入主 CI，不阻塞日常开发；产出数据后人工写入 docs/。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zucchini-ab:
+    name: Zucchini A/B (Linux, prebuilt)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    # 生成两份真实 ELF：仅版本字符串变化、一个模块重编译。
+    - name: Generate ELF samples
+      run: bash tools/zucchini-ab/sample.sh
+
+    # prebuilt 链接上游已测试/签名的 Zucchini 库，不需要 clang/cmake/ninja。
+    - name: Run A/B (version string only)
+      run: |
+        cargo run --release --locked \
+          --manifest-path tools/zucchini-ab/Cargo.toml -- \
+          tools/zucchini-ab/samples/base tools/zucchini-ab/samples/version \
+          | tee ab-version.txt
+
+    - name: Run A/B (one module recompiled)
+      run: |
+        cargo run --release --locked \
+          --manifest-path tools/zucchini-ab/Cargo.toml -- \
+          tools/zucchini-ab/samples/base tools/zucchini-ab/samples/module \
+          | tee ab-module.txt
+
+    - name: Build report
+      run: |
+        DATE=$(date -u +%F)
+        {
+          echo "# Zucchini A/B ${DATE}"
+          echo
+          echo "- Commit: \`${GITHUB_SHA}\`"
+          echo "- Runner: ubuntu-latest, \`zucchini\` prebuilt"
+          echo
+          echo "## 仅版本字符串变化（0.1.0 → 0.1.1）"
+          echo
+          echo '```text'
+          cat ab-version.txt
+          echo '```'
+          echo
+          echo "## 一个模块重编译"
+          echo
+          echo '```text'
+          cat ab-module.txt
+          echo '```'
+          echo
+          echo "> 这是编译器真实产出的 ELF 样本，不是历史发布产物；"
+          echo "> 结论用于判断 Zucchini 在“版本串/单模块”场景的相对收益。"
+        } > "zucchini-ab-${DATE}.md"
+        cat "zucchini-ab-${DATE}.md"
+
+    - name: Upload report
+      uses: actions/upload-artifact@v4
+      with:
+        name: zucchini-ab-report
+        path: zucchini-ab-*.md

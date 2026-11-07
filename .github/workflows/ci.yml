@@ -42,11 +42,87 @@ jobs:
     - name: Check library-only build
       run: cargo check --no-default-features --locked
 
-    - name: Run cargo test
-      run: cargo test --all-targets --all-features --locked
+    - name: Run cargo test (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        cargo test --all-targets --all-features --locked 2>&1 | Tee-Object -FilePath test.log
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    - name: Run cargo test (doc)
-      run: cargo test --doc --all-features --locked
+    - name: Run cargo test (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -o pipefail
+        cargo test --all-targets --all-features --locked 2>&1 | tee test.log
+
+    # 失败摘要写进 annotation：公开仓库的 Actions 原始日志需要管理员权限下载，
+    # annotation 能在页面上直接看到哪个测试失败、为什么失败。
+    - name: Surface test failures
+      if: failure()
+      shell: bash
+      run: |
+        # 并行测试的 panic 输出会交错，按 libtest 的失败详情块整段取，归属才可靠。
+        awk '/^---- [^ ]+ stdout ----/ { show = 1 }
+             show { print }
+             /^note: run with / { show = 0; print "" }' test.log \
+          | head -n 60 | sed 's/^/::error::/' || true
+
+  # doctest 单独一个 job + 独立 target 目录：避免与测试/构建产物混用后
+  # 出现 "found staticlib instead of rlib" 这类元数据冲突，也让通过状态独立可见。
+  doctest:
+    name: Doctests (isolated target)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: target-doctest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run doctests
+      run: |
+        set -o pipefail
+        cargo test --doc --all-features --locked 2>&1 | tee doctest.log
+
+    - name: Upload doctest log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: doctest-log
+        path: doctest.log
+
+  # 与 Windows 的 12 项真实 PowerShell 执行测试对称：
+  # macOS/Linux 也必须在真实文件系统上执行替换脚本，而不只是字符串断言。
+  real-fs-smoke:
+    name: Real filesystem swap (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run Unix replacement script tests
+      shell: bash
+      run: |
+        set -o pipefail
+        cargo test --all-features --locked --test unix_script --test macos_bundle 2>&1 | tee test.log
+
+    - name: Surface test failures
+      if: failure()
+      shell: bash
+      run: |
+        # 并行测试的 panic 输出会交错，按 libtest 的失败详情块整段取，归属才可靠。
+        awk '/^---- [^ ]+ stdout ----/ { show = 1 }
+             show { print }
+             /^note: run with / { show = 0; print "" }' test.log \
+          | head -n 60 | sed 's/^/::error::/' || true
 
   msrv:
     name: MSRV (1.88)
@@ -60,6 +136,60 @@ jobs:
 
     - name: Check on minimum supported Rust
       run: cargo check --all-features --locked
+
+  plugin:
+    name: Plugin crate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    # 插件依赖 tauri（Linux 上会编译 gtk/webkit 绑定），runner 默认没有这些开发头文件。
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+
+    - name: Check formatting
+      run: cargo fmt --manifest-path plugin/Cargo.toml -- --check
+
+    - name: Clippy (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        # 去掉 ANSI 颜色，失败摘要才能按 ^error 匹配到 lint 行
+        CARGO_TERM_COLOR: never
+      run: |
+        set -o pipefail
+        cargo clippy --manifest-path plugin/Cargo.toml --all-targets -- -D warnings 2>&1 | tee clippy.log
+
+    - name: Clippy (Windows)
+      if: runner.os == 'Windows'
+      run: cargo clippy --manifest-path plugin/Cargo.toml --all-targets -- -D warnings
+
+    - name: Surface clippy errors
+      if: failure()
+      shell: bash
+      run: grep -A 5 -E "^error" clippy.log 2>/dev/null | head -n 30 | sed 's/^/::error::/' || true
+
+    - name: Run cargo test
+      run: cargo test --manifest-path plugin/Cargo.toml
+
+    # 示例应用同时验证"插件 + 主库"的真实编译组合，避免插件改动后示例悄悄腐烂。
+    # 只在 Windows 上检查：Linux 的 Tauri 构建需要额外的 webkit2gtk 系统依赖。
+    - name: Check example app
+      if: runner.os == 'Windows'
+      run: cargo check --manifest-path examples/tauri-app/src-tauri/Cargo.toml
 
   release-build:
     name: Release build

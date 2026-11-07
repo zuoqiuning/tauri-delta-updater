@@ -27,6 +27,14 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
+/// 替换脚本日志（单行化）：断言失败时把它带进 panic 信息，
+/// CI 上无需下载 Actions 原始日志也能看到脚本实际做了什么。
+fn script_log(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(tauri_delta_updater::core::artifacts::LOG_FILE))
+        .unwrap_or_else(|_| "<无日志>".into())
+        .replace(['\r', '\n'], " | ")
+}
+
 /// 造一个含特殊字符的安装目录。
 ///
 /// 这些字符在 Windows 路径里都是合法的，但在 cmd / PowerShell 里各有特殊含义，
@@ -154,6 +162,65 @@ async fn test_script_end_to_end_plain_path() {
     run_script_and_expect_replace(&plain, dead_pid()).await;
 }
 
+/// 健康检查失败时，宿主写回滚原因，脚本必须立即回滚而不是等满确认超时。
+#[tokio::test]
+async fn test_script_rolls_back_on_health_failure() {
+    let dir = tempdir_path();
+    let plain = dir.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let current_exe = plain.join("app.exe");
+    std::fs::write(&current_exe, b"OLD").unwrap();
+    let staged = plain.join("app_new.exe");
+    let artifact = make_verified(&plain, &current_exe, b"NEW", &staged).await;
+
+    let script = tauri_delta_updater::platform::windows::generate_updater_for_pid(
+        &current_exe,
+        &artifact,
+        &dir,
+        dead_pid(),
+    )
+    .unwrap();
+    tauri_delta_updater::platform::windows::launch_updater(&script).unwrap();
+
+    assert!(
+        wait_until(Duration::from_secs(30), || std::fs::read(&current_exe)
+            .map(|c| c == b"NEW")
+            .unwrap_or(false)),
+        "新版本必须先完成替换"
+    );
+    // 脚本在启动新版本前会清掉旧回滚标记并写 staged；等它进入等待确认阶段再模拟宿主失败。
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            tauri_delta_updater::core::startup::read(&dir)
+                == Some(tauri_delta_updater::StartupState::Staged)
+        }),
+        "脚本必须进入等待启动确认阶段"
+    );
+
+    // 模拟新版本启动后健康检查失败：宿主写回滚原因。
+    std::fs::write(
+        dir.join(tauri_delta_updater::core::artifacts::ROLLBACK_FLAG),
+        tauri_delta_updater::core::artifacts::HEALTH_CHECK_FAILED,
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(Duration::from_secs(30), || std::fs::read(&current_exe)
+            .map(|c| c == b"OLD")
+            .unwrap_or(false)),
+        "健康检查失败后脚本必须立即回滚到旧版本"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join(tauri_delta_updater::core::artifacts::ROLLBACK_FLAG))
+            .unwrap(),
+        tauri_delta_updater::core::artifacts::HEALTH_CHECK_FAILED
+    );
+    assert_eq!(
+        tauri_delta_updater::core::startup::read(&dir),
+        Some(tauri_delta_updater::StartupState::RolledBack)
+    );
+}
+
 /// 脚本内容必须包含关键指令，且不得使用已知会失效的写法。
 #[tokio::test]
 async fn test_script_contains_required_commands() {
@@ -223,6 +290,75 @@ async fn test_script_contains_required_commands() {
         content.contains("event=delta.rollback.triggered"),
         "回滚必须写入结构化事件行"
     );
+}
+
+/// 端到端：修复脚本删除本次新增文件、还原备份并重启旧版本。
+#[tokio::test]
+async fn test_bundle_repair_restores_partial_update() {
+    let dir = tempdir_path();
+    let install = dir.join("install");
+    let backup = dir.join(tauri_delta_updater::core::artifacts::BUNDLE_BACKUP_DIR);
+
+    // 安装目录停在“替换到一半”：主程序与资源是新版本，extra.txt 是新文件。
+    std::fs::create_dir_all(install.join("resources")).unwrap();
+    std::fs::write(install.join("app.exe"), b"NEW").unwrap();
+    std::fs::write(install.join("resources/a.txt"), b"NEWR").unwrap();
+    std::fs::write(install.join("extra.txt"), b"ADDED").unwrap();
+
+    // 备份目录只保存被覆盖/删除的旧文件；新增文件靠日志识别。
+    std::fs::create_dir_all(backup.join("resources")).unwrap();
+    std::fs::write(backup.join("app.exe"), b"OLD").unwrap();
+    std::fs::write(backup.join("resources/a.txt"), b"OLDR").unwrap();
+    std::fs::write(
+        dir.join(tauri_delta_updater::core::artifacts::BUNDLE_JOURNAL_FILE),
+        b"add extra.txt\n",
+    )
+    .unwrap();
+
+    let script = tauri_delta_updater::platform::windows::generate_bundle_repair_for_pid(
+        &install.join("app.exe"),
+        &dir,
+        dead_pid(),
+    )
+    .unwrap();
+    tauri_delta_updater::platform::windows::launch_updater(&script).unwrap();
+
+    let log = dir.join(tauri_delta_updater::core::artifacts::LOG_FILE);
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read(install.join("app.exe"))
+                .map(|c| c == b"OLD")
+                .unwrap_or(false)
+        }),
+        "主程序必须被还原成旧版本；日志: {}",
+        script_log(&dir)
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read_to_string(&log)
+                .map(|text| text.contains("修复完成"))
+                .unwrap_or(false)
+        }),
+        "修复脚本必须完成并记录日志"
+    );
+    assert_eq!(
+        std::fs::read(install.join("resources/a.txt")).unwrap(),
+        b"OLDR"
+    );
+    assert!(
+        !install.join("extra.txt").exists(),
+        "本次更新新增的文件必须被删除"
+    );
+    assert!(!backup.exists(), "还原后备份目录必须被移除");
+    assert!(
+        !dir.join(tauri_delta_updater::core::artifacts::BUNDLE_JOURNAL_FILE)
+            .exists(),
+        "还原后日志必须被移除"
+    );
+    let rolled_back =
+        std::fs::read_to_string(dir.join(tauri_delta_updater::core::artifacts::ROLLBACK_FLAG))
+            .expect("修复原因必须落盘");
+    assert_eq!(rolled_back.trim(), "repaired_partial_update");
 }
 
 /// 端到端：上次更新中断（目标缺失 + 备份存在）时，脚本先还原备份再继续。
@@ -317,6 +453,258 @@ async fn test_script_does_not_restore_when_target_exists() {
     );
 }
 
+/// 端到端：整包脚本逐文件替换、删除新版本已移除的文件，并在成功后清理备份。
+#[tokio::test]
+async fn test_bundle_script_replaces_and_deletes_files() {
+    use tauri_delta_updater::describe_dir;
+
+    let dir = tempdir_path();
+    let install = dir.join("install");
+    let staging = dir.join("staging");
+    std::fs::create_dir_all(&install).unwrap();
+    std::fs::create_dir_all(&staging).unwrap();
+
+    // 旧安装目录：主程序、资源与一个新版本已移除的旧文件
+    std::fs::write(install.join("app.exe"), b"OLD").unwrap();
+    std::fs::create_dir_all(install.join("resources")).unwrap();
+    std::fs::write(install.join("resources/app.js"), b"OLDR").unwrap();
+    std::fs::write(install.join("legacy-only.txt"), b"REMOVE ME").unwrap();
+
+    // 新版本：主程序与资源变化，新增一个文件，旧文件不再存在
+    std::fs::write(staging.join("app.exe"), b"NEW").unwrap();
+    std::fs::create_dir_all(staging.join("resources")).unwrap();
+    std::fs::write(staging.join("resources/app.js"), b"NEWR").unwrap();
+    std::fs::write(staging.join("resources/extra.txt"), b"EXTRA").unwrap();
+
+    let base = describe_dir(&install).unwrap();
+    let target = describe_dir(&staging).unwrap();
+
+    let script = tauri_delta_updater::platform::windows::generate_bundle_updater_for_pid(
+        &install.join("app.exe"),
+        &staging,
+        &base,
+        &target,
+        &dir,
+        dead_pid(),
+    )
+    .unwrap();
+
+    let raw = std::fs::read(&script).unwrap();
+    assert!(
+        raw.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "整包脚本也必须带 UTF-8 BOM"
+    );
+    let content = String::from_utf8(raw[3..].to_vec()).unwrap();
+    assert!(content.contains("event=delta.rollback.triggered"));
+    assert!(
+        content.contains("legacy-only.txt"),
+        "新版本移除的文件必须出现在删除清单里"
+    );
+    assert!(
+        content.contains("Path = 'app.exe'"),
+        "脚本必须包含逐文件替换清单"
+    );
+
+    tauri_delta_updater::platform::windows::launch_updater(&script).unwrap();
+
+    // 脚本逐文件复制；只等主程序会与后续文件产生竞态，必须等全部就位。
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read(install.join("app.exe"))
+                .map(|c| c == b"NEW")
+                .unwrap_or(false)
+                && std::fs::read(install.join("resources/app.js"))
+                    .map(|c| c == b"NEWR")
+                    .unwrap_or(false)
+                && std::fs::read(install.join("resources/extra.txt"))
+                    .map(|c| c == b"EXTRA")
+                    .unwrap_or(false)
+                && !install.join("legacy-only.txt").exists()
+        }),
+        "全部文件必须被替换，且新版本移除的文件必须被删除"
+    );
+
+    // 写入启动成功标志，脚本才会保留新版本并清理备份
+    std::fs::write(
+        dir.join(tauri_delta_updater::core::artifacts::SUCCESS_FLAG),
+        "ok",
+    )
+    .unwrap();
+
+    let backup = dir.join(tauri_delta_updater::core::artifacts::BUNDLE_BACKUP_DIR);
+    assert!(
+        wait_until(Duration::from_secs(30), || !backup.exists()),
+        "启动成功后备份目录必须被清理"
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || !staging.exists()),
+        "启动成功后暂存目录必须被清理"
+    );
+}
+
+/// 端到端：替换中途失败时，已经改写的文件必须被整体回滚。
+#[tokio::test]
+async fn test_bundle_script_rolls_back_when_copy_fails() {
+    use tauri_delta_updater::describe_dir;
+
+    let dir = tempdir_path();
+    let install = dir.join("install");
+    let staging = dir.join("staging");
+    std::fs::create_dir_all(&install).unwrap();
+    std::fs::create_dir_all(&staging).unwrap();
+
+    std::fs::write(install.join("app.exe"), b"OLD").unwrap();
+    // 目标位置被一个目录占住：复制到它必然失败，用来触发替换中途回滚。
+    std::fs::create_dir_all(install.join("resources/bad.txt")).unwrap();
+
+    std::fs::write(staging.join("app.exe"), b"NEW").unwrap();
+    std::fs::create_dir_all(staging.join("resources")).unwrap();
+    std::fs::write(staging.join("resources/bad.txt"), b"NEWBAD").unwrap();
+
+    let base = describe_dir(&install).unwrap();
+    let target = describe_dir(&staging).unwrap();
+
+    let script = tauri_delta_updater::platform::windows::generate_bundle_updater_for_pid(
+        &install.join("app.exe"),
+        &staging,
+        &base,
+        &target,
+        &dir,
+        dead_pid(),
+    )
+    .unwrap();
+    tauri_delta_updater::platform::windows::launch_updater(&script).unwrap();
+
+    let log = dir.join(tauri_delta_updater::core::artifacts::LOG_FILE);
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read_to_string(&log)
+                .map(|text| text.contains("替换失败，正在回滚"))
+                .unwrap_or(false)
+        }),
+        "复制失败必须触发回滚"
+    );
+    // 日志先于回滚写入，等文件真正恢复后再断言。
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read(install.join("app.exe"))
+                .map(|c| c == b"OLD")
+                .unwrap_or(false)
+        }),
+        "已经替换成 NEW 的主程序必须被回滚成旧内容；日志: {}",
+        script_log(&dir)
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            !dir.join(tauri_delta_updater::core::artifacts::BUNDLE_BACKUP_DIR)
+                .exists()
+        }),
+        "还原后备份目录必须被清理"
+    );
+    // 备份目录清理与回滚原因落盘之间可能有毫秒级时序差，等待文件可读再断言。
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read_to_string(dir.join(tauri_delta_updater::core::artifacts::ROLLBACK_FLAG))
+                .is_ok()
+        }),
+        "回滚原因必须落盘供下次启动诊断"
+    );
+    let rolled_back =
+        std::fs::read_to_string(dir.join(tauri_delta_updater::core::artifacts::ROLLBACK_FLAG))
+            .expect("回滚原因必须可读");
+    assert_eq!(rolled_back.trim(), "update_failed");
+
+    let events =
+        std::fs::read_to_string(dir.join(tauri_delta_updater::core::artifacts::EVENTS_FILE))
+            .expect("回滚必须同时写入结构化事件流");
+    let value: serde_json::Value =
+        serde_json::from_str(events.lines().last().expect("至少一条事件")).unwrap();
+    assert_eq!(value["event"], "delta.rollback.triggered");
+    assert_eq!(value["reason"], "update_failed");
+}
+
+/// 端到端：暂存文件被篡改时，脚本在改写任何文件前中止并保持旧版本可用。
+#[tokio::test]
+async fn test_bundle_script_rejects_tampered_staging() {
+    use tauri_delta_updater::describe_dir;
+
+    let dir = tempdir_path();
+    let install = dir.join("install");
+    let staging = dir.join("staging");
+    std::fs::create_dir_all(&install).unwrap();
+    std::fs::create_dir_all(&staging).unwrap();
+
+    std::fs::write(install.join("app.exe"), b"OLD").unwrap();
+    std::fs::write(staging.join("app.exe"), b"NEW").unwrap();
+
+    let base = describe_dir(&install).unwrap();
+    let target = describe_dir(&staging).unwrap();
+
+    // 生成清单后再篡改暂存文件：脚本必须自己重新校验，而不是信任清单
+    std::fs::write(staging.join("app.exe"), b"TAMPERED").unwrap();
+
+    let script = tauri_delta_updater::platform::windows::generate_bundle_updater_for_pid(
+        &install.join("app.exe"),
+        &staging,
+        &base,
+        &target,
+        &dir,
+        dead_pid(),
+    )
+    .unwrap();
+    tauri_delta_updater::platform::windows::launch_updater(&script).unwrap();
+
+    let log = dir.join(tauri_delta_updater::core::artifacts::LOG_FILE);
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read_to_string(&log)
+                .map(|text| text.contains("暂存文件哈希校验失败"))
+                .unwrap_or(false)
+        }),
+        "篡改的暂存文件必须被脚本拒绝"
+    );
+    assert_eq!(
+        std::fs::read(install.join("app.exe")).unwrap(),
+        b"OLD",
+        "校验失败时不得改动安装目录"
+    );
+}
+
+/// 配置里的等待时长必须真的写进脚本。
+///
+/// 此前脚本把 60 秒写死，`UpdateConfig::confirm_timeout_secs` 是个无效开关：
+/// 启动慢的应用会被误判回滚，想加速回滚的宿主也做不到。
+#[tokio::test]
+async fn test_script_honors_configured_timeouts() {
+    let dir = tempdir_path();
+    let current_exe = dir.join("app.exe");
+    std::fs::write(&current_exe, b"OLD").unwrap();
+    let staged = dir.join("app-new.exe");
+    let artifact = make_verified(&dir, &current_exe, b"NEW", &staged).await;
+
+    let script = tauri_delta_updater::platform::windows::generate_updater_for_pid_with(
+        &current_exe,
+        &artifact,
+        &dir,
+        999_999,
+        tauri_delta_updater::ScriptTimings {
+            wait_secs: 7,
+            confirm_secs: 11,
+        },
+    )
+    .unwrap();
+
+    let content = std::fs::read_to_string(&script).unwrap();
+    assert!(
+        content.contains("$waitTimeout  = 7"),
+        "脚本必须使用配置的旧进程等待时长，实际脚本未包含 7"
+    );
+    assert!(
+        content.contains("$confirmTimeout = 11"),
+        "脚本必须使用配置的启动确认时长，实际脚本未包含 11"
+    );
+}
+
 /// 生成一个临时目录。
 fn tempdir_path() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -326,4 +714,61 @@ fn tempdir_path() -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     path
+}
+
+/// 模板外置后的回归守卫：任何漏替换的占位符都会让脚本在真机上静默失效。
+///
+/// 三种脚本（单文件 / 整包 / 修复）都必须把 `__TOKEN__` 全部换成字面量。
+fn assert_no_placeholder(script: &Path) {
+    let content = std::fs::read_to_string(script).unwrap();
+    let leftover: Vec<&str> = content.lines().filter(|line| line.contains("__")).collect();
+    assert!(
+        leftover.is_empty(),
+        "{} 仍有未替换的占位符: {:?}",
+        script.display(),
+        leftover
+    );
+}
+
+#[test]
+fn test_generated_scripts_have_no_placeholders() {
+    let dir = tempdir_path();
+    let current_exe = dir.join("app.exe");
+    std::fs::write(&current_exe, b"OLD").unwrap();
+    let staged = dir.join("app-new.exe");
+    let artifact = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(make_verified(&dir, &current_exe, b"NEW", &staged));
+
+    let updater = tauri_delta_updater::platform::windows::generate_updater_for_pid(
+        &current_exe,
+        &artifact,
+        &dir,
+        999_999,
+    )
+    .unwrap();
+    assert_no_placeholder(&updater);
+
+    let staging = dir.join("staging");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("app.exe"), b"NEW").unwrap();
+    let files = tauri_delta_updater::describe_dir(&staging).unwrap();
+    let bundle = tauri_delta_updater::platform::windows::generate_bundle_updater_for_pid(
+        &current_exe,
+        &staging,
+        &files,
+        &files,
+        &dir,
+        999_999,
+    )
+    .unwrap();
+    assert_no_placeholder(&bundle);
+
+    let repair = tauri_delta_updater::platform::windows::generate_bundle_repair_for_pid(
+        &current_exe,
+        &dir,
+        999_999,
+    )
+    .unwrap();
+    assert_no_placeholder(&repair);
 }

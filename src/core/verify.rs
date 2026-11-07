@@ -76,6 +76,20 @@ pub fn verify_manifest_signature_file(
     verify_manifest_signature(manifest_content, &raw, public_key_b64)
 }
 
+/// 校验磁盘上大文件的签名（全量安装包、归档）。
+///
+/// 用只读 mmap 读取，而不是 `fs::read`：安装包通常几十到几百 MB，
+/// 一次性读进内存会让更新进程的 RSS 突然翻倍。
+///
+/// `signature` 与 `public_key_b64` 的格式与 [`verify_manifest_signature`] 相同，
+/// 因此可以直接喂 `latest.json` 里的 `platforms[].signature`。
+pub fn verify_file_signature(file: &Path, signature: &str, public_key_b64: &str) -> Result<()> {
+    let opened = std::fs::File::open(file)?;
+    // mmap 只读，文件在验签期间不会被写；所有权由 `opened` 保证。
+    let mapped = unsafe { memmap2::Mmap::map(&opened)? };
+    verify_manifest_signature(&mapped, signature, public_key_b64)
+}
+
 /// 版本绑定的 trusted comment 前缀。
 ///
 /// generate 签发清单签名时把目标版本写进 trusted comment（`tdu:v=<version>`）。

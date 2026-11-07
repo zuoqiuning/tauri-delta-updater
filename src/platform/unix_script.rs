@@ -8,22 +8,24 @@ use crate::core::artifacts;
 use crate::core::diff::VerifiedArtifact;
 use crate::error::{DeltaError, Result};
 use crate::platform::shared::{file_name, shell_quote};
+use crate::platform::ScriptTimings;
 use std::path::{Path, PathBuf};
-
-/// 等待旧进程退出与等待新版本启动确认的最长秒数。
-pub const WAIT_TIMEOUT_SECS: u32 = 60;
-/// 等待新版本写入启动成功标志的最长秒数。
-pub const CONFIRM_TIMEOUT_SECS: u32 = 60;
 
 /// 生成 Unix 替换脚本。
 ///
 /// `elevation` 为 `true` 时插入 sudo/pkexec 提权块（仅 Linux 需要）。
+///
+/// `check_exe_link` 为 `true` 时额外校验 `/proc/<pid>/exe` 是否指向目标文件；
+/// AppImage 必须关掉：`/proc/<pid>/exe` 指向 squashfs 挂载点，
+/// 与 `.AppImage` 本体不同，开着会立刻判定"旧进程已退出"并提前替换。
 pub fn generate(
     current_exe: &Path,
     new_exe: &VerifiedArtifact,
     work_dir: &Path,
     old_pid: u32,
     elevation: bool,
+    check_exe_link: bool,
+    timings: ScriptTimings,
 ) -> Result<PathBuf> {
     let exe_dir = current_exe
         .parent()
@@ -34,6 +36,7 @@ pub fn generate(
     let script_path = work_dir.join(artifacts::updater_script());
     let success_flag = work_dir.join(artifacts::SUCCESS_FLAG);
     let log_file = work_dir.join(artifacts::LOG_FILE);
+    let rollback_flag = work_dir.join(artifacts::ROLLBACK_FLAG);
 
     let _ = std::fs::remove_file(&success_flag);
 
@@ -120,169 +123,7 @@ launch_app() {
 "#
     };
 
-    let template = r#"#!/bin/sh
-# 由 tauri-delta-updater 生成，请勿手工修改。
-# 需要 UTF-8 无 BOM；所有路径按单引号字面量写入。
-
-set -u
-
-LOG_FILE=__LOG__
-SUCCESS_FLAG=__FLAG__
-TARGET_EXE=__TARGET__
-TARGET_CMD=__TARGET_CMD__
-TARGET_DIR=__TARGET_DIR__
-STAGED=__STAGED__
-STAGED_HASH=__STAGED_HASH__
-BACKUP=__BACKUP__
-OLD_PID=__OLD_PID__
-WAIT_TIMEOUT=__WAIT_TIMEOUT__
-CONFIRM_TIMEOUT=__CONFIRM_TIMEOUT__
-WORK_DIR=__WORK_DIR__
-MARKER=__MARKER__
-APP_PID=''
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
-__DEMOTE__
-
-# 一切失败路径的统一收口：还原残留备份，再把旧版本拉起来。
-# 少了这一步，用户在"提权被拒/复制失败"后会看到应用直接消失。
-restart_old() {
-    log 'event=delta.rollback.triggered reason=update_failed'
-    if [ ! -f "$TARGET_EXE" ] && [ -f "$BACKUP" ]; then
-        mv "$BACKUP" "$TARGET_EXE" 2>/dev/null
-    fi
-    if [ -f "$TARGET_EXE" ]; then
-        log '更新中止，重新启动旧版本。'
-        launch_app
-    fi
-}
-
-file_sha() {
-    if command -v sha256sum > /dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
-    elif command -v shasum > /dev/null 2>&1; then
-        shasum -a 256 "$1" | cut -d' ' -f1
-    else
-        echo ''
-    fi
-}
-__ELEVATION__
-
-log '开始更新流程...'
-
-# 崩溃恢复：上一轮若在"exe → .bak"之后、替换完成之前被打断，
-# 先还原备份，否则本轮更新会在残缺状态上继续。
-if [ ! -f "$TARGET_EXE" ] && [ -f "$BACKUP" ]; then
-    log '检测到上次中断遗留的备份，正在恢复...'
-    mv "$BACKUP" "$TARGET_EXE" 2>/dev/null
-fi
-
-# 等待旧进程退出：按 PID，并在 Linux 上校验 /proc/<pid>/exe，
-# 避免 PID 回收后误等，也避免按进程名误伤同名应用。
-TARGET_REAL="$TARGET_EXE"
-if command -v readlink > /dev/null 2>&1; then
-    TARGET_REAL=$(readlink -f "$TARGET_EXE" 2>/dev/null || echo "$TARGET_EXE")
-fi
-WAITED=0
-while [ "$WAITED" -lt "$WAIT_TIMEOUT" ]; do
-    if ! kill -0 "$OLD_PID" 2>/dev/null; then
-        break
-    fi
-    if [ -r "/proc/$OLD_PID/exe" ]; then
-        link=$(readlink "/proc/$OLD_PID/exe" 2>/dev/null)
-        if [ -n "$link" ] && [ "$link" != "$TARGET_REAL" ]; then
-            break
-        fi
-    fi
-    sleep 1
-    WAITED=$((WAITED + 1))
-done
-
-if kill -0 "$OLD_PID" 2>/dev/null; then
-    log '等待旧进程退出超时，更新中止。'
-    exit 1
-fi
-
-# 复制前再校验一次暂存文件：apply_patch 返回到这里之间文件可能被替换
-actual=$(file_sha "$STAGED")
-if [ -n "$actual" ] && [ "$actual" != "$STAGED_HASH" ]; then
-    log '暂存文件哈希校验失败，更新中止。'
-    restart_old
-    exit 1
-fi
-
-# 备份旧版本
-rm -f "$BACKUP"
-if ! mv "$TARGET_EXE" "$BACKUP"; then
-    log '备份旧版本失败，更新中止。'
-    restart_old
-    exit 1
-fi
-
-# 替换为新版本
-if ! cp "$STAGED" "$TARGET_EXE"; then
-    log '替换失败，正在回滚。'
-    restart_old
-    exit 1
-fi
-chmod +x "$TARGET_EXE"
-
-actual=$(file_sha "$TARGET_EXE")
-if [ -n "$actual" ] && [ "$actual" != "$STAGED_HASH" ]; then
-    log '替换后的文件哈希不符，正在回滚。'
-    rm -f "$TARGET_EXE"
-    restart_old
-    exit 1
-fi
-rm -f "$STAGED"
-
-# 提权替换会把目标文件变成 root 所有，交还给原用户
-if [ "$(id -u)" -eq 0 ] && [ -n "${ORIG_USER:-}" ]; then
-    chown "$ORIG_USER" "$TARGET_EXE" 2>/dev/null
-fi
-
-log '启动新版本，等待启动确认...'
-# 告诉新版本应该去哪个目录写启动成功标志（自定义 work_dir 时尤其重要）
-printf '%s' "$WORK_DIR" > "$MARKER" 2>/dev/null
-launch_app
-
-WAITED=0
-while [ "$WAITED" -lt "$CONFIRM_TIMEOUT" ]; do
-    if [ -f "$SUCCESS_FLAG" ]; then
-        log '新版本启动成功，清理备份。'
-        rm -f "$BACKUP"
-        # 脚本不删除自身：执行期间删除正在被读取的脚本有竞态，
-        # 残留脚本由下一次更新的清理逻辑回收。
-        exit 0
-    fi
-    sleep 1
-    WAITED=$((WAITED + 1))
-done
-
-log '新版本启动超时，回滚...'
-log 'event=delta.rollback.triggered reason=startup_timeout'
-# 先结束本次启动的进程（可能是 runuser 的父进程，需要连带子进程）
-if [ -n "${APP_PID:-}" ]; then
-    if command -v pkill > /dev/null 2>&1; then
-        pkill -TERM -P "$APP_PID" 2>/dev/null
-    fi
-    kill -TERM "$APP_PID" 2>/dev/null
-fi
-# Linux 兜底：按可执行文件完整路径结束进程，不按进程名误杀同名应用
-if [ -d /proc ]; then
-    for proc in /proc/[0-9]*; do
-        if [ "$(readlink "$proc/exe" 2>/dev/null)" = "$TARGET_REAL" ]; then
-            kill -TERM "${proc#/proc/}" 2>/dev/null
-        fi
-    done
-fi
-sleep 1
-rm -f "$TARGET_EXE"
-mv "$BACKUP" "$TARGET_EXE" 2>/dev/null
-launch_app
-"#;
+    let template = include_str!("unix/updater.sh");
 
     let target_cmd = format!("exec {}", shell_quote(&target_exe.display().to_string()));
 
@@ -308,8 +149,8 @@ launch_app
         .replace("__STAGED_HASH__", &shell_quote(new_exe.sha256()))
         .replace("__BACKUP__", &shell_quote(&backup.display().to_string()))
         .replace("__OLD_PID__", &old_pid.to_string())
-        .replace("__WAIT_TIMEOUT__", &WAIT_TIMEOUT_SECS.to_string())
-        .replace("__CONFIRM_TIMEOUT__", &CONFIRM_TIMEOUT_SECS.to_string())
+        .replace("__WAIT_TIMEOUT__", &timings.wait_secs.to_string())
+        .replace("__CONFIRM_TIMEOUT__", &timings.confirm_secs.to_string())
         .replace(
             "__WORK_DIR__",
             &shell_quote(&work_dir.display().to_string()),
@@ -323,14 +164,34 @@ launch_app
                     .to_string(),
             ),
         )
+        .replace("__CHECK_EXE_LINK__", if check_exe_link { "1" } else { "0" })
+        .replace(
+            "__ROLLBACK__",
+            &shell_quote(&rollback_flag.display().to_string()),
+        )
+        .replace(
+            "__EVENTS__",
+            &shell_quote(&work_dir.join(artifacts::EVENTS_FILE).display().to_string()),
+        )
+        .replace(
+            "__STATE__",
+            &shell_quote(
+                &work_dir
+                    .join(artifacts::UPDATE_STATE_FILE)
+                    .display()
+                    .to_string(),
+            ),
+        )
         .replace("__DEMOTE__", demote_block)
         .replace("__ELEVATION__", elevation_block);
+    crate::platform::shared::assert_rendered(&script);
 
     std::fs::write(&script_path, script.as_bytes()).map_err(DeltaError::Io)?;
     Ok(script_path)
 }
 
 /// 启动替换脚本。
+#[cfg(unix)]
 pub fn launch_updater(script_path: &Path) -> Result<()> {
     let _ = std::process::Command::new("chmod")
         .arg("+x")
@@ -341,4 +202,60 @@ pub fn launch_updater(script_path: &Path) -> Result<()> {
         .spawn()
         .map_err(DeltaError::Io)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::diff::{apply_patch, create_patch};
+
+    /// 渲染是纯字符串逻辑：Windows CI 也能守住 Unix 模板。
+    #[test]
+    fn rendered_script_replaces_all_placeholders_and_has_rollback_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("app");
+        std::fs::write(&old, b"old").unwrap();
+        let new_src = dir.path().join("app.new");
+        std::fs::write(&new_src, b"new version").unwrap();
+        let patch = dir.path().join("update.patch");
+        let staged_path = dir.path().join("staged");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let staged = rt.block_on(async {
+            create_patch(&old, &new_src, &patch).await.unwrap();
+            let patch_hash = crate::core::hasher::calculate_hash(&patch).await.unwrap();
+            let target_hash = crate::core::hasher::calculate_hash(&new_src).await.unwrap();
+            apply_patch(&old, &patch, &staged_path, &patch_hash, &target_hash)
+                .await
+                .unwrap()
+        });
+
+        for elevation in [false, true] {
+            let script = generate(
+                &old,
+                &staged,
+                dir.path(),
+                999_999,
+                elevation,
+                true,
+                ScriptTimings::default(),
+            )
+            .unwrap();
+            let content = std::fs::read_to_string(&script).unwrap();
+
+            assert!(content.contains("write_rollback 'update_failed'"));
+            assert!(content.contains("REASON='startup_timeout'"));
+            assert!(content.contains("health_check_failed"));
+            assert!(content.contains("startup_not_started"));
+            assert!(content.contains("startup_crashed"));
+            assert!(content.contains("STATE_FILE="));
+            assert!(content.contains("tdx_events.jsonl"));
+            assert!(content.contains("tdx_rollback.txt"));
+            assert!(!content.contains("__"), "渲染后不得残留占位符");
+            if elevation {
+                assert!(content.contains("sudo -n"), "提权模式必须插入提权块");
+            } else {
+                assert!(!content.contains("pkexec"), "非提权模式不应插入提权块");
+            }
+        }
+    }
 }

@@ -3,7 +3,7 @@
 //! 清单里的 `platforms` 与 `patches` 都以平台标识为键，
 //! 客户端必须用与 Tauri 完全一致的名称才能取到对应条目。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 当前构建对应的平台标识，格式与 Tauri updater 的 target 一致。
 ///
@@ -106,7 +106,39 @@ pub fn detect_arch(file_name: &str) -> &'static str {
 /// 而清单里的版本号要与客户端上报的 `CARGO_PKG_VERSION`（`0.1.1`）一致，
 /// 否则补丁永远匹配不上。
 pub fn normalize_version(version: &str) -> &str {
-    version.trim().strip_prefix('v').unwrap_or(version.trim())
+    let trimmed = version.trim();
+    // `v` 与 `V` 前缀都来自 tag 命名习惯；语义化版本本身不允许前导 V。
+    trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed)
+}
+
+/// AppImage 启动时真正需要替换的文件（`.AppImage` 本体）。
+///
+/// AppImage 运行时把 squashfs 挂到 `/tmp/.mount_*`，`current_exe()`
+/// 指向挂载点里的内部二进制——替换它没有意义，卸载后就消失了。
+/// 下次用户启动执行的是 `$APPIMAGE` 指向的文件，所以补丁目标是它。
+#[cfg(target_os = "linux")]
+pub fn appimage_target() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+}
+
+/// 当前进程真正会被执行、也应当被替换的可执行文件。
+///
+/// - 普通环境：等价于 [`std::env::current_exe`]；
+/// - AppImage：返回 `$APPIMAGE` 指向的 `.AppImage` 文件。
+///
+/// 启动确认（`confirm_startup_success*`）与替换目标必须用同一个函数解析，
+/// 否则会出现在挂载点旁边写成功标志、脚本却在 `.AppImage` 旁边等标志的情况。
+pub fn runtime_executable() -> std::io::Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = appimage_target() {
+        return Ok(appimage);
+    }
+    std::env::current_exe()
 }
 
 /// 判断当前运行环境是否适合执行增量替换，不适合时返回回退原因。
@@ -115,29 +147,44 @@ pub fn normalize_version(version: &str) -> &str {
 /// 清单仍会拉取（客户端需要知道有无新版本与全量地址），
 /// 但不会为用不上的补丁消耗流量。
 ///
-/// 本库的定位是**增量加速器**：只在能安全覆盖的场景接管替换，
-/// 其余场景交回官方全量下载——回退不是失败，是正确性优先。
+/// 本库的定位是**完整更新引擎**：只在能安全覆盖的场景接管替换，
+/// 其余场景走全量回退（可交回官方 updater，也可由本库执行安装器）——
+/// 回退不是失败，是正确性优先。
 ///
 /// 当前判定：
 ///
-/// - **Linux AppImage**：`current_exe` 指向 squashfs 临时挂载点
-///   （`/tmp/.mount_*`），替换出来的文件会随挂载卸载一起消失；
+/// - **Linux AppImage**：目标是 `$APPIMAGE` 指向的 `.AppImage` 本体（可直接替换、
+///   补可执行位后重启）。只有定位不到本体、或所在目录不可写时才回退；
 /// - **macOS `.app` bundle**：替换 bundle 内二进制后只能 ad-hoc 重签，
 ///   开发者身份丢失，Gatekeeper 与公证链路断裂。
 ///   （bundle 外的裸二进制仍是实验性支持。）
 ///
 /// Windows 单文件 exe 是本库的甜点区，始终返回 `None`。
 pub fn incremental_fallback_reason(exe: &Path) -> Option<&'static str> {
-    // Linux 分支只看 APPIMAGE 环境变量，不使用 exe；
-    // 显式消费一次，避免非 macOS 平台出现 unused_variables 告警。
-    let _ = exe;
     #[cfg(target_os = "linux")]
     {
-        // APPIMAGE 环境变量由 AppImage 运行时注入，指向 .AppImage 文件本身；
-        // 存在即说明进程跑在临时挂载点上
-        if std::env::var_os("APPIMAGE").is_some() {
-            return Some("AppImage 运行时：可执行文件位于临时挂载点，替换会随挂载卸载而丢失");
+        match appimage_target() {
+            Some(appimage) => {
+                let writable = appimage
+                    .parent()
+                    .map(crate::core::paths::is_writable)
+                    .unwrap_or(false);
+                if !writable {
+                    return Some("AppImage 所在目录不可写，无法原地替换 .AppImage");
+                }
+            }
+            None => {
+                if std::env::var_os("APPIMAGE").is_some() || exe.starts_with("/tmp/.mount") {
+                    return Some(
+                        "AppImage 运行时：无法定位 .AppImage 本体，替换只会写入临时挂载点",
+                    );
+                }
+            }
         }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = exe;
     }
     #[cfg(target_os = "macos")]
     {
@@ -146,10 +193,6 @@ pub fn incremental_fallback_reason(exe: &Path) -> Option<&'static str> {
                 "macOS .app bundle：增量替换后只能 ad-hoc 重签，会丢失开发者签名与公证状态",
             );
         }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = exe;
     }
     None
 }

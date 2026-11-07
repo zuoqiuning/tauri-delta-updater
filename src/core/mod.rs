@@ -5,6 +5,12 @@
 /// 更新流程在磁盘上的产物文件名。
 pub mod artifacts;
 
+/// 整包（多文件）更新的确定性容器。
+pub mod bundle;
+
+/// 协作式取消令牌。
+pub mod cancel;
+
 /// TLS 加密后端安装。
 pub mod crypto;
 
@@ -28,6 +34,12 @@ pub mod lock;
 
 /// 运行时路径推导与可写性探测。
 pub mod paths;
+
+/// 渐进发布（灰度）的稳定分桶与安装 ID。
+pub mod rollout;
+
+/// 替换后的启动状态指针（staged → booting → committed）。
+pub mod startup;
 
 /// 安全模式：连续失败计数。
 pub mod safety;

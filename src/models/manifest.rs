@@ -15,6 +15,12 @@ pub struct UpdateManifest {
     /// 发布时间。
     #[serde(default)]
     pub pub_date: String,
+    /// 最低允许版本：低于此版本的客户端必须更新，不受灰度比例限制。
+    ///
+    /// 用于"坏版本已经推出，需要强制所有人离开"的场景。
+    /// 旧清单没有该字段时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
     /// Tauri 原生字段：各平台完整安装包的下载地址与签名
     #[serde(default)]
     pub platforms: HashMap<String, PlatformInfo>,
@@ -57,6 +63,21 @@ impl UpdateManifest {
         let target = parse_version(&self.version, "清单版本")?;
         let current = parse_version(current_version, "当前版本")?;
         Ok(target > current)
+    }
+
+    /// 当前版本是否低于清单的 `min_version`。
+    ///
+    /// 低于门槛时调用方应忽略灰度比例，强制更新：
+    /// 这是"坏版本已经推出"后的最后一道保险。
+    /// 未设置 `min_version` 时返回 `false`；值非法时返回
+    /// [`crate::DeltaError::VersionInvalid`]。
+    pub fn is_below_min_version(&self, current_version: &str) -> crate::Result<bool> {
+        let Some(min) = &self.min_version else {
+            return Ok(false);
+        };
+        let min = parse_version(min, "min_version")?;
+        let current = parse_version(current_version, "当前版本")?;
+        Ok(current < min)
     }
 }
 
@@ -104,6 +125,25 @@ pub struct PlatformInfo {
     pub signature: String,
     /// 完整安装包的下载地址。
     pub url: String,
+    /// 完整安装包体积（字节）。
+    ///
+    /// 发布端写入，受清单签名保护；旧清单没有这个字段时为 `None`。
+    /// 客户端据此计算补丁的真实收益比（`patch_size / size`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// 可选灰度配置；缺省表示全量发布（旧清单天然全量）。
+    ///
+    /// 由 `generate --rollout <0-100>` 写入，受清单签名保护。
+    /// 客户端按稳定哈希分桶，未命中的安装会得到 `Deferred` 而不是开始下载。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<Rollout>,
+}
+
+/// 渐进发布（灰度）配置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rollout {
+    /// 放量比例（0–100）。0 暂停发布，100 全量；中间值按安装 ID 分桶。
+    pub percentage: u8,
 }
 
 /// 单个增量补丁的描述。
@@ -143,4 +183,96 @@ pub enum PatchScope {
     MainExecutableOnly,
     /// 覆盖完整应用产物（需要发布端生成整包补丁）。
     FullApp,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UpdateManifest;
+
+    fn manifest(version: &str) -> UpdateManifest {
+        UpdateManifest {
+            version: version.to_string(),
+            notes: String::new(),
+            pub_date: String::new(),
+            min_version: None,
+            platforms: Default::default(),
+            patches: Default::default(),
+        }
+    }
+
+    /// 防降级依赖语义化版本比较，而不是字符串比较。
+    #[test]
+    fn compares_minor_versions_numerically() {
+        assert!(manifest("0.10.0").is_newer_than("0.9.0").unwrap());
+        assert!(!manifest("0.9.0").is_newer_than("0.10.0").unwrap());
+        assert!(manifest("1.10.0").is_newer_than("1.9.0").unwrap());
+    }
+
+    /// 预发布版本低于同号正式版，不能被当成"更新到正式版"。
+    #[test]
+    fn prerelease_is_lower_than_release() {
+        assert!(manifest("1.0.0").is_newer_than("1.0.0-alpha").unwrap());
+        assert!(!manifest("1.0.0-alpha").is_newer_than("1.0.0").unwrap());
+        assert!(manifest("1.0.0").is_newer_than("1.0.0-beta.2").unwrap());
+    }
+
+    /// 灰度字段是可选的：旧清单没有它时按全量发布处理。
+    #[test]
+    fn rollout_is_optional_and_parsed() {
+        let without: UpdateManifest = serde_json::from_value(serde_json::json!({
+            "version": "1.2.3",
+            "platforms": {
+                "windows-x86_64": { "signature": "sig", "url": "https://cdn/app.exe" }
+            }
+        }))
+        .unwrap();
+        assert!(without.platforms["windows-x86_64"].rollout.is_none());
+
+        let with: UpdateManifest = serde_json::from_value(serde_json::json!({
+            "version": "1.2.3",
+            "platforms": {
+                "windows-x86_64": {
+                    "signature": "sig",
+                    "url": "https://cdn/app.exe",
+                    "rollout": { "percentage": 20 }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            with.platforms["windows-x86_64"].rollout.unwrap().percentage,
+            20
+        );
+    }
+
+    /// `min_version` 用于强制离开坏版本：低于门槛时必须返回 true。
+    #[test]
+    fn detects_versions_below_minimum() {
+        let mut m = manifest("2.0.0");
+        m.min_version = Some("1.5.0".into());
+        assert!(m.is_below_min_version("1.4.9").unwrap());
+        assert!(!m.is_below_min_version("1.5.0").unwrap());
+        assert!(!m.is_below_min_version("1.6.0").unwrap());
+
+        // 未设置门槛时永远不强制。
+        assert!(!manifest("2.0.0").is_below_min_version("0.0.1").unwrap());
+
+        // 非法门槛必须报错，不能静默当成 0。
+        m.min_version = Some("not-a-version".into());
+        assert!(matches!(
+            m.is_below_min_version("1.0.0").unwrap_err(),
+            crate::DeltaError::VersionInvalid(_)
+        ));
+    }
+
+    /// 非法版本号必须给出明确的 `VersionInvalid`，而不是静默按 0 处理。
+    #[test]
+    fn rejects_invalid_versions() {
+        let err = manifest("1.0").is_newer_than("0.1.0").unwrap_err();
+        assert!(matches!(err, crate::DeltaError::VersionInvalid(_)));
+        let err = manifest("1.0.0")
+            .is_newer_than("not-a-version")
+            .unwrap_err();
+        assert!(matches!(err, crate::DeltaError::VersionInvalid(_)));
+    }
 }

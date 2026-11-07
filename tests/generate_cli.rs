@@ -496,6 +496,642 @@ fn test_generate_cli_skips_low_value_patch() {
     );
 }
 
+/// `--old-binary` 可以在没有 `--old-dir` 时单独使用，补丁落到输出目录。
+#[test]
+fn test_generate_cli_accepts_old_binary_without_old_dir() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-binary".into(),
+        s(&old_exe),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "generate 必须成功退出\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    assert!(
+        dir.join("0.1.0_to_0.1.1.patch").exists(),
+        "没有 --old-dir 时补丁应写到输出目录"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["patches"]["windows-x86_64"][0]["from_version"],
+        "0.1.0"
+    );
+}
+
+/// 显式基线校验失败时必须直接报错，而不是静默跳过。
+#[test]
+fn test_generate_cli_rejects_bad_old_binary() {
+    let dir = tempdir();
+    let (_old_exe, new_exe) = make_pair(&dir);
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    // 与目标版本相同：显式基线一定是在发布流水线里配错了
+    let baseline_dir = dir.join("baseline");
+    std::fs::create_dir_all(&baseline_dir).unwrap();
+    let same_version = baseline_dir.join("App_0.1.1_x64.exe");
+    std::fs::write(&same_version, b"same version").unwrap();
+
+    let args = vec![
+        "--old-binary".into(),
+        s(&same_version),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "显式基线版本与目标相同时必须失败");
+    assert!(
+        stderr.contains("版本与 --version"),
+        "错误必须说明原因，实际 stderr: {stderr}"
+    );
+}
+
+/// `--installer` 与 `--app-binary` 内容相同几乎一定是用错了参数：必须直接拒绝。
+#[test]
+fn test_generate_cli_rejects_installer_equal_to_app_binary() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+
+    let old_dir = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::copy(&old_exe, old_dir.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_dir),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--installer".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "安装包与主程序内容相同时必须失败");
+    assert!(
+        stderr.contains("--installer 与 --app-binary"),
+        "错误必须点名两个参数，实际 stderr: {stderr}"
+    );
+}
+
+/// `--report` 输出机器可读结果，`--archive-dir` 自动把本次主程序变成下次的基线。
+#[test]
+fn test_generate_cli_writes_report_and_archives_baseline() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+
+    let old_dir = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::copy(&old_exe, old_dir.join("App_0.1.0_x64.exe")).unwrap();
+
+    let archive_dir = dir.join("archive");
+    let report_path = dir.join("release-report.json");
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_dir),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--report".into(),
+        s(&report_path),
+        "--archive-dir".into(),
+        s(&archive_dir),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "generate 必须成功退出\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert_eq!(report["version"], "0.1.1");
+    assert_eq!(report["platform"], "windows-x86_64");
+    let patches = report["patches"].as_array().expect("patches 必须是数组");
+    assert_eq!(patches.len(), 1);
+    assert_eq!(patches[0]["from_version"], "0.1.0");
+    assert_eq!(patches[0]["patch_file"], "0.1.0_to_0.1.1.patch");
+    assert!(patches[0]["ratio"].is_number(), "报告应包含补丁占比");
+
+    // 产物名已含版本与架构时原样归档，不重复拼接
+    let archived = archive_dir.join("App_0.1.1_x64.exe");
+    assert!(archived.exists(), "必须自动归档本次主程序");
+    assert_eq!(
+        std::fs::read(&archived).unwrap(),
+        std::fs::read(&new_exe).unwrap(),
+        "归档内容必须与本次主程序一致"
+    );
+}
+
+/// 名字里没有版本/架构的主程序，归档时补全成可被下次自动识别的名称。
+#[test]
+fn test_generate_cli_archives_plain_named_binary() {
+    let dir = tempdir();
+    let old_exe = dir.join("App_0.1.0_x64.exe");
+    let new_exe = dir.join("MyApp.exe");
+    std::fs::write(
+        &old_exe,
+        (0..1024u32).map(|i| (i % 251) as u8).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    std::fs::write(
+        &new_exe,
+        (0..1024u32).map(|i| (i % 241) as u8).collect::<Vec<_>>(),
+    )
+    .unwrap();
+
+    let old_dir = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::copy(&old_exe, old_dir.join("App_0.1.0_x64.exe")).unwrap();
+
+    let archive_dir = dir.join("archive");
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_dir),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--platform".into(),
+        "windows-x86_64".into(),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--archive-dir".into(),
+        s(&archive_dir),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "generate 必须成功退出\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        archive_dir.join("MyApp_0.1.1_x86_64.exe").exists(),
+        "缺版本/架构的名字必须补全，实际归档目录: {:?}",
+        std::fs::read_dir(&archive_dir).map(|d| d
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>())
+    );
+}
+
+/// 一个补丁都没有时，`--fail-on-empty` 必须让流水线失败而不是静默发布空清单。
+#[test]
+fn test_generate_cli_fail_on_empty() {
+    let dir = tempdir();
+    let (_old_exe, new_exe) = make_pair(&dir);
+
+    let old_dir = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_dir).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_dir),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--fail-on-empty".into(),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "空补丁必须触发失败");
+    assert!(
+        stderr.contains("未生成任何补丁"),
+        "错误必须指出原因，实际 stderr: {stderr}"
+    );
+    assert!(!dir.join("latest.json").exists(), "闸门触发时不得写清单");
+}
+
+/// 整包模式：目录级差分包 + 独立签名的 `latest.bundle.json`。
+#[test]
+fn test_generate_cli_bundle_mode_emits_signed_manifest() {
+    let dir = tempdir();
+    let new_app = dir.join("new_app");
+    let old_app = dir.join("old_app_v0.1.0");
+
+    std::fs::create_dir_all(new_app.join("resources")).unwrap();
+    std::fs::create_dir_all(old_app.join("resources")).unwrap();
+    std::fs::write(old_app.join("app.exe"), b"old main binary").unwrap();
+    std::fs::write(old_app.join("resources/a.txt"), b"old resource").unwrap();
+    std::fs::write(new_app.join("app.exe"), b"new main binary, longer").unwrap();
+    std::fs::write(new_app.join("resources/a.txt"), b"new resource, longer").unwrap();
+    std::fs::write(new_app.join("resources/b.txt"), b"added resource").unwrap();
+
+    let new_exe = new_app.join("app.exe");
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--app-binary".into(),
+        s(&new_exe),
+        "--new-app-dir".into(),
+        s(&new_app),
+        "--old-app-dir".into(),
+        s(&old_app),
+        "--platform".into(),
+        "windows-x86_64".into(),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--fail-on-empty".into(),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "整包模式必须成功退出\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.bundle.json")).unwrap()).unwrap();
+    assert_eq!(manifest["version"], "0.1.1");
+    assert_eq!(manifest["platform"], "windows-x86_64");
+
+    let bundles = manifest["bundles"].as_array().expect("bundles 必须是数组");
+    assert_eq!(bundles.len(), 1);
+    assert_eq!(bundles[0]["from_version"], "0.1.0");
+    assert_eq!(bundles[0]["to_version"], "0.1.1");
+
+    let base_files = bundles[0]["base_files"]
+        .as_array()
+        .expect("必须记录旧版本文件清单");
+    let paths: Vec<&str> = base_files
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&"app.exe"));
+    assert!(paths.contains(&"resources/a.txt"));
+
+    let target_files = bundles[0]["target_files"]
+        .as_array()
+        .expect("必须记录新版本文件清单");
+    assert!(
+        target_files.iter().any(|f| f["path"] == "resources/b.txt"),
+        "新增资源必须出现在新版本清单中"
+    );
+
+    assert!(
+        dir.join("0.1.0_to_0.1.1.bundle.patch").exists(),
+        "整包补丁必须落盘"
+    );
+
+    // 独立清单必须能用同一把公钥验证
+    let pk = minisign::PublicKey::from_secret_key(&_sk).unwrap();
+    let sig_text = std::fs::read_to_string(dir.join("latest.bundle.json.sig")).unwrap();
+    let sig_box = minisign::SignatureBox::from_string(&sig_text).unwrap();
+    minisign::verify(
+        &pk,
+        &sig_box,
+        std::io::Cursor::new(std::fs::read(dir.join("latest.bundle.json")).unwrap()),
+        true,
+        false,
+        true,
+    )
+    .expect("latest.bundle.json 签名必须可验证");
+}
+
+/// macOS 发布：`.app` 本身通常不带版本号，版本从父目录读取
+/// （`v0.1.0/MyApp.app`），目录里是 `Contents/...` 相对路径。
+#[test]
+fn test_generate_cli_bundle_reads_version_from_app_parent() {
+    let dir = tempdir();
+    let new_app = dir.join("MyApp.app");
+    let old_app = dir.join("v0.1.0").join("MyApp.app");
+    for app in [&new_app, &old_app] {
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+    }
+    std::fs::write(old_app.join("Contents/MacOS/MyApp"), b"old main").unwrap();
+    std::fs::write(old_app.join("Contents/Resources/a.txt"), b"old resource").unwrap();
+    std::fs::write(new_app.join("Contents/MacOS/MyApp"), b"new main, longer").unwrap();
+    std::fs::write(
+        new_app.join("Contents/Resources/a.txt"),
+        b"new resource, longer",
+    )
+    .unwrap();
+
+    let new_exe = new_app.join("Contents/MacOS/MyApp");
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--app-binary".into(),
+        s(&new_exe),
+        "--new-app-dir".into(),
+        s(&new_app),
+        "--old-app-dir".into(),
+        s(&old_app),
+        "--platform".into(),
+        "darwin-aarch64".into(),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--fail-on-empty".into(),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "`.app` 的版本在父目录时也必须成功\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.bundle.json")).unwrap()).unwrap();
+    let bundles = manifest["bundles"].as_array().expect("bundles 必须是数组");
+    assert_eq!(bundles.len(), 1);
+    assert_eq!(
+        bundles[0]["from_version"], "0.1.0",
+        "版本号必须从 .app 的父目录读取"
+    );
+    assert_eq!(bundles[0]["to_version"], "0.1.1");
+
+    let paths: Vec<&str> = bundles[0]["base_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"Contents/MacOS/MyApp"),
+        "清单必须以 .app 为根，路径形如 Contents/MacOS/MyApp"
+    );
+}
+
+/// `--old-app-dir` 目录名没有版本号时必须报错，而不是生成无法匹配的补丁。
+#[test]
+fn test_generate_cli_bundle_requires_version_in_dir_name() {
+    let dir = tempdir();
+    let new_app = dir.join("new_app");
+    let old_app = dir.join("old_app_without_version");
+    std::fs::create_dir_all(&new_app).unwrap();
+    std::fs::create_dir_all(&old_app).unwrap();
+    std::fs::write(new_app.join("app.exe"), b"new").unwrap();
+    std::fs::write(old_app.join("app.exe"), b"old").unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--app-binary".into(),
+        s(new_app.join("app.exe")),
+        "--new-app-dir".into(),
+        s(&new_app),
+        "--old-app-dir".into(),
+        s(&old_app),
+        "--platform".into(),
+        "windows-x86_64".into(),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "目录名缺版本号时必须失败");
+    assert!(
+        stderr.contains("必须包含版本号"),
+        "错误必须说明原因，实际 stderr: {stderr}"
+    );
+}
+
+/// 通道产物命名：非 stable 通道写 `latest-<channel>.json`，stable 保持旧名。
+///
+/// 灰度不需要改清单格式：先发 beta，验证后把同一份产物按 stable 再发一次。
+#[test]
+fn test_generate_cli_channel_filenames() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--channel".into(),
+        "beta".into(),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "generate 必须成功\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    assert!(
+        dir.join("latest-beta.json").is_file(),
+        "beta 通道必须写到 latest-beta.json"
+    );
+    assert!(
+        dir.join("latest-beta.json.sig").is_file(),
+        "签名文件必须与清单同名"
+    );
+    assert!(
+        !dir.join("latest.json").exists(),
+        "非 stable 通道不得覆盖 stable 清单"
+    );
+}
+
+/// `--rollout` 写入受签名保护的 `platforms[].rollout`；100 不写字段。
+#[test]
+fn test_generate_cli_rollout_percentage() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let mut args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+    ];
+
+    args.extend([
+        "--rollout".to_string(),
+        "20".to_string(),
+        "--min-version".to_string(),
+        "0.1.0".to_string(),
+    ]);
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "generate 必须成功\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["platforms"]["windows-x86_64"]["rollout"]["percentage"],
+        20
+    );
+    assert_eq!(
+        manifest["min_version"], "0.1.0",
+        "--min-version 必须写入受签名保护的清单"
+    );
+
+    // 100 = 全量：字段必须省略，旧客户端与旧清单保持字节级兼容。
+    let full = vec![
+        "--old-dir".to_string(),
+        s(&old_versions),
+        "--app-binary".to_string(),
+        s(&new_exe),
+        "--version".to_string(),
+        "0.1.1".to_string(),
+        "--base-url".to_string(),
+        "https://cdn.example.com".to_string(),
+        "--private-key".to_string(),
+        s(&key_file),
+        "--rollout".to_string(),
+        "100".to_string(),
+    ];
+    let (code, stdout, stderr) = run_generate(&full, &dir);
+    assert_eq!(
+        code, 0,
+        "100% 发布必须成功\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    assert!(
+        manifest["platforms"]["windows-x86_64"]
+            .get("rollout")
+            .is_none(),
+        "100% 不应写 rollout 字段"
+    );
+
+    // 超过 100 是配置错误，必须在写任何文件之前失败。
+    let mut invalid = full;
+    let rollout = invalid.iter().position(|arg| arg == "--rollout").unwrap();
+    invalid[rollout + 1] = "101".into();
+    let (code, _stdout, stderr) = run_generate(&invalid, &dir);
+    assert_ne!(code, 0, "--rollout 101 必须失败");
+    assert!(
+        stderr.contains("--rollout"),
+        "错误必须点名参数，实际 stderr: {stderr}"
+    );
+}
+
+/// 非法通道名必须被拒绝：它会直接进入文件名。
+#[test]
+fn test_generate_cli_rejects_path_like_channel() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--channel".into(),
+        "../evil".into(),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "路径型通道名必须失败");
+    assert!(
+        stderr.contains("非法"),
+        "错误必须说明通道名非法，实际 stderr: {stderr}"
+    );
+}
+
 /// 计算字节的 SHA-256（小写十六进制）。
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

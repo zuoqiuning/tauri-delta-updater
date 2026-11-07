@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "delta-example",
+  "version": "0.1.0",
+  "identifier": "com.example.delta-updater",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "delta-example",
+        "width": 520,
+        "height": 420
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.ico", "icons/icon.png"]
+  },
+  "plugins": {
+    "delta-updater": {
+      "endpoints": ["https://cdn.example.com/latest.json"],
+      "pubkey": "BASE64_PUBLIC_KEY"
+    }
+  }
+}
