@@ -151,6 +151,13 @@ impl DeltaUpdater {
 
         if launch {
             staged.launch()?;
+        } else {
+            let artifact = super::pending::PendingArtifact::Bundle {
+                staging_dir: staged.staging_dir.clone(),
+                files: staged.files.clone(),
+            };
+            self.store_pending(&version, &staged.script_path, artifact)
+                .await?;
         }
 
         emit(on_event, UpdateEvent::Ready { version });

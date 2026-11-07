@@ -123,7 +123,9 @@ timings), `proxy` (`http://127.0.0.1:7890`), `headers` (extra HTTP headers for
 private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
 (`false` rejects pre-0.7 minisign signatures), `fallback_policy`
 (`transport` / `any`), `install_mode` (`passive` / `basicUi` / `quiet`),
-`allow_insecure_transport`, `bundle_type`, `install_id`.
+`allow_insecure_transport`, `bundle_type`, `install_id`, and
+`install_on_next_launch` (install the staged update on the next start; off by
+default).
 
 `endpoints` is an array: the first URL is the primary manifest, the rest are
 backups. With the default `fallback_policy: "transport"`, the updater switches
@@ -163,6 +165,10 @@ await invoke('plugin:delta-updater|install', { onEvent: events });
 await invoke('plugin:delta-updater|prepare', { onEvent: events }); // → { kind: "ready" }
 // ... then, when the UI is ready:
 await invoke('plugin:delta-updater|launch');                       // → { kind: "updated" }, process exits
+// The user quit before launch? The staged artifact is persisted; on the next
+// start, verify and execute it (no network):
+const pending = await invoke('plugin:delta-updater|pending');      // null | { version, kind, created_at }
+await invoke('plugin:delta-updater|install_pending');              // → true, process exits
 // 增量不可用时，回退路径也不需要官方插件：
 await invoke('plugin:delta-updater|install_full', { onEvent: events });
 ```
@@ -173,8 +179,8 @@ exits the process once the swap is ready. Errors arrive as
 
 Typed bindings (optional) live in `plugin/guest-js` and build to `plugin/dist-js`:
 `check`, `install`, `prepare`, `launch`, `downloadFull`, `installFull`,
-`diagnose`, `cancel`, `resetSafety`, plus `UpdateEvent` / `UpdateResult` /
-`ErrorDto` types. The npm package is **not published yet**; until it is, install
+`pending`, `installPending`, `diagnose`, `cancel`, `resetSafety`, plus
+`UpdateEvent` / `UpdateResult` / `ErrorDto` types. The npm package is **not published yet**; until it is, install
 it from a checkout (`npm install /path/to/repo/plugin`) or copy `dist-js`.
 
 > [!WARNING]
@@ -365,6 +371,7 @@ Platform support:
 - **UI-level default path** — `install()` returns `UpdateResult::{Updated, RepairRequired, UpToDate, Deferred, RequiresFullDownload, SafeMode}`; the advanced `update()` still returns the full `UpdateOutcome` when you need patch-level control.
 - **Platform-scoped patches** — patches are grouped per platform key, so an x64 client never picks up an arm64 patch.
 - **Staged rollout APIs** — `check()` to query without downloading, `prepare()` to download and merge without launching the swap, and `Staged::launch()` to trigger the swap when you're ready.
+- **Cross-restart staged install** — if the user quits after `prepare()` but before `launch()`, the staged artifact is persisted in `tdx_pending.json`. On the next start, `pending_update()` / `install_pending()` re-verify it (strictly newer version, script and artifact inside the work directory, SHA-256 of the merged exe) and run the swap without touching the network. The plugin exposes `pending` / `install_pending`, and `install_on_next_launch` runs it automatically at startup (off by default).
 - **Auto-rollback with a real restart** — if the new version fails to write its startup flag within the timeout, the script stops the new process, restores the backup, **and relaunches the old version**. The same recovery runs when elevation is declined or a copy fails.
 - **Crash-safe replacement** — if a previous run was interrupted between "rename exe → `.bak`" and the swap, the next script run restores the backup first; a leftover `.bak` next to an intact target is never restored.
 - **Safe mode with automatic recovery** — after 3 consecutive *deterministic* failures (bad signature, hash mismatch, disk full...), delta updates pause. Transient network errors don't count. After a 6-hour cooldown a single new attempt is allowed automatically; hosts can also call `reset_safety()`.
@@ -1184,6 +1191,7 @@ fallback, this library is the deeper option.
 | `DeltaError::AuthenticodeUnsigned` on Windows | The running build is signed but the patched artifact is not — usually a release that forgot to sign the new executable. Blocked on purpose: AppLocker/WDAC would refuse to start it. Sign the new build (or ship the full installer) and republish; `diagnose().authenticode` shows the current state. |
 | `plugin:delta-updater\|check` not found / denied at runtime | The capability is missing. Add `"delta-updater:default"` to `src-tauri/capabilities/default.json` and restart. |
 | `nothing_to_launch` from `launch` | `launch` was called without a successful `prepare` in this process. Call `prepare` first; `requires_full_download` / `up_to_date` / `safe_mode` have nothing to launch. |
+| `pending` returns `null` after a successful `prepare` | The persisted record failed re-validation (version no longer newer than the running one, artifact hash changed, or the work directory moved) and was discarded. Run `prepare` again. |
 | Every command returns `updater_unavailable` | The updater could not be constructed (read-only work directory, missing/invalid `plugins.delta-updater`). The app still starts by design; read the message, fix the config or permissions, restart. The reason is also appended to `tdx_update.log`. |
 | After a crash, the app reports `RepairRequired` / `needs_repair` | A previous whole-app swap was interrupted. Exit the process (or call `install()`); the repair script restores the backup and relaunches the old version — no network needed. |
 | "It said updated, but the version is still old after restart" | Read `diagnose().last_rollback` (`update_failed` / `startup_timeout`): the new version never confirmed startup, so the script restored the old one. Parse `diagnose().events_path` (`tdx_events.jsonl`) for the structured rollback event; details are in `tdx_update.log`. Usually the app exits before `confirm_startup_success*` runs, or the new build crashes at launch. |
@@ -1199,7 +1207,11 @@ fallback, this library is the deeper option.
   are `non_exhaustive` — keep a wildcard arm. Manifests without the new fields
   keep working. Details: [CHANGELOG.md](CHANGELOG.md).
 - **Unreleased**: `UpdateResult` gained `Ready` (returned by the plugin's
-  `prepare` command). The release workflow now publishes both crates; until the
+  `prepare` command); `UpdateConfig` gained `headers`, `fallback_endpoints`,
+  `fallback_policy`, `install_mode`, `allow_insecure_transport` and
+  `install_on_next_launch`; `Diagnosis` gained `insecure_transport`; new
+  `PendingUpdate` / `PendingArtifact` types and `pending` / `install_pending`
+  plugin commands. The release workflow now publishes both crates; until the
   plugin appears on crates.io, `cargo delta init` writes a git dependency.
 
 ## License

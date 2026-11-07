@@ -69,23 +69,23 @@ use tauri_delta_updater::{CancelToken, DeltaUpdater, Staged, StagedBundle, Updat
 
 /// 已就绪、等待 `launch` 的更新产物（`prepare` 路径）。
 #[derive(Clone)]
-enum PendingUpdate {
+enum StagedPending {
     Exe(Staged),
     Bundle(StagedBundle),
 }
 
-impl PendingUpdate {
+impl StagedPending {
     fn version(&self) -> String {
         match self {
-            PendingUpdate::Exe(staged) => staged.manifest().version.clone(),
-            PendingUpdate::Bundle(staged) => staged.manifest().version.clone(),
+            StagedPending::Exe(staged) => staged.manifest().version.clone(),
+            StagedPending::Bundle(staged) => staged.manifest().version.clone(),
         }
     }
 
     fn launch(&self) -> tauri_delta_updater::Result<()> {
         match self {
-            PendingUpdate::Exe(staged) => staged.launch(),
-            PendingUpdate::Bundle(staged) => staged.launch(),
+            StagedPending::Exe(staged) => staged.launch(),
+            StagedPending::Bundle(staged) => staged.launch(),
         }
     }
 }
@@ -100,7 +100,7 @@ struct UpdaterState {
     /// 正在进行的更新会话的取消令牌；空闲时为 `None`。
     cancel: Mutex<Option<CancelToken>>,
     /// `prepare` 生成、等待 `launch` 的产物。
-    pending: Mutex<Option<PendingUpdate>>,
+    pending: Mutex<Option<StagedPending>>,
 }
 
 impl UpdaterState {
@@ -133,14 +133,14 @@ impl UpdaterState {
         })
     }
 
-    fn set_pending(&self, pending: Option<PendingUpdate>) {
+    fn set_pending(&self, pending: Option<StagedPending>) {
         if let Ok(mut slot) = self.pending.lock() {
             *slot = pending;
         }
     }
 
     /// 读取待启动产物（克隆共享状态，启动失败时仍可重试）。
-    fn pending(&self) -> Option<PendingUpdate> {
+    fn pending(&self) -> Option<StagedPending> {
         self.pending.lock().ok().and_then(|slot| slot.clone())
     }
 }
@@ -160,6 +160,22 @@ fn register<R: Runtime>(app: &AppHandle<R>, config: Result<UpdateConfig, String>
                     .confirm_startup_success_if_pending()
                     .unwrap_or(false);
                 let _ = app.emit("delta-updater://startup", confirmed);
+
+                // 跨重启待安装：配置开启时在本次启动尽早执行，并退出进程。
+                // 记录经过版本单调性与产物哈希校验；不联网。
+                if updater.install_on_next_launch() {
+                    let auto = Arc::clone(&updater);
+                    tauri::async_runtime::spawn(async move {
+                        match auto.install_pending().await {
+                            Ok(true) => std::process::exit(0),
+                            Ok(false) => {}
+                            Err(err) => {
+                                let message = format!("[startup] 自动安装待更新失败: {err}");
+                                append_log(auto.work_dir(), &[message.as_str()]);
+                            }
+                        }
+                    });
+                }
 
                 // 启动 doctor：配置缺口在第一次启动就打到日志/事件，
                 // 而不是等用户触发更新才发现回退。
@@ -268,7 +284,8 @@ mod tests {
             "fallback_policy": "any",
             "headers": { "X-Auth": "token" },
             "install_mode": "quiet",
-            "allow_insecure_transport": false
+            "allow_insecure_transport": false,
+            "install_on_next_launch": true
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         let config = file.into_update_config("1.0.0").unwrap();
@@ -294,6 +311,7 @@ mod tests {
         ));
         assert_eq!(config.install_mode, InstallMode::Quiet);
         assert!(!config.allow_insecure_transport);
+        assert!(config.install_on_next_launch);
     }
 
     /// 非法端点策略/安装模式必须在启动阶段报错，而不是静默忽略。
@@ -359,6 +377,7 @@ mod tests {
             headers: None,
             install_mode: None,
             allow_insecure_transport: None,
+            install_on_next_launch: None,
         };
         let err = file.into_update_config("1.0.0").unwrap_err();
         assert!(err.contains("endpoints"), "错误必须说明字段: {err}");

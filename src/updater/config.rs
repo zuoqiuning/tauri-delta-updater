@@ -13,10 +13,17 @@ pub enum FallbackPolicy {
     /// 404 等确定性错误不切换，避免把“清单还没发布”误判成需要换源。
     #[default]
     OnTransportError,
-    /// 任何 HTTP / 传输失败都切换。
+    /// 任何 HTTP / 传输失败都切换（含 404 / 403）。
     ///
     /// 适合“主端点 404 = 该通道未发布，备用端点有镜像”的部署；验签失败仍然终止，
     /// 绝不会因为换端点而绕过签名校验。
+    ///
+    /// # 代价
+    ///
+    /// 主端点返回 404 可能只是新版本尚未发布，而备用端点仍托管着**旧清单**。
+    /// 选择本策略意味着接受“切到旧清单”的降级重放面（版本单调性仍会拒绝
+    /// 低于当前版本的清单，但高于当前版本的旧清单无法识别）。默认策略
+    /// 只在传输错误/5xx 时切换，正是为了避免这一点。
     OnAnyFailure,
 }
 
@@ -127,6 +134,13 @@ pub struct UpdateConfig {
     /// 附加到所有 HTTP 请求的请求头（私有 CDN Token、User-Agent 等）。
     ///
     /// 只能配合内置客户端使用；同时设置 [`Self::client`] 时由调用方自行配置请求头。
+    ///
+    /// # 注意
+    ///
+    /// 不要设置 `Host`、`Content-Length`、`Connection`、`Transfer-Encoding`
+    /// 等传输层头：它们由 HTTP 客户端按连接和请求体自动生成，手动覆盖会
+    /// 破坏连接复用、TLS SNI 或请求分帧。这里只应放业务头
+    /// （`Authorization`、`X-Api-Key`、`User-Agent` 等）。
     pub headers: Vec<(String, String)>,
     /// Windows 全量安装器的交互模式，默认 `Passive`（与官方一致）。
     ///
@@ -137,6 +151,11 @@ pub struct UpdateConfig {
     /// `false` 时，非回环地址的 `http://` 会在构造阶段被拒绝；
     /// 无论取值如何，明文端点都会出现在 `diagnose().warnings()` 中。
     pub allow_insecure_transport: bool,
+    /// 插件是否在下次启动时自动执行待安装记录，默认 `false`。
+    ///
+    /// 该字段只被 Tauri 插件消费；库本身不会自动安装，宿主需显式调用
+    /// [`crate::DeltaUpdater::install_pending`]。
+    pub install_on_next_launch: bool,
 }
 
 impl UpdateConfig {
@@ -165,6 +184,7 @@ impl UpdateConfig {
             headers: Vec::new(),
             install_mode: InstallMode::default(),
             allow_insecure_transport: true,
+            install_on_next_launch: false,
         }
     }
 
@@ -272,6 +292,19 @@ impl UpdateConfig {
     pub fn allow_insecure_transport(mut self, allow: bool) -> Self {
         self.allow_insecure_transport = allow;
         self
+    }
+
+    /// 插件是否在下次启动时自动执行待安装记录（默认 `false`）。
+    pub fn install_on_next_launch(mut self, auto: bool) -> Self {
+        self.install_on_next_launch = auto;
+        self
+    }
+
+    /// 主清单或任一备用端点使用明文 HTTP（且非回环）。
+    pub(crate) fn uses_insecure_transport(&self) -> bool {
+        std::iter::once(&self.manifest_url)
+            .chain(self.fallback_manifest_urls.iter())
+            .any(|url| endpoint_is_insecure(url))
     }
 }
 

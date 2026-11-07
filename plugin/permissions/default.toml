@@ -1,6 +1,6 @@
 [default]
 description = """
-默认权限：检查、增量安装、全量下载、诊断、取消与退出安全模式。
+默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。
 命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。
 """
 permissions = [
@@ -13,4 +13,6 @@ permissions = [
     "allow-diagnose",
     "allow-cancel",
     "allow-reset-safety",
+    "allow-pending",
+    "allow-install-pending",
 ]

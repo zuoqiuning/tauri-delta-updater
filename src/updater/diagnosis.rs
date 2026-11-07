@@ -4,7 +4,7 @@ use crate::platform::PlatformUpdater;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::{config, DeltaUpdater};
+use super::DeltaUpdater;
 
 /// 替换脚本写入的结构化事件（`tdx_events.jsonl` 的一行）。
 ///
@@ -264,9 +264,7 @@ impl DeltaUpdater {
             events_path: self.work_dir.join(crate::core::artifacts::EVENTS_FILE),
             script_events: read_script_events(&self.work_dir),
             privilege_tools_available: privilege_tools_available(),
-            insecure_transport: std::iter::once(&self.config.manifest_url)
-                .chain(self.config.fallback_manifest_urls.iter())
-                .any(|url| config::endpoint_is_insecure(url)),
+            insecure_transport: self.config.uses_insecure_transport(),
         }
     }
 }

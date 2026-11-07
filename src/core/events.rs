@@ -8,7 +8,7 @@
 //!
 //! | 事件 | 关键字段 | 何时发出 |
 //! |---|---|---|
-//! | `delta.check` | `version`, `is_newer`, `has_patch` | 清单验签与版本比较之后 |
+//! | `delta.check` | `version`, `is_newer`, `has_patch`, `insecure_transport` | 清单验签与版本比较之后 |
 //! | `delta.endpoint.failed` | `url`, `reason` | 主端点失败、切换到备用端点 |
 //! | `delta.patch.matched` | `from`, `to`, `size` | 命中可用补丁 |
 //! | `delta.patch.rejected` | `reason` | 补丁哈希/应用失败 |
@@ -24,7 +24,10 @@
 //! 这些事件只描述状态，不包含路径以外的敏感信息；路径本身也只发文件名。
 
 /// 发出 `delta.check` 事件。
-pub(crate) fn check(version: &str, is_newer: bool, has_patch: bool) {
+///
+/// `insecure_transport` 为 `true` 表示配置里有明文 HTTP 端点（非回环）：
+/// 让使用 `tracing` 的宿主在监控层就能看到降级配置，而不必轮询 `diagnose`。
+pub(crate) fn check(version: &str, is_newer: bool, has_patch: bool, insecure_transport: bool) {
     #[cfg(feature = "tracing")]
     tracing::info!(
         target: "tauri_delta_updater",
@@ -32,10 +35,11 @@ pub(crate) fn check(version: &str, is_newer: bool, has_patch: bool) {
         version,
         is_newer,
         has_patch,
+        insecure_transport,
         "清单检查完成"
     );
     #[cfg(not(feature = "tracing"))]
-    let _ = (version, is_newer, has_patch);
+    let _ = (version, is_newer, has_patch, insecure_transport);
 }
 
 /// 发出 `delta.endpoint.failed` 事件。

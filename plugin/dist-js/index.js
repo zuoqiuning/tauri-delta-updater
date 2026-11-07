@@ -58,6 +58,22 @@ export function diagnose() {
 export function cancel() {
     return invoke('plugin:delta-updater|cancel');
 }
+/**
+ * 查询 `prepare` 落盘、尚未安装的记录（不存在时为 `null`）。
+ *
+ * 记录已通过版本单调性、路径限定与产物哈希校验；不发起网络请求。
+ */
+export function pending() {
+    return invoke('plugin:delta-updater|pending');
+}
+/**
+ * 执行跨重启待安装记录；`true` 表示已启动替换，插件随后退出进程。
+ *
+ * 通常在启动时调用，把"重启后继续安装"变成一次显式动作。
+ */
+export function installPending() {
+    return invoke('plugin:delta-updater|install_pending');
+}
 /** 手动退出安全模式（UI 提供"重试"按钮时使用）。 */
 export function resetSafety() {
     return invoke('plugin:delta-updater|reset_safety');

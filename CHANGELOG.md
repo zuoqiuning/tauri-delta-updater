@@ -30,6 +30,10 @@
 - **清单与签名串行下载**：两者改为并行拉取，检查更新少一个 RTT。
 - **替换脚本可能静默不启动**：启动改为绝对路径并先校验文件存在；
   缺失时返回明确错误，而不是 spawn 一个必然失败的 PowerShell。
+- **"已是最新"的检查会删除已就绪的待安装产物**：清理原本在版本/灰度判断
+  之前执行，`UpToDate` / `Deferred` 也会把上次 `prepare` 的脚本与产物删掉。
+  现在只在真正要下载新产物时才清理，避免一次网络故障或灰度未命中就让
+  已完成的更新白费。
 
 ### 新增
 
@@ -54,7 +58,14 @@
 - Windows `install_mode`：`passive`（默认）/ `basicUi` / `quiet`，
   插件配置同名键；`quiet` 无法自行提权。
 - 明文 HTTP 诊断：`Diagnosis.insecure_transport` 告警 +
-  `allow_insecure_transport`（默认兼容，设 `false` 在构造期拒绝非回环 http）。
+  `allow_insecure_transport`（默认兼容，设 `false` 在构造期拒绝非回环 http）；
+  `delta.check` 结构化事件也带上 `insecure_transport` 字段，便于监控层捕获。
+- 跨重启待安装：`prepare` 未立即启动替换时把产物落盘为 `tdx_pending.json`，
+  下次启动由 `pending_update()` / `install_pending()` 校验并执行。
+  记录必须满足：目标版本严格高于当前版本、脚本与产物位于工作目录内、
+  单文件产物重算 SHA-256 与 prepare 时的 `target_hash` 一致；启动时不联网。
+  插件新增 `pending` / `install_pending` 命令与 `install_on_next_launch`
+  配置（默认关闭，开启后启动时自动安装并退出进程）。
 - 前端类型包：`plugin/guest-js` + `plugin/dist-js`（npm 名 `tauri-plugin-delta-updater`），
   提供 `check` / `install` / `prepare` / `launch` / `diagnose` 等函数与完整事件/结果类型；
   未配置 `NPM_TOKEN` 时发布流程自动跳过 npm。

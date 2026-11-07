@@ -1,6 +1,6 @@
 ## Default Permission
 
-默认权限：检查、增量安装、全量下载、诊断、取消与退出安全模式。
+默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。
 命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。
 
 #### This default permission set includes the following:
@@ -14,6 +14,8 @@
 - `allow-diagnose`
 - `allow-cancel`
 - `allow-reset-safety`
+- `allow-pending`
+- `allow-install-pending`
 
 ## Permission Table
 
@@ -183,6 +185,32 @@ Denies the install_full command without any pre-configured scope.
 <tr>
 <td>
 
+`delta-updater:allow-install-pending`
+
+</td>
+<td>
+
+Enables the install_pending command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:deny-install-pending`
+
+</td>
+<td>
+
+Denies the install_pending command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `delta-updater:allow-launch`
 
 </td>
@@ -202,6 +230,32 @@ Enables the launch command without any pre-configured scope.
 <td>
 
 Denies the launch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:allow-pending`
+
+</td>
+<td>
+
+Enables the pending command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:deny-pending`
+
+</td>
+<td>
+
+Denies the pending command without any pre-configured scope.
 
 </td>
 </tr>

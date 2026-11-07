@@ -281,6 +281,7 @@ pub use platform::PlatformUpdater;
 pub use platform::ScriptTimings;
 pub use updater::{
     simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy, FallbackReason,
-    FullDownload, FullDownloadOutcome, ScriptEvent, SimulationReport, Staged, StagedBundle,
-    StagedFullInstaller, StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
+    FullDownload, FullDownloadOutcome, PendingArtifact, PendingUpdate, ScriptEvent,
+    SimulationReport, Staged, StagedBundle, StagedFullInstaller, StagedRepair, UpdateCheck,
+    UpdateConfig, UpdateOutcome, UpdateResult,
 };

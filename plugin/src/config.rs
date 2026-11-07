@@ -57,6 +57,9 @@ pub(crate) struct FileConfig {
     /// 可选：是否允许明文 HTTP 端点，默认 `true`（仅兼容，建议 `false`）。
     #[serde(default)]
     pub(crate) allow_insecure_transport: Option<bool>,
+    /// 可选：下次启动时自动执行 `prepare` 落盘的待安装记录，默认 `false`。
+    #[serde(default)]
+    pub(crate) install_on_next_launch: Option<bool>,
 }
 
 impl FileConfig {
@@ -115,6 +118,9 @@ impl FileConfig {
         }
         if let Some(allow) = self.allow_insecure_transport {
             config = config.allow_insecure_transport(allow);
+        }
+        if let Some(auto) = self.install_on_next_launch {
+            config = config.install_on_next_launch(auto);
         }
         if let Some(allow) = self.allow_legacy_signatures {
             config = config.allow_legacy_signatures(allow);

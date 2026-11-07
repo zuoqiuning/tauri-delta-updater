@@ -25,6 +25,7 @@ mod fetch;
 mod flow;
 mod full;
 mod outcome;
+mod pending;
 mod rollout;
 mod simulate;
 mod staged;
@@ -32,6 +33,7 @@ mod staged;
 pub use config::{FallbackPolicy, UpdateConfig};
 pub use diagnosis::{Diagnosis, ScriptEvent};
 pub use outcome::{CheckOutcome, FallbackReason, UpdateCheck, UpdateOutcome, UpdateResult};
+pub use pending::{PendingArtifact, PendingUpdate};
 pub use simulate::{simulate_update, SimulationReport};
 pub use staged::{
     FullDownload, FullDownloadOutcome, Staged, StagedBundle, StagedFullInstaller, StagedRepair,
@@ -238,6 +240,16 @@ impl DeltaUpdater {
     /// 工作目录（补丁、暂存文件、替换脚本与日志所在处）。
     pub fn work_dir(&self) -> &Path {
         &self.work_dir
+    }
+
+    /// 当前版本号（来自配置）。
+    pub fn current_version(&self) -> &str {
+        &self.config.current_version
+    }
+
+    /// 插件是否应在下次启动时自动执行待安装记录。
+    pub fn install_on_next_launch(&self) -> bool {
+        self.config.install_on_next_launch
     }
 
     /// 配置里的脚本等待时长，生成替换脚本时写入。

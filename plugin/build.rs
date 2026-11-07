@@ -8,6 +8,8 @@ const COMMANDS: &[&str] = &[
     "diagnose",
     "cancel",
     "reset_safety",
+    "pending",
+    "install_pending",
 ];
 
 fn main() {

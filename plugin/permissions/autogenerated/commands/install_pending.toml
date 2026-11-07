@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-install-pending"
+description = "Enables the install_pending command without any pre-configured scope."
+commands.allow = ["install_pending"]
+
+[[permission]]
+identifier = "deny-install-pending"
+description = "Denies the install_pending command without any pre-configured scope."
+commands.deny = ["install_pending"]

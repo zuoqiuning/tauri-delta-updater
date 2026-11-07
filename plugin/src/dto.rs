@@ -16,6 +16,28 @@ pub struct ErrorDto {
     pub security: bool,
 }
 
+/// 跨重启待安装记录的精简视图（`pending` 命令）。
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingUpdateDto {
+    /// 目标版本号。
+    pub version: String,
+    /// `exe`（单文件）或 `bundle`（整包）。
+    pub kind: &'static str,
+    /// 记录创建时间（Unix 秒）。
+    pub created_at: u64,
+}
+
+impl PendingUpdateDto {
+    /// 只暴露前端需要的信息；路径留在 Rust 侧，避免泄露文件系统布局。
+    pub(crate) fn from_pending(pending: &tauri_delta_updater::PendingUpdate) -> Self {
+        Self {
+            version: pending.version().to_string(),
+            kind: if pending.is_bundle() { "bundle" } else { "exe" },
+            created_at: pending.created_at,
+        }
+    }
+}
+
 /// 全量下载的结果（`download_full` 命令）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

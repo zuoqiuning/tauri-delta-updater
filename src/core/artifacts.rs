@@ -99,6 +99,9 @@ pub const EVENTS_FILE: &str = "tdx_events.jsonl";
 /// 必须靠日志才能知道该删哪些，否则修复后旧版本会看到多余的新文件。
 pub const BUNDLE_JOURNAL_FILE: &str = "tdx_bundle_journal.txt";
 
+/// 跨重启待安装记录（`prepare` 成功后落盘，`launch`/下次启动时消费）。
+pub const PENDING_FILE: &str = "tdx_pending.json";
+
 /// 启动状态指针：`staged` → `booting` → `committed`，回滚时写 `rolled_back`。
 ///
 /// 替换脚本在启动新版本前写 `staged`；新版本启动早期写 `booting`；

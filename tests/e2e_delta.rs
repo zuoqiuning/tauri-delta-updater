@@ -511,6 +511,42 @@ async fn test_end_to_end_prepare_does_not_launch() {
         UpdateOutcome::Patched { staged } => {
             assert!(staged.staged_exe().exists(), "prepare() 应当完成合并");
             assert!(staged.script_path().exists(), "prepare() 应当生成替换脚本");
+
+            // 跨重启待安装：prepare 必须落盘记录，下次启动才能继续。
+            let pending = updater
+                .pending_update()
+                .await
+                .unwrap()
+                .expect("prepare() 应当写入待安装记录");
+            assert_eq!(pending.version(), "0.2.0");
+            assert_eq!(pending.script_path(), staged.script_path());
+            assert!(
+                pending.staged_exe().is_some(),
+                "单文件更新必须记录合并产物路径"
+            );
+
+            // 一次"已是最新"的更新调用不得销毁已就绪的待安装产物：
+            // 产物文件名固定，清理后无法重建，等于让已完成的下载白费。
+            let (same_manifest, same_sig) = build_manifest(
+                &sk,
+                &server.base_url,
+                "0.1.0",
+                platform,
+                &patch_hash,
+                &new_hash,
+                None,
+            );
+            server.set("/latest.json", same_manifest);
+            server.set("/latest.json.sig", same_sig.into_bytes());
+
+            match updater.update().await.unwrap() {
+                UpdateOutcome::UpToDate { .. } => {}
+                other => panic!("同版本清单应当返回 UpToDate，实际: {other:?}"),
+            }
+            assert!(
+                updater.pending_update().await.unwrap().is_some(),
+                "UpToDate 之后待安装记录与产物必须仍然可用"
+            );
         }
         other => panic!("prepare() 应当完成补丁合并，实际得到: {other:?}"),
     }

@@ -120,7 +120,12 @@ impl DeltaUpdater {
         };
         let has_patch = is_newer && !deferred_by_rollout && fallback_reason.is_none();
 
-        crate::core::events::check(&manifest.version, is_newer, has_patch);
+        crate::core::events::check(
+            &manifest.version,
+            is_newer,
+            has_patch,
+            self.config.uses_insecure_transport(),
+        );
 
         Ok(CheckOutcome {
             version: manifest.version.clone(),

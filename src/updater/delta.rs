@@ -19,9 +19,6 @@ impl DeltaUpdater {
         mut on_event: Option<Box<dyn FnMut(UpdateEvent) + Send + '_>>,
         cancel: Option<&crate::core::cancel::CancelToken>,
     ) -> Result<UpdateOutcome> {
-        // 清理上一轮遗留的临时文件
-        cleanup_previous_updates(&self.work_dir, &self.executable_path).await;
-
         if is_cancelled(cancel) {
             emit(&mut on_event, UpdateEvent::Cancelled);
             return Err(DeltaError::Cancelled);
@@ -34,7 +31,12 @@ impl DeltaUpdater {
         // 版本单调性：签名合法 ≠ 比当前新。重放旧清单时必须在这里止步，
         // 否则会经全量回退把用户降级到旧版本。
         if !manifest.is_newer_than(&self.config.current_version)? {
-            crate::core::events::check(&manifest.version, false, false);
+            crate::core::events::check(
+                &manifest.version,
+                false,
+                false,
+                self.config.uses_insecure_transport(),
+            );
             emit(
                 &mut on_event,
                 UpdateEvent::UpToDate {
@@ -50,7 +52,12 @@ impl DeltaUpdater {
         // 同一版本的桶位稳定，下一次检查会得到同样结果，直到发布端放量。
         if self.deferred_by_rollout(&manifest)? {
             let percentage = self.rollout_percentage(&manifest).unwrap_or(0);
-            crate::core::events::check(&manifest.version, true, false);
+            crate::core::events::check(
+                &manifest.version,
+                true,
+                false,
+                self.config.uses_insecure_transport(),
+            );
             emit(
                 &mut on_event,
                 UpdateEvent::Deferred {
@@ -68,6 +75,13 @@ impl DeltaUpdater {
             .platforms
             .get(&self.config.platform)
             .map(|p| p.url.clone());
+
+        // 清理上一轮遗留的临时文件。
+        //
+        // 放在版本/灰度判断之后：`UpToDate` / `Deferred` 属于"没有新东西可做"，
+        // 此时清理会连上次 `prepare` 落盘的待安装产物一起删掉——一次网络故障或
+        // 灰度未命中的检查就能让已就绪的更新消失。真正要下载新产物时才清理。
+        cleanup_previous_updates(&self.work_dir, &self.executable_path).await;
 
         // 整包优先：它覆盖 sidecar/resources，单文件补丁做不到。
         // 配置了整包清单但当前平台不支持整包替换时（Linux、非 .app 的 macOS），
@@ -204,9 +218,16 @@ impl DeltaUpdater {
             launched: std::sync::Arc::new(AtomicBool::new(false)),
         };
 
-        // 按需启动替换脚本
+        // 按需启动替换脚本；不立即启动时落盘待安装记录，供下次启动消费。
         if launch {
             staged.launch()?;
+        } else {
+            let artifact = super::pending::PendingArtifact::Exe {
+                staged_exe: staged.staged_exe.path().to_path_buf(),
+                target_hash: staged.staged_exe.sha256().to_string(),
+            };
+            self.store_pending(&version, &staged.script_path, artifact)
+                .await?;
         }
 
         emit(&mut on_event, UpdateEvent::Ready { version });

@@ -10,8 +10,8 @@ use tauri_delta_updater::{
 };
 
 use crate::config::read_file_config;
-use crate::dto::{ErrorDto, FullDownloadDto};
-use crate::{register, PendingUpdate, UpdaterState};
+use crate::dto::{ErrorDto, FullDownloadDto, PendingUpdateDto};
+use crate::{register, StagedPending, UpdaterState};
 
 /// 只检查是否有新版本，不下载任何内容。
 #[tauri::command]
@@ -77,12 +77,12 @@ pub(crate) async fn prepare<R: Runtime>(
     match outcome.map_err(ErrorDto::from)? {
         UpdateOutcome::Patched { staged } => {
             let version = staged.manifest().version.clone();
-            state.set_pending(Some(PendingUpdate::Exe(staged)));
+            state.set_pending(Some(StagedPending::Exe(staged)));
             Ok(UpdateResult::Ready { version })
         }
         UpdateOutcome::Bundled { staged } => {
             let version = staged.manifest().version.clone();
-            state.set_pending(Some(PendingUpdate::Bundle(staged)));
+            state.set_pending(Some(StagedPending::Bundle(staged)));
             Ok(UpdateResult::Ready { version })
         }
         UpdateOutcome::Repair { staged, reason } => {
@@ -172,6 +172,32 @@ pub(crate) async fn diagnose(state: State<'_, UpdaterState>) -> Result<Diagnosis
     Ok(state.updater()?.diagnose().await)
 }
 
+/// 查询跨重启待安装记录（`prepare` 落盘、尚未启动替换）。
+#[tauri::command]
+pub(crate) async fn pending(
+    state: State<'_, UpdaterState>,
+) -> Result<Option<PendingUpdateDto>, ErrorDto> {
+    let updater = state.updater()?;
+    let pending = updater.pending_update().await.map_err(ErrorDto::from)?;
+    Ok(pending.as_ref().map(PendingUpdateDto::from_pending))
+}
+
+/// 执行跨重启待安装记录；`true` 表示已启动替换，插件会随后退出进程。
+///
+/// 与 `install` 一样必须退出：替换脚本在等旧进程退出，不退出更新不会生效。
+#[tauri::command]
+pub(crate) async fn install_pending<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, UpdaterState>,
+) -> Result<bool, ErrorDto> {
+    let updater = state.updater()?;
+    let launched = updater.install_pending().await.map_err(ErrorDto::from)?;
+    if launched {
+        exit_soon(&app);
+    }
+    Ok(launched)
+}
+
 /// 注册插件（配置由宿主代码提供）。
 ///
 /// `config` 的 `current_version` 通常传 [`tauri_delta_updater::host_version!`]；
@@ -191,7 +217,9 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
             install_full,
             diagnose,
             cancel,
-            reset_safety
+            reset_safety,
+            pending,
+            install_pending
         ])
         .build()
 }
@@ -237,7 +265,9 @@ pub fn init_from_config<R: Runtime>() -> TauriPlugin<R> {
             install_full,
             diagnose,
             cancel,
-            reset_safety
+            reset_safety,
+            pending,
+            install_pending
         ])
         .build()
 }

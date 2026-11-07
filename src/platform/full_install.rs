@@ -41,8 +41,11 @@ pub enum InstallMode {
     Passive,
     /// 显示基础交互界面（NSIS 默认 UI，MSI `/qb`）。
     BasicUi,
-    /// 完全静默（NSIS `/S`，MSI `/qn`）。安装器无法自行提权，
+    /// 无安装界面（NSIS `/S`，MSI `/qn`）。安装器无法自行提权，
     /// 仅适用于用户级安装或进程本身已是管理员。
+    ///
+    /// 注意：`quiet` 不等同于“无任何提示”——需要提权时，Windows 仍会
+    /// 弹出 UAC 确认框，该提示无法被安装器参数抑制。
     Quiet,
 }
 

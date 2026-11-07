@@ -48,6 +48,14 @@ export type FullDownloadDto =
   | { kind: 'downloaded'; version: string; path: string }
   | { kind: 'up_to_date'; version: string };
 
+/** 跨重启待安装记录（`pending()` 返回值）；路径留在 Rust 侧。 */
+export interface PendingUpdate {
+  version: string;
+  kind: 'exe' | 'bundle';
+  /** 记录创建时间（Unix 秒）。 */
+  created_at: number;
+}
+
 /** 单个增量补丁的描述。 */
 export interface PatchInfo {
   from_version: string;
@@ -129,6 +137,8 @@ export interface Diagnosis {
   events_path: string;
   script_events: ScriptEvent[];
   privilege_tools_available: boolean | null;
+  /** 端点使用明文 HTTP 且非回环（配置降级，建议在 UI/日志中暴露）。 */
+  insecure_transport: boolean;
 }
 
 /** 判断 `invoke` 抛出的值是否是插件错误 DTO。 */
@@ -204,6 +214,24 @@ export function diagnose(): Promise<Diagnosis> {
 /** 取消正在进行的更新；返回 `false` 表示当前没有可取消的会话。 */
 export function cancel(): Promise<boolean> {
   return invoke('plugin:delta-updater|cancel');
+}
+
+/**
+ * 查询 `prepare` 落盘、尚未安装的记录（不存在时为 `null`）。
+ *
+ * 记录已通过版本单调性、路径限定与产物哈希校验；不发起网络请求。
+ */
+export function pending(): Promise<PendingUpdate | null> {
+  return invoke('plugin:delta-updater|pending');
+}
+
+/**
+ * 执行跨重启待安装记录；`true` 表示已启动替换，插件随后退出进程。
+ *
+ * 通常在启动时调用，把"重启后继续安装"变成一次显式动作。
+ */
+export function installPending(): Promise<boolean> {
+  return invoke('plugin:delta-updater|install_pending');
 }
 
 /** 手动退出安全模式（UI 提供"重试"按钮时使用）。 */
