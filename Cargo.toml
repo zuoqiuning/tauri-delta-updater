@@ -1,15 +1,34 @@
-[package]
-name = "tauri-delta-updater"
+[workspace]
+# 核心 crate 与插件必须同版本、同一份依赖图：版本只在 workspace 里声明一次，
+# 避免两边手工同步导致 `cargo delta` 写出的插件版本不存在。
+members = [".", "plugin"]
+# 默认只构建核心 crate，保持既有 `cargo test --all-features` 的语义：
+# 不会因为插件而拉入 Tauri / GTK / WebKit 系统依赖。
+default-members = ["."]
+resolver = "2"
+# 独立工程：示例与 A/B 工具自带 lockfile，不参与工作区统一解析。
+exclude = ["examples/tauri-app/src-tauri", "tools/zucchini-ab"]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2021"
 # 实际下限由依赖决定：reqwest 0.13 → url → idna → icu_* 系列声明要求 1.88。
 # 声明低版本会让 `cargo +1.81 check` 直接失败，是虚假的兼容承诺；
 # 这里按真实依赖链的下限声明，并由 CI 的 MSRV job 验证。
 rust-version = "1.88"
-description = "Standalone delta (incremental) update engine for Tauri v2: signed manifests, deterministic rollback, and a built-in full-installer fallback."
 license = "MIT"
 authors = ["丘屿知宁 (zuoqiuning)"]
 repository = "https://github.com/zuoqiuning/tauri-delta-updater"
+
+[package]
+name = "tauri-delta-updater"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Standalone delta (incremental) update engine for Tauri v2: signed manifests, deterministic rollback, and a built-in full-installer fallback."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 keywords = ["tauri", "updater", "delta", "patch", "incremental"]
 categories = ["development-tools", "gui"]
 readme = "README.md"

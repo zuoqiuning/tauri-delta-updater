@@ -1,12 +1,12 @@
 [package]
 name = "tauri-plugin-delta-updater"
-version = "0.2.0"
-edition = "2021"
-rust-version = "1.88"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Tauri v2 plugin for tauri-delta-updater: delta updates, full-installer fallback, events and permissions."
-license = "MIT"
-authors = ["丘屿知宁 (zuoqiuning)"]
-repository = "https://github.com/zuoqiuning/tauri-delta-updater"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 links = "tauri-plugin-delta-updater"
 
 [build-dependencies]

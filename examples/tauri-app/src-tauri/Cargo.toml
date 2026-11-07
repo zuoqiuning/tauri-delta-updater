@@ -5,6 +5,9 @@ edition = "2021"
 description = "Minimal Tauri app wired to tauri-plugin-delta-updater."
 publish = false
 
+# 独立示例：自带 Tauri 依赖与 lockfile，不参与根 workspace 的统一解析。
+[workspace]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

@@ -3,7 +3,6 @@
 /target-doctest
 /tools/zucchini-ab/target
 /plugin/target
-/plugin/Cargo.lock
 /examples/tauri-app/src-tauri/target
 /examples/tauri-app/src-tauri/Cargo.lock
 /examples/tauri-app/src-tauri/gen

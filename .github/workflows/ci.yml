@@ -166,9 +166,9 @@ jobs:
     - name: Compare crate versions
       run: |
         CORE=$(cargo metadata --no-deps --format-version 1 \
-          | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
-        PLUGIN=$(cargo metadata --manifest-path plugin/Cargo.toml --no-deps --format-version 1 \
-          | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(p['version'] for p in d['packages'] if p['name']=='tauri-delta-updater'))")
+        PLUGIN=$(cargo metadata --no-deps --format-version 1 \
+          | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(p['version'] for p in d['packages'] if p['name']=='tauri-plugin-delta-updater'))")
         if [ "$CORE" != "$PLUGIN" ]; then
           echo "::error::核心 crate ($CORE) 与插件 crate ($PLUGIN) 版本不一致"
           exit 1
@@ -193,9 +193,6 @@ jobs:
 
     - name: Cache cargo
       uses: Swatinem/rust-cache@v2
-      with:
-        # 插件是独立 crate（自带 Cargo.lock 与 target），单独缓存
-        workspaces: "plugin"
 
     # 插件依赖 tauri（Linux 上会编译 gtk/webkit 绑定），runner 默认没有这些开发头文件。
     - name: Install Linux dependencies
