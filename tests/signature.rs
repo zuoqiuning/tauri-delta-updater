@@ -4,7 +4,9 @@
 //! base64 与原始 minisign 文件两种编码形式都能正确处理。
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use tauri_delta_updater::{manifest_version_binding, verify_manifest_signature};
+use tauri_delta_updater::{
+    manifest_version_binding, verify_manifest_signature, verify_manifest_signature_with,
+};
 
 /// 生成一对测试用密钥，返回 (私钥, 公钥 base64)。
 fn test_keypair() -> (minisign::SecretKey, String) {
@@ -32,6 +34,26 @@ fn sign_bound(sk: &minisign::SecretKey, content: &[u8], trusted_comment: &str) -
     )
     .unwrap()
     .to_string()
+}
+
+/// 严格模式（`allow_legacy=false`）必须接受本项目发布端产出的 pre-hash 签名。
+#[test]
+fn test_strict_mode_accepts_prehashed_signature() {
+    let (sk, pk_b64) = test_keypair();
+    let manifest = br#"{"version":"0.2.0"}"#;
+    let sig_text = sign(&sk, manifest);
+
+    let strict = verify_manifest_signature_with(manifest, &sig_text, &pk_b64, false);
+    assert!(
+        strict.is_ok(),
+        "minisign 0.7.9 的签名必须在严格模式下通过: {:?}",
+        strict.err()
+    );
+
+    // 严格模式与兼容模式对“被篡改内容”都必须拒绝
+    let tampered = br#"{"version":"0.2.1"}"#;
+    assert!(verify_manifest_signature_with(tampered, &sig_text, &pk_b64, false).is_err());
+    assert!(verify_manifest_signature_with(tampered, &sig_text, &pk_b64, true).is_err());
 }
 
 #[test]

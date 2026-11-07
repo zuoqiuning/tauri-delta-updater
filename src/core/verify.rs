@@ -48,15 +48,32 @@ pub fn verify_manifest_signature(
     signature: &str,
     public_key_b64: &str,
 ) -> Result<()> {
+    verify_manifest_signature_with(manifest_content, signature, public_key_b64, true)
+}
+
+/// 与 [`verify_manifest_signature`] 相同，但可显式指定是否接受旧版（legacy）签名。
+///
+/// 本项目发布端固定 minisign 0.7.9，产出的是 pre-hash 格式（有单测守住）；
+/// `allow_legacy = true` 只用于兼容第三方历史管线。宿主可通过
+/// [`crate::UpdateConfig::allow_legacy_signatures`] 收紧为 `false`。
+///
+/// # 兼容性
+///
+/// 关闭后，用 minisign < 0.7 生成的清单会被拒绝。这是签名校验行为变更，
+/// 默认值保持 `true`，避免升级时破坏现有发布管线。
+pub fn verify_manifest_signature_with(
+    manifest_content: &[u8],
+    signature: &str,
+    public_key_b64: &str,
+    allow_legacy: bool,
+) -> Result<()> {
     let public_key = parse_public_key(public_key_b64)?;
     let signature = parse_signature(signature)?;
 
-    // 第三个参数 true 对应 minisign-verify 的 allow_legacy 语义：
+    // `allow_legacy` 对应 minisign-verify 的同名语义：
     // 同时接受旧格式（非预哈希）与新版预哈希签名。
-    // 这是刻意的兼容取舍——发布链路可能混用两种 minisign 版本生成；
-    // 若确认所有签名都由新版工具生成，可收紧为 false 以缩小攻击面。
     public_key
-        .verify(manifest_content, &signature, true)
+        .verify(manifest_content, &signature, allow_legacy)
         .map_err(|_| {
             DeltaError::SignatureInvalid(
                 "清单签名校验失败！文件可能已被篡改，已阻断更新。".to_string(),

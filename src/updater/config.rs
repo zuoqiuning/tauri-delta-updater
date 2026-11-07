@@ -74,6 +74,12 @@ pub struct UpdateConfig {
     /// 自定义客户端使用 rustls 时，必须在创建前调用
     /// [`crate::install_crypto_provider`]。
     pub client: Option<reqwest::Client>,
+    /// 是否接受旧版（legacy）minisign 签名，默认 `true`。
+    ///
+    /// 本项目发布端固定 minisign 0.7.9，产出的是 pre-hash 格式；
+    /// 该开关只影响第三方历史管线的兼容。安全要求高的宿主可设为
+    /// `false`，让非预哈希签名直接失败（属于签名校验行为收紧）。
+    pub allow_legacy_signatures: bool,
 }
 
 impl UpdateConfig {
@@ -96,6 +102,7 @@ impl UpdateConfig {
             install_id: None,
             bundle_manifest_url: None,
             client: None,
+            allow_legacy_signatures: true,
         }
     }
 
@@ -163,6 +170,15 @@ impl UpdateConfig {
     /// 注入自定义 HTTP 客户端（代理、UA、超时等）。
     pub fn client(mut self, client: reqwest::Client) -> Self {
         self.client = Some(client);
+        self
+    }
+
+    /// 是否接受旧版（legacy）minisign 签名，默认 `true`。
+    ///
+    /// `false` 时只接受 pre-hash 签名（本项目发布端产出的格式）。
+    /// 这是签名校验行为收紧：拒绝旧格式，不会放行任何内容。
+    pub fn allow_legacy_signatures(mut self, allow: bool) -> Self {
+        self.allow_legacy_signatures = allow;
         self
     }
 }

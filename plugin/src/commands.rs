@@ -211,7 +211,8 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 ///       "work_dir": "/custom/writable/dir",
 ///       "wait_timeout_secs": 60,
 ///       "confirm_timeout_secs": 60,
-///       "proxy": "http://127.0.0.1:7890"
+///       "proxy": "http://127.0.0.1:7890",
+///       "allow_legacy_signatures": false
 ///     }
 ///   }
 /// }

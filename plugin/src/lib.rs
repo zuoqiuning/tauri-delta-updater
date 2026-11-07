@@ -258,7 +258,8 @@ mod tests {
             "work_dir": "/tmp/tdx",
             "wait_timeout_secs": 20,
             "confirm_timeout_secs": 120,
-            "proxy": "http://127.0.0.1:7890"
+            "proxy": "http://127.0.0.1:7890",
+            "allow_legacy_signatures": false
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         let config = file.into_update_config("1.0.0").unwrap();
@@ -269,6 +270,10 @@ mod tests {
         assert_eq!(config.wait_timeout_secs, 20);
         assert_eq!(config.confirm_timeout_secs, 120);
         assert!(config.client.is_some(), "代理配置必须注入自定义客户端");
+        assert!(
+            !config.allow_legacy_signatures,
+            "严格签名模式必须能从配置开启"
+        );
     }
 
     /// 非法代理必须在启动阶段报错，而不是等到第一次请求才失败。
@@ -311,6 +316,7 @@ mod tests {
             wait_timeout_secs: None,
             confirm_timeout_secs: None,
             proxy: None,
+            allow_legacy_signatures: None,
         };
         let err = file.into_update_config("1.0.0").unwrap_err();
         assert!(err.contains("endpoints"), "错误必须说明字段: {err}");

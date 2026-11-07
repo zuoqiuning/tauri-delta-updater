@@ -37,6 +37,11 @@ pub(crate) struct FileConfig {
     /// 可选：HTTP 代理（如 `http://127.0.0.1:7890`），用于企业网络。
     #[serde(default)]
     pub(crate) proxy: Option<String>,
+    /// 可选：是否接受旧版 minisign 签名，默认 `true`。
+    ///
+    /// 本项目发布端产出 pre-hash 签名；设为 `false` 可拒绝第三方旧格式。
+    #[serde(default)]
+    pub(crate) allow_legacy_signatures: Option<bool>,
 }
 
 impl FileConfig {
@@ -71,6 +76,9 @@ impl FileConfig {
                 .build()
                 .map_err(|err| format!("构建 HTTP 客户端失败: {err}"))?;
             config = config.client(client);
+        }
+        if let Some(allow) = self.allow_legacy_signatures {
+            config = config.allow_legacy_signatures(allow);
         }
         if let Some(bundle) = self.bundle_endpoint {
             config =

@@ -3,7 +3,7 @@
 use super::config::default_signature_url;
 use super::DeltaUpdater;
 use crate::core::bundle::BundleManifest;
-use crate::core::verify::verify_manifest_signature;
+use crate::core::verify::verify_manifest_signature_with;
 use crate::error::{DeltaError, Result};
 use crate::models::UpdateManifest;
 use futures_util::StreamExt;
@@ -26,7 +26,12 @@ impl DeltaUpdater {
         let manifest_bytes = manifest_bytes?;
         let signature = signature?;
 
-        verify_manifest_signature(&manifest_bytes, &signature, &self.config.public_key)?;
+        verify_manifest_signature_with(
+            &manifest_bytes,
+            &signature,
+            &self.config.public_key,
+            self.config.allow_legacy_signatures,
+        )?;
 
         let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes)
             .map_err(|e| DeltaError::ManifestInvalid(format!("整包清单格式错误: {e}")))?;
@@ -52,7 +57,12 @@ impl DeltaUpdater {
         let manifest_bytes = manifest_bytes?;
         let signature = signature?;
 
-        verify_manifest_signature(&manifest_bytes, &signature, &self.config.public_key)?;
+        verify_manifest_signature_with(
+            &manifest_bytes,
+            &signature,
+            &self.config.public_key,
+            self.config.allow_legacy_signatures,
+        )?;
 
         let manifest: UpdateManifest = serde_json::from_slice(&manifest_bytes)
             .map_err(|e| DeltaError::ManifestInvalid(format!("清单格式错误: {e}")))?;
