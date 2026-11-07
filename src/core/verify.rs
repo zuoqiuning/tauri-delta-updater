@@ -233,6 +233,10 @@ const VERSION_BINDING_PREFIX: &str = "tdu:v=";
 /// 按前缀匹配 + 取 `;` 前第一段解析，而不是整行相等：
 /// 未来追加键值参数时，旧解析端仍能取到版本段。
 ///
+/// 多签时只读**第一块**签名的 trusted comment：其余块的绑定不参与校验。
+/// 这是发布端一致性检查（防止清单版本与文件名漂移），不是安全边界——
+/// 防降级依赖清单签名与语义化版本单调性。
+///
 /// `signature` 接受 base64 编码或 minisign 原始 `.sig` 文本。
 pub fn manifest_version_binding(signature: &str) -> Option<String> {
     let text = decode_minisign_text(signature, "签名").ok()?;

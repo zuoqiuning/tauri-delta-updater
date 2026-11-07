@@ -39,6 +39,11 @@ If you only want smaller downloads and are happy to keep the official updater
 for installation, the transparent layer is the lower-risk choice. If you want
 one component to own the whole update, keep reading.
 
+**If the official updater adds signed manifests** (it has been closing that
+gap), this engine still differs on: deterministic rollback scripts, whole-app
+deltas, multi-hop chains, rollout / `min_os`, restart-surviving pending installs,
+and per-file repair. Re-evaluate only on the axes you actually need.
+
 ## Quick start
 
 Two entry points, one engine. Pick one — you do not need both.

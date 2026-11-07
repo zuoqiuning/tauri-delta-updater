@@ -69,6 +69,16 @@ file.
   `latest.bundle.json` and the installer. `generate --secondary-private-key` does
   this; a hand-rolled pipeline must not sign only the main manifest.
 
+### Rotation checklist
+
+1. Ship a client release that embeds **both** keys (`additional_public_keys`)
+   with `trust_policy = any`.
+2. Dual-sign every artifact with `--secondary-private-key` until all supported
+   clients have that dual-key release.
+3. Ship a release that trusts **only** the new key.
+4. `any` provides no revocation: after step 3, the old key is rejected; before
+   step 3, a leaked old key stays valid. Do not skip step 3.
+
 ## Minimum OS gate (`platforms[].min_os`)
 
 A best-effort compatibility guard, **not a security boundary**. It is skipped
