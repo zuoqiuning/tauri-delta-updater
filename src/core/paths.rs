@@ -88,12 +88,13 @@ fn probe_write(dir: &Path) -> bool {
 ///
 /// 用"创建探针文件再删除"判定真实可写性：仅检查 `metadata().permissions()`
 /// 在 Windows 上会给出错误结论（只读位与 ACL 是两套机制）。
+///
+/// 杀毒软件/索引器/云同步客户端可能在目录刚创建时短暂持有句柄；
+/// 三次探测总计约 300ms，避免把可写目录误判成只读（真正的只读目录三次都会失败）。
 pub fn ensure_writable(dir: &Path) -> Result<()> {
-    // 杀毒软件/索引器可能瞬时持有新建文件或目录；短重试一次，
-    // 避免把可写目录误判成只读（真正的只读目录两次都会失败）。
-    for attempt in 0..2 {
+    for attempt in 0..3 {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(100 * attempt));
         }
         if std::fs::create_dir_all(dir).is_ok() && probe_write(dir) {
             return Ok(());

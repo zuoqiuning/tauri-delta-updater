@@ -24,6 +24,7 @@ fn run(cli: Cli) -> Result<(), String> {
             pubkey,
             bundle_endpoint,
             force,
+            registry,
             check,
         } => {
             if check {
@@ -53,6 +54,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 pubkey.trim(),
                 bundle_endpoint.as_deref(),
                 force,
+                registry,
             )?
         }
         Command::Migrate {

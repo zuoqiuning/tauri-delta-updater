@@ -65,41 +65,105 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_delta_updater::{CancelToken, DeltaUpdater, UpdateConfig};
 
 struct UpdaterState {
-    updater: Arc<DeltaUpdater>,
+    /// 构造成功时可用；失败时为 `None`，命令统一返回 `updater_unavailable`。
+    ///
+    /// 更新器不可用（缓存目录只读、配置缺失）**不能**阻止宿主应用启动：
+    /// 插件 setup 返回 Err 会让 Tauri 的 `App::build` 直接失败。
+    updater: Option<Arc<DeltaUpdater>>,
+    unavailable: Option<String>,
     /// 正在进行的更新会话的取消令牌；空闲时为 `None`。
     cancel: Mutex<Option<CancelToken>>,
 }
 
-/// 注册流程：构造更新器、确认上次启动、托管状态。
-fn register<R: Runtime>(
-    app: &AppHandle<R>,
-    config: UpdateConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let updater = Arc::new(DeltaUpdater::new(config)?);
-
-    // 本次启动是否来自一次替换：必须在窗口和前端起来之前确认，
-    // 否则替换脚本会在 confirm_timeout 后误判失败并回滚。
-    let confirmed = updater
-        .confirm_startup_success_if_pending()
-        .unwrap_or(false);
-    let _ = app.emit("delta-updater://startup", confirmed);
-
-    // 启动 doctor：配置缺口（工作目录不可写、macOS 未配整包、Linux 没有
-    // 降权工具）在第一次启动就打到日志，而不是等用户触发更新才发现回退。
-    // 诊断是只读快照，不发起网络请求，因此可以安全地在后台跑。
-    let doctor = Arc::clone(&updater);
-    tauri::async_runtime::spawn(async move {
-        let diagnosis = doctor.diagnose().await;
-        for warning in diagnosis.warnings() {
-            eprintln!("[tauri-delta-updater] {warning}");
+impl UpdaterState {
+    fn ready(updater: Arc<DeltaUpdater>) -> Self {
+        Self {
+            updater: Some(updater),
+            unavailable: None,
+            cancel: Mutex::new(None),
         }
-    });
+    }
 
-    app.manage(UpdaterState {
-        updater,
-        cancel: Mutex::new(None),
-    });
-    Ok(())
+    fn unavailable(reason: String) -> Self {
+        Self {
+            updater: None,
+            unavailable: Some(reason),
+            cancel: Mutex::new(None),
+        }
+    }
+
+    /// 取更新器；不可用时返回带稳定错误码的 DTO。
+    fn updater(&self) -> Result<&Arc<DeltaUpdater>, ErrorDto> {
+        self.updater.as_ref().ok_or_else(|| {
+            ErrorDto::unavailable(
+                self.unavailable
+                    .clone()
+                    .unwrap_or_else(|| "更新器不可用".to_string()),
+            )
+        })
+    }
+}
+
+/// 注册流程：构造更新器、确认上次启动、托管状态。
+///
+/// 任何构造失败都降级为"更新功能不可用"，不影响应用本身启动。
+fn register<R: Runtime>(app: &AppHandle<R>, config: Result<UpdateConfig, String>) {
+    let state =
+        match config.and_then(|config| DeltaUpdater::new(config).map_err(|err| err.to_string())) {
+            Ok(updater) => {
+                let updater = Arc::new(updater);
+
+                // 本次启动是否来自一次替换：必须在窗口和前端起来之前确认，
+                // 否则替换脚本会在 confirm_timeout 后误判失败并回滚。
+                let confirmed = updater
+                    .confirm_startup_success_if_pending()
+                    .unwrap_or(false);
+                let _ = app.emit("delta-updater://startup", confirmed);
+
+                // 启动 doctor：配置缺口在第一次启动就打到日志/事件，
+                // 而不是等用户触发更新才发现回退。
+                let doctor = Arc::clone(&updater);
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let diagnosis = doctor.diagnose().await;
+                    let warnings = diagnosis.warnings();
+                    if warnings.is_empty() {
+                        return;
+                    }
+                    append_log(doctor.work_dir(), &warnings);
+                    let _ = handle.emit("delta-updater://diagnosis", warnings);
+                });
+
+                UpdaterState::ready(updater)
+            }
+            Err(reason) => {
+                let _ = app.emit("delta-updater://unavailable", reason.clone());
+                UpdaterState::unavailable(reason)
+            }
+        };
+
+    if let Some(reason) = &state.unavailable {
+        eprintln!("[tauri-delta-updater] 更新器不可用: {reason}");
+    }
+    app.manage(state);
+}
+
+/// 把启动警告追加到工作目录日志。
+///
+/// GUI 应用没有控制台，`eprintln!` 在生产环境不可见；日志文件是排障的唯一入口。
+fn append_log(work_dir: &std::path::Path, warnings: &[&str]) {
+    use std::io::Write;
+    let path = work_dir.join(tauri_delta_updater::core::artifacts::LOG_FILE);
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    for warning in warnings {
+        let _ = writeln!(file, "[startup] {warning}");
+    }
 }
 
 #[cfg(test)]
@@ -230,24 +294,63 @@ mod tests {
     /// 不需要窗口或 WebView，因此能在 CI 里当作编译级回归。
     #[test]
     fn plugin_registers_updater_state() {
-        let dir = std::env::temp_dir().join(format!("tdx-plugin-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("app.exe");
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
         std::fs::write(&exe, b"app").unwrap();
 
         let config = UpdateConfig::new("https://example.com/latest.json", "PK")
             .current_version("0.1.0")
             .executable_path(&exe)
-            .work_dir(&dir);
+            .work_dir(dir.path());
 
         let app = tauri::test::mock_builder()
             .plugin(init(config))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("插件初始化不应失败");
 
-        assert!(
-            app.try_state::<UpdaterState>().is_some(),
-            "插件必须注册更新器状态"
+        let state = app.try_state::<UpdaterState>().expect("插件必须注册状态");
+        assert!(state.updater.is_some(), "可写目录下更新器必须可用");
+    }
+
+    /// 工作目录不可写时，插件只能降级功能，绝不能阻止宿主应用启动。
+    #[test]
+    fn plugin_does_not_block_startup_when_work_dir_is_unwritable() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"app").unwrap();
+        // 用一个文件作为父目录，`create_dir_all` 必然失败
+        let blocker = dir.path().join("blocked");
+        std::fs::write(&blocker, b"not a dir").unwrap();
+
+        let config = UpdateConfig::new("https://example.com/latest.json", "PK")
+            .current_version("0.1.0")
+            .executable_path(&exe)
+            .work_dir(blocker.join("work"));
+
+        let app = tauri::test::mock_builder()
+            .plugin(init(config))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("更新器不可用不得阻止应用启动");
+
+        let state = app.try_state::<UpdaterState>().expect("插件仍须注册状态");
+        assert!(state.updater.is_none(), "工作目录不可写时必须降级");
+        let err = state.updater().expect_err("命令必须返回明确错误");
+        assert_eq!(err.code, "updater_unavailable");
+    }
+
+    /// 缺少 `plugins.delta-updater` 配置时同样只降级，不阻止启动。
+    #[test]
+    fn plugin_does_not_block_startup_without_config() {
+        let app = tauri::test::mock_builder()
+            .plugin(crate::init_from_config())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("配置缺失不得阻止应用启动");
+
+        let state = app.try_state::<UpdaterState>().expect("插件仍须注册状态");
+        assert!(state.updater.is_none());
+        assert_eq!(
+            state.updater().expect_err("必须给出不可用原因").code,
+            "updater_unavailable"
         );
     }
 }

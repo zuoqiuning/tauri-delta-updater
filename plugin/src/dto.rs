@@ -56,6 +56,18 @@ impl FullDownloadDto {
     }
 }
 
+impl ErrorDto {
+    /// 更新器不可用（构造失败或配置缺失）：功能降级，应用本身仍可正常运行。
+    pub(crate) fn unavailable(reason: String) -> Self {
+        Self {
+            code: "updater_unavailable",
+            message: format!("更新器不可用: {reason}"),
+            retryable: false,
+            security: false,
+        }
+    }
+}
+
 impl From<DeltaError> for ErrorDto {
     fn from(err: DeltaError) -> Self {
         Self {

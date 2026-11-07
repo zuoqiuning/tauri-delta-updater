@@ -95,7 +95,15 @@ fn init_apply_writes_all_files() {
     let permissions = capability["permissions"].as_array().unwrap();
     assert!(permissions.iter().any(|v| v == "delta-updater:default"));
 
-    assert!(read(&root, "Cargo.toml").contains("tauri-plugin-delta-updater"));
+    let cargo = read(&root, "Cargo.toml");
+    assert!(cargo.contains("tauri-plugin-delta-updater"));
+    assert!(
+        cargo.contains(&format!(
+            "tauri-plugin-delta-updater = {{ git = \"{}\" }}",
+            env!("CARGO_PKG_REPOSITORY")
+        )),
+        "默认必须写可直接构建的 git 依赖，而不是不存在的版本号: {cargo}"
+    );
 
     let (code, _stdout, stderr) = run(
         &root,
@@ -110,6 +118,52 @@ fn init_apply_writes_all_files() {
     );
     assert_ne!(code, 0, "已存在配置时必须要求 --force");
     assert!(stderr.contains("--force"), "错误必须说明如何覆盖: {stderr}");
+}
+
+/// `--registry` 写注册表版本，且版本号必须与工具自身一致（防止再次写死旧版本）。
+#[test]
+fn init_registry_writes_current_version() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--registry",
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let cargo = read(&root, "Cargo.toml");
+    assert_eq!(
+        cargo
+            .lines()
+            .find(|line| line.starts_with("tauri-plugin-delta-updater"))
+            .expect("必须写入依赖"),
+        format!(
+            "tauri-plugin-delta-updater = \"{}\"",
+            env!("CARGO_PKG_VERSION")
+        ),
+        "注册表版本必须与工具版本一致"
+    );
+
+    // 写完后 --check 必须认为依赖已满足，而不是因为引号形式误判缺失
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--check",
+        ],
+    );
+    assert_eq!(code, 0, "--check 应通过: {stdout}\n{stderr}");
 }
 
 /// `--check` 供 CI 做接入守卫：缺失时非零，配置完成后零并打印注册片段。

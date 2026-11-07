@@ -55,6 +55,10 @@ cargo delta init ... --apply     # writes the files
 cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
 ```
 
+`init` writes the plugin as a **git dependency by default**: the plugin crate is
+not published on crates.io yet, and a version-only line would make `cargo build`
+fail. Once it is published, pass `--registry` to write `"<version>"` instead.
+
 Already on the official updater? `cargo delta migrate` copies
 `plugins.updater` into `plugins.delta-updater` and keeps the official plugin as
 the fallback by default. Add `--remove-official` to remove its config and
@@ -85,7 +89,10 @@ or absent (single-stack, full fallback owned by `install_full`).
 
 ```toml
 [dependencies]
-tauri-plugin-delta-updater = { path = "../plugin" }   # or git / crates.io
+# Not on crates.io yet; the git form works today and is what `cargo delta init` writes.
+tauri-plugin-delta-updater = { git = "https://github.com/zuoqiuning/tauri-delta-updater" }
+# Published later: tauri-plugin-delta-updater = "0.2"
+# Local checkout:   tauri-plugin-delta-updater = { path = "../plugin" }
 ```
 
 `src-tauri/capabilities/default.json`:
@@ -1136,6 +1143,7 @@ fallback, this library is the deeper option.
 | `DeltaError::SafeMode` from `check()` | Three deterministic failures; wait for the 6-hour cooldown or call `reset_safety()`. |
 | `DeltaError::AuthenticodeUnsigned` on Windows | The running build is signed but the patched artifact is not — usually a release that forgot to sign the new executable. Blocked on purpose: AppLocker/WDAC would refuse to start it. Sign the new build (or ship the full installer) and republish; `diagnose().authenticode` shows the current state. |
 | `plugin:delta-updater\|check` not found / denied at runtime | The capability is missing. Add `"delta-updater:default"` to `src-tauri/capabilities/default.json` and restart. |
+| Every command returns `updater_unavailable` | The updater could not be constructed (read-only work directory, missing/invalid `plugins.delta-updater`). The app still starts by design; read the message, fix the config or permissions, restart. The reason is also appended to `tdx_update.log`. |
 | After a crash, the app reports `RepairRequired` / `needs_repair` | A previous whole-app swap was interrupted. Exit the process (or call `install()`); the repair script restores the backup and relaunches the old version — no network needed. |
 | "It said updated, but the version is still old after restart" | Read `diagnose().last_rollback` (`update_failed` / `startup_timeout`): the new version never confirmed startup, so the script restored the old one. Parse `diagnose().events_path` (`tdx_events.jsonl`) for the structured rollback event; details are in `tdx_update.log`. Usually the app exits before `confirm_startup_success*` runs, or the new build crashes at launch. |
 | Update "silently disappears" | The user declined elevation. The old version is relaunched; see `tdx_update.log` next to the install directory (and in the work directory). |

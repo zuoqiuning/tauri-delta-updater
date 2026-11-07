@@ -17,7 +17,7 @@ use crate::UpdaterState;
 /// 只检查是否有新版本，不下载任何内容。
 #[tauri::command]
 pub(crate) async fn check(state: State<'_, UpdaterState>) -> Result<CheckOutcome, ErrorDto> {
-    state.updater.check().await.map_err(ErrorDto::from)
+    state.updater()?.check().await.map_err(ErrorDto::from)
 }
 
 /// 执行更新，并把阶段事件推到 `on_event`。
@@ -30,7 +30,7 @@ pub(crate) async fn install<R: Runtime>(
     state: State<'_, UpdaterState>,
     on_event: Channel<UpdateEvent>,
 ) -> Result<UpdateResult, ErrorDto> {
-    let session = state.updater.session();
+    let session = state.updater()?.session();
     let token = session.cancel_token();
     set_cancel(&state, Some(token));
 
@@ -63,11 +63,11 @@ pub(crate) async fn download_full(
     state: State<'_, UpdaterState>,
     on_event: Channel<UpdateEvent>,
 ) -> Result<FullDownloadDto, ErrorDto> {
+    let updater = state.updater()?;
     let token = CancelToken::new();
     set_cancel(&state, Some(token.clone()));
 
-    let result = state
-        .updater
+    let result = updater
         .download_full_with_events(&token, |event| {
             let _ = on_event.send(event);
         })
@@ -89,11 +89,11 @@ pub(crate) async fn install_full<R: Runtime>(
     state: State<'_, UpdaterState>,
     on_event: Channel<UpdateEvent>,
 ) -> Result<UpdateResult, ErrorDto> {
+    let updater = state.updater()?;
     let token = CancelToken::new();
     set_cancel(&state, Some(token.clone()));
 
-    let result = state
-        .updater
+    let result = updater
         .install_full_with_events(&token, |event| {
             let _ = on_event.send(event);
         })
@@ -110,7 +110,7 @@ pub(crate) async fn install_full<R: Runtime>(
 /// 环境诊断：可写性、平台适用性、安全模式、是否需要修复。不发起网络请求。
 #[tauri::command]
 pub(crate) async fn diagnose(state: State<'_, UpdaterState>) -> Result<Diagnosis, ErrorDto> {
-    Ok(state.updater.diagnose().await)
+    Ok(state.updater()?.diagnose().await)
 }
 
 /// 注册插件（配置由宿主代码提供）。
@@ -119,7 +119,10 @@ pub(crate) async fn diagnose(state: State<'_, UpdaterState>) -> Result<Diagnosis
 /// 工作目录用默认值即可（用户缓存目录）。
 pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
     Builder::new("delta-updater")
-        .setup(move |app, _api| register(app, config))
+        .setup(move |app, _api| {
+            register(app, Ok(config));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             check,
             install,
@@ -151,8 +154,9 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 pub fn init_from_config<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("delta-updater")
         .setup(|app, _api| {
-            let config = read_file_config(app)?;
-            register(app, config)
+            // 配置缺失/非法只让更新功能不可用，不能让宿主应用起不来。
+            register(app, read_file_config(app).map_err(|err| err.to_string()));
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             check,
@@ -184,7 +188,7 @@ pub(crate) fn cancel(state: State<'_, UpdaterState>) -> bool {
 /// 手动退出安全模式（UI 提供"重试"按钮时使用）。
 #[tauri::command]
 pub(crate) async fn reset_safety(state: State<'_, UpdaterState>) -> Result<(), ErrorDto> {
-    state.updater.reset_safety().await;
+    state.updater()?.reset_safety().await;
     Ok(())
 }
 

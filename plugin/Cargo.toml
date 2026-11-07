@@ -25,3 +25,4 @@ serde_json = "1"
 # mock runtime：不需要窗口/WebView 也能验证插件的注册与状态。
 # 保持 default-features = false，测试二进制就不会依赖 WebView2Loader.dll。
 tauri = { version = "2", default-features = false, features = ["test"] }
+tempfile = "3"

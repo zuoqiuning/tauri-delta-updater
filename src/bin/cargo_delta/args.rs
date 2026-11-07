@@ -49,6 +49,11 @@ pub(crate) enum Command {
         /// 已存在 `plugins.delta-updater` 时覆盖。
         #[arg(long)]
         force: bool,
+        /// 写注册表版本依赖（插件已发布到 crates.io 时使用）。
+        ///
+        /// 缺省写 git 依赖：插件尚未发布时直接写版本号会让 `cargo build` 失败。
+        #[arg(long)]
+        registry: bool,
         /// 只检查配置是否完整，不打印 diff；缺失时以非零状态退出。
         #[arg(long)]
         check: bool,
