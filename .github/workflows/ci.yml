@@ -179,7 +179,7 @@ jobs:
           exit 1
         fi
         # CHANGELOG 顶部条目必须与 Cargo.toml 一致，避免发布说明与实际版本漂移
-        LOG=$(grep -m1 '^## \[' CHANGELOG.md | sed -E 's/^## \[([^]]+)\].*/\1/')
+        LOG=$(grep -m1 '^## \[' CHANGELOG.md | cut -d'[' -f2 | cut -d']' -f1)
         if [ "$CORE" != "$LOG" ]; then
           echo "::error::Cargo.toml ($CORE) 与 CHANGELOG 顶部版本 ($LOG) 不一致"
           exit 1
