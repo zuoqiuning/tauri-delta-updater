@@ -97,7 +97,7 @@ jobs:
           python3 - <<'PY'
           import json
           files = {f["path"] for f in json.load(open("/tmp/npm-pack.json"))[0]["files"]}
-          required = {"dist-js/index.js", "dist-js/index.d.ts", "package.json"}
+          required = {"dist-js/index.js", "dist-js/index.d.ts", "package.json", "README.md"}
           missing = required - files
           if missing:
               raise SystemExit(f"npm 包缺少文件: {sorted(missing)}")
