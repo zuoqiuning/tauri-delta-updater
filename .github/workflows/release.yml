@@ -88,6 +88,25 @@ jobs:
             exit 1
           fi
 
+      # typecheck 不验证 npm tarball 内容：files 漏掉 dist-js 时发布仍会"成功"，
+      # 但安装者拿不到绑定。这里按发布产物本身断言。
+      - name: Verify npm package contents
+        working-directory: plugin
+        run: |
+          npm pack --dry-run --json > /tmp/npm-pack.json
+          python3 - <<'PY'
+          import json
+          files = {f["path"] for f in json.load(open("/tmp/npm-pack.json"))[0]["files"]}
+          required = {"dist-js/index.js", "dist-js/index.d.ts", "package.json"}
+          missing = required - files
+          if missing:
+              raise SystemExit(f"npm 包缺少文件: {sorted(missing)}")
+          leaked = {f for f in files if f.startswith(("guest-js/", "src/"))}
+          if leaked:
+              raise SystemExit(f"npm 包不应包含源码: {sorted(leaked)}")
+          print("npm 包内容正确:", sorted(files))
+          PY
+
   publish:
     name: Publish to crates.io
     needs: verify

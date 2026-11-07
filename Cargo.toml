@@ -32,6 +32,8 @@ repository.workspace = true
 keywords = ["tauri", "updater", "delta", "patch", "incremental"]
 categories = ["development-tools", "gui"]
 readme = "README.md"
+# GitHub Release 用的发布说明不属于 crate 内容；glob 同时覆盖历史与未来版本
+exclude = ["docs/release-*.md"]
 
 [features]
 # 默认不启用发布工具：库使用者不该为 clap / minisign / walkdir 付出编译成本。
