@@ -39,6 +39,14 @@ function Write-Rollback([string]$reason) {
     } catch { }
 }
 
+# 正向阶段事件：主进程退出后仍能判断"卡在哪一步"。
+function Write-Stage([string]$name) {
+    try {
+        $evt = @{ event = $name; time = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
+        [System.IO.File]::AppendAllText($eventsFile, $evt + [Environment]::NewLine)
+    } catch { }
+}
+
 function Test-FileHash([string]$path, [string]$expected) {
     if (-not (Test-Path -LiteralPath $path)) { return $false }
     try {
@@ -191,6 +199,7 @@ Set-Content -LiteralPath $marker -Value $workDir -Encoding UTF8
 # 清掉上一轮的回滚原因；健康检查失败时宿主会重新写入，脚本立即回滚。
 Remove-Item -LiteralPath $rollbackFlag -Force -ErrorAction SilentlyContinue
 [System.IO.File]::WriteAllText($stateFile, 'staged')
+Write-Stage 'delta.stage.replace_started'
 Start-App $target
 
 $deadline = (Get-Date).AddSeconds($confirmTimeout)
@@ -202,6 +211,7 @@ while ((Get-Date) -lt $deadline) {
 
 if (Test-Path -LiteralPath $flag) {
     Write-Log '新版本启动成功，清理备份。'
+    Write-Stage 'delta.stage.startup_confirmed'
     Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
 } else {
     $reason = 'startup_timeout'

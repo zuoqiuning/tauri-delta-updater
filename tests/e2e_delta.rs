@@ -568,6 +568,110 @@ async fn test_end_to_end_check_does_not_download() {
     );
 }
 
+/// prepare 之后清单升到更高版本、但新补丁下载失败时，旧 pending 必须保留：
+/// 不能出现"新版本没下到、旧产物也被清理掉了"的两头空。
+#[test]
+fn test_failed_update_keeps_prepared_pending() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(failed_update_keeps_prepared_pending());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn failed_update_keeps_prepared_pending() {
+    use sha2::{Digest, Sha256};
+
+    let sha256_hex = |bytes: &[u8]| {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        format!("{:x}", h.finalize())
+    };
+
+    let dir = tempdir().unwrap();
+    let work_dir = dir.path().to_path_buf();
+    let old_exe = work_dir.join("app.exe");
+    std::fs::write(&old_exe, b"old version").unwrap();
+
+    let new_bytes: Vec<u8> = (0..4096u32).map(|i| (i % 241) as u8).collect();
+    let new_exe = work_dir.join("app_new.exe");
+    std::fs::write(&new_exe, &new_bytes).unwrap();
+    let new_hash = sha256_hex(&new_bytes);
+
+    let patch_path = dir.path().join("update.patch");
+    tauri_delta_updater::create_patch(&old_exe, &new_exe, &patch_path)
+        .await
+        .unwrap();
+    let patch_bytes = std::fs::read(&patch_path).unwrap();
+    let patch_hash = sha256_hex(&patch_bytes);
+
+    let (sk, pk_b64) = signing_keypair();
+    let platform = tauri_delta_updater::current_platform();
+    let server = MockServer::start(HashMap::from([("/update.patch".to_string(), patch_bytes)]));
+
+    let (manifest_020, sig) = build_manifest(
+        &sk,
+        &server.base_url,
+        "0.2.0",
+        platform,
+        &patch_hash,
+        &new_hash,
+        None,
+    );
+    server.set("/latest.json", manifest_020);
+    server.set("/latest.json.sig", sig.into_bytes());
+
+    let updater = DeltaUpdater::new(
+        UpdateConfig::new(server.url("/latest.json"), pk_b64)
+            .current_version("0.1.0")
+            .executable_path(&old_exe)
+            .work_dir(&work_dir)
+            .auto_launch(false),
+    )
+    .unwrap();
+
+    match updater.prepare().await.unwrap() {
+        UpdateOutcome::Patched { staged } => {
+            assert!(staged.staged_exe().exists(), "prepare 应完成合并");
+        }
+        other => panic!("prepare 必须返回 Patched，实际 {other:?}"),
+    }
+    assert!(
+        updater.pending_update().await.unwrap().is_some(),
+        "prepare 应落盘待安装记录"
+    );
+
+    // 清单升到 0.3.0，但补丁下载持续 502：更新失败，旧 pending 不能被误删。
+    let (manifest_030, sig) = build_manifest(
+        &sk,
+        &server.base_url,
+        "0.3.0",
+        platform,
+        &patch_hash,
+        &new_hash,
+        None,
+    );
+    server.set("/latest.json", manifest_030);
+    server.set("/latest.json.sig", sig.into_bytes());
+    server.fail_next("/update.patch", 10);
+
+    assert!(updater.update().await.is_err(), "补丁 502 必须失败");
+
+    let pending = updater
+        .pending_update()
+        .await
+        .unwrap()
+        .expect("下载失败后旧 pending 必须保留");
+    let staged = pending.staged_exe().expect("单文件 pending");
+    assert!(staged.exists(), "已就绪产物不能被清理阶段删除");
+    assert!(pending.script_path().exists(), "替换脚本不能被清理阶段删除");
+}
+
 /// 端到端：prepare() 合并补丁但不启动替换脚本。
 ///
 /// 场景覆盖 prepare → UpToDate / Deferred 三条路径，调试构建的 async 状态机

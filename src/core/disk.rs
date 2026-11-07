@@ -86,7 +86,16 @@ pub fn cleanup_full_installers_sync(work_dir: &Path) {
 /// - `work_dir`：补丁、暂存文件与替换脚本
 /// - `exe_dir`：替换脚本产生的 `.bak` 备份（必须与目标 exe 同目录）
 pub async fn cleanup_previous_updates(work_dir: &Path, exe_path: &Path) {
+    cleanup_previous_updates_except(work_dir, exe_path, &[]).await;
+}
+
+/// 与 [`cleanup_previous_updates`] 相同，但保留 `keep` 中列出的路径。
+///
+/// `keep` 用于跨重启待安装记录引用的脚本与产物：下一次更新在下载前清理时，
+/// 不能删掉已经就绪的 pending 产物，否则新补丁下载失败会让用户"两头空"。
+pub async fn cleanup_previous_updates_except(work_dir: &Path, exe_path: &Path, keep: &[PathBuf]) {
     let exe_dir = exe_path.parent().unwrap_or(Path::new("."));
+    let keep = |path: &Path| keep.iter().any(|item| item == path);
 
     // 半截补丁只有在身份记录存在且新鲜时才保留（跨进程续传接着下）；
     // 否则按临时产物清理，避免中断的下载长期占用磁盘。
@@ -100,24 +109,35 @@ pub async fn cleanup_previous_updates(work_dir: &Path, exe_path: &Path) {
         }
     }
 
-    let _ = fs::remove_file(work_dir.join(artifacts::staged_file())).await;
-    let _ = fs::remove_file(work_dir.join(artifacts::STAGED_HOP_A)).await;
-    let _ = fs::remove_file(work_dir.join(artifacts::STAGED_HOP_B)).await;
-    let _ = fs::remove_file(work_dir.join(artifacts::updater_script())).await;
+    for name in [
+        artifacts::staged_file(),
+        artifacts::STAGED_HOP_A,
+        artifacts::STAGED_HOP_B,
+        artifacts::STAGED_BACKUP,
+        artifacts::updater_script(),
+        artifacts::bundle_updater_script(),
+        artifacts::bundle_repair_script(),
+    ] {
+        let path = work_dir.join(name);
+        if !keep(&path) {
+            let _ = fs::remove_file(&path).await;
+        }
+    }
     // 全量安装的临时解包目录（替换脚本已在执行时不会走到清理，安全）
     let _ = fs::remove_dir_all(work_dir.join(artifacts::FULL_STAGING_DIR)).await;
 
-    // 整包产物：暂存目录与脚本。
+    // 整包产物：暂存目录。
     //
     // 不删除 `BUNDLE_BACKUP_DIR`：它是替换脚本在"已改了一半文件"时唯一能整体
     // 回滚的旧内容。上一轮脚本崩溃后，下一次脚本启动会先还原它；
     // 客户端清理把它删掉，安装目录就会永久停在半新半旧的状态。
-    let _ = fs::remove_file(work_dir.join(artifacts::bundle_updater_script())).await;
-    let _ = fs::remove_file(work_dir.join(artifacts::bundle_repair_script())).await;
-    // 暂存路径可能被上次崩溃残留成一个普通文件（极端情况），
-    // 只删目录会静默失败，导致本轮解压无法创建目标目录。
-    let _ = fs::remove_file(work_dir.join(artifacts::bundle_staging_dir())).await;
-    let _ = fs::remove_dir_all(work_dir.join(artifacts::bundle_staging_dir())).await;
+    let staging = work_dir.join(artifacts::bundle_staging_dir());
+    if !keep(&staging) {
+        // 暂存路径可能被上次崩溃残留成一个普通文件（极端情况），
+        // 只删目录会静默失败，导致本轮解压无法创建目标目录。
+        let _ = fs::remove_file(&staging).await;
+        let _ = fs::remove_dir_all(&staging).await;
+    }
 
     // 备份目录存在时日志必须保留：修复脚本要靠它删除上次新增的文件。
     if !work_dir.join(artifacts::BUNDLE_BACKUP_DIR).is_dir() {

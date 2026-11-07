@@ -88,6 +88,9 @@ pub const STAGED_HOP_A: &str = "tdx_staged_hop_a";
 /// 多跳补丁链的中间产物（第二路）。
 pub const STAGED_HOP_B: &str = "tdx_staged_hop_b";
 
+/// 旧待安装产物的临时副本：新更新失败时用它还原，成功时删除。
+pub const STAGED_BACKUP: &str = "tdx_staged_backup";
+
 /// 更新脚本日志。
 pub const LOG_FILE: &str = "tdx_update.log";
 
@@ -95,9 +98,38 @@ pub const LOG_FILE: &str = "tdx_update.log";
 ///
 /// 回滚发生在宿主退出之后，进程内只能看到最终原因；关键阶段同时写入
 /// 这个文件，宿主下次启动时可以逐行解析，而不必用正则去读自由格式日志。
-/// 目前记录回滚事件（`delta.rollback.triggered`），字段固定为
-/// `event` / `reason` / `time`，未知字段应被忽略以兼容后续扩展。
+/// 记录回滚与正向阶段事件，字段固定为 `event` / `reason` / `time`，
+/// 未知字段应被忽略以兼容后续扩展。
 pub const EVENTS_FILE: &str = "tdx_events.jsonl";
+
+/// 事件名：替换脚本整体回滚。
+pub const EVENT_ROLLBACK: &str = "delta.rollback.triggered";
+/// 事件名：补丁下载并校验完成（Rust 侧写入）。
+pub const EVENT_DOWNLOAD_COMPLETED: &str = "delta.stage.download_completed";
+/// 事件名：替换脚本已生成（Rust 侧写入）。
+pub const EVENT_SCRIPT_READY: &str = "delta.stage.script_ready";
+/// 事件名：脚本开始替换文件（脚本侧写入）。
+pub const EVENT_REPLACE_STARTED: &str = "delta.stage.replace_started";
+/// 事件名：新版本启动确认成功（脚本侧写入）。
+pub const EVENT_STARTUP_CONFIRMED: &str = "delta.stage.startup_confirmed";
+
+/// 追加一行结构化事件；失败静默（诊断事件不能影响更新流程）。
+///
+/// 同步写入：几字节的追加不值得把整个调用方的 async 状态机变大
+/// （Windows 测试线程栈只有 2 MB，状态机膨胀会直接栈溢出）。
+/// 只有事件名，没有时间戳：JSONL 的行序就是时间序，脚本侧事件自带 `time`。
+pub fn append_event(work_dir: &std::path::Path, event: &str) {
+    use std::io::Write;
+
+    let line = format!("{{\"event\":\"{event}\"}}\n");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(work_dir.join(EVENTS_FILE))
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
 
 /// 整包替换日志：记录本次运行新增了哪些文件（崩溃后修复时删除它们）。
 ///

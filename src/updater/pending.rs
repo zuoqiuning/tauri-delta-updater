@@ -79,6 +79,19 @@ impl PendingUpdate {
             PendingArtifact::Exe { .. } => None,
         }
     }
+
+    /// 该记录引用的全部路径（脚本 + 产物）。
+    ///
+    /// 清理上一轮临时文件时必须保留这些路径：否则下一次更新会在下载前把
+    /// 已就绪的待安装产物删掉，下载失败时用户既没装上新版本也丢了旧产物。
+    pub fn referenced_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.script_path.clone()];
+        match &self.artifact {
+            PendingArtifact::Exe { staged_exe, .. } => paths.push(staged_exe.clone()),
+            PendingArtifact::Bundle { staging_dir, .. } => paths.push(staging_dir.clone()),
+        }
+        paths
+    }
 }
 
 impl DeltaUpdater {
@@ -162,6 +175,42 @@ impl DeltaUpdater {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(err) => Err(err.into()),
         }
+    }
+
+    /// 已验签清单是否比待安装记录更新。
+    ///
+    /// 返回 `true` 表示 pending 已过期：宿主应先 [`Self::discard_pending`]，
+    /// 再执行新的更新，否则会先装到 pending 的旧版本、再走一次更新。
+    /// 纯离线比较，不发起网络请求。
+    pub async fn pending_update_against(
+        &self,
+        manifest: &crate::models::manifest::UpdateManifest,
+    ) -> Result<bool> {
+        let Some(pending) = self.pending_update().await? else {
+            return Ok(false);
+        };
+        Ok(is_newer(&manifest.version, &pending.version))
+    }
+
+    /// 同步读取 pending 引用的路径，不做哈希校验。
+    ///
+    /// 只用于清理阶段保留产物：清理不需要重算哈希，也不能为了读取记录
+    /// 把整个更新流程的 async 状态机再放大（Windows 测试栈只有 2 MB）。
+    pub(super) fn referenced_paths_sync(&self) -> Vec<PathBuf> {
+        let path = self.work_dir().join(artifacts::PENDING_FILE);
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Vec::new();
+        };
+        serde_json::from_slice::<PendingUpdate>(&bytes)
+            .map(|record| record.referenced_paths())
+            .unwrap_or_default()
+    }
+
+    /// 作废旧记录。调用方必须已持有更新锁（新产物就绪路径在使用）。
+    ///
+    /// 同步删除：只是一个文件操作，不值得放大调用方的 async 状态机。
+    pub(super) fn clear_pending_record(&self) {
+        let _ = std::fs::remove_file(self.work_dir().join(artifacts::PENDING_FILE));
     }
 
     /// 写入待安装记录；`prepare` 在未立即启动替换时调用。

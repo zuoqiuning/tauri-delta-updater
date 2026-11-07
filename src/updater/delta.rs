@@ -3,10 +3,11 @@
 use super::bundle_flow::BundleResolution;
 use super::{emit, is_cancelled, DeltaUpdater, FallbackReason, Staged, UpdateEvent, UpdateOutcome};
 use crate::core::diff::apply_patch;
-use crate::core::disk::cleanup_previous_updates;
+use crate::core::disk::cleanup_previous_updates_except;
 use crate::core::safety::clear_failed_attempts;
 use crate::error::{DeltaError, Result};
 use crate::platform::PlatformUpdater;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use super::MAX_PATCH_BYTES;
@@ -93,7 +94,13 @@ impl DeltaUpdater {
         // 放在版本/灰度判断之后：`UpToDate` / `Deferred` 属于"没有新东西可做"，
         // 此时清理会连上次 `prepare` 落盘的待安装产物一起删掉——一次网络故障或
         // 灰度未命中的检查就能让已就绪的更新消失。真正要下载新产物时才清理。
-        cleanup_previous_updates(&self.work_dir, &self.executable_path).await;
+        //
+        // pending 引用的脚本与产物必须保留：新补丁下载失败时，用户仍能安装
+        // 上一轮已经就绪的版本，而不是"新版本没下到、旧产物也被删了"。
+        // 同步读取：清理阶段不需要完整校验，也不该放大本函数的 async 状态机。
+        let pending_paths = self.referenced_paths_sync();
+        cleanup_previous_updates_except(&self.work_dir, &self.executable_path, &pending_paths)
+            .await;
 
         // 整包优先：它覆盖 sidecar/resources，单文件补丁做不到。
         // 配置了整包清单但当前平台不支持整包替换时（Linux、非 .app 的 macOS），
@@ -159,6 +166,16 @@ impl DeltaUpdater {
         let staged_path = self.work_dir.join(crate::core::artifacts::staged_file());
         let hop_a = self.work_dir.join(crate::core::artifacts::STAGED_HOP_A);
         let hop_b = self.work_dir.join(crate::core::artifacts::STAGED_HOP_B);
+        // 旧 pending 引用同一个暂存路径：先复制一份保底副本，失败时还原。
+        // `apply_patch` 会覆盖该路径，不先备份就等于"下载失败也删掉旧产物"。
+        let mut pending_guard = if pending_paths.iter().any(|path| path == &staged_path) {
+            PendingArtifactGuard::new(
+                &staged_path,
+                self.work_dir.join(crate::core::artifacts::STAGED_BACKUP),
+            )
+        } else {
+            None
+        };
         let _ = tokio::fs::remove_file(&staged_path).await;
         let _ = tokio::fs::remove_file(&hop_a).await;
         let _ = tokio::fs::remove_file(&hop_b).await;
@@ -252,6 +269,12 @@ impl DeltaUpdater {
             let _ = tokio::fs::remove_file(&patch_path).await;
             let _ = tokio::fs::remove_file(self.work_dir.join(crate::core::artifacts::PATCH_META))
                 .await;
+
+            // 阶段事件：该跳产物已就绪。主进程退出后仍可判断"下载/合并走到哪一步"。
+            crate::core::artifacts::append_event(
+                &self.work_dir,
+                crate::core::artifacts::EVENT_DOWNLOAD_COMPLETED,
+            );
         }
         let _ = tokio::fs::remove_file(&hop_a).await;
         let _ = tokio::fs::remove_file(&hop_b).await;
@@ -276,6 +299,12 @@ impl DeltaUpdater {
             self.script_timings(),
         )?;
 
+        // 阶段事件：脚本已生成，接下来只剩宿主退出与脚本执行。
+        crate::core::artifacts::append_event(
+            &self.work_dir,
+            crate::core::artifacts::EVENT_SCRIPT_READY,
+        );
+
         // 启动替换脚本之后就无法撤销了：这是最后一次取消窗口。
         if is_cancelled(cancel) {
             let _ = tokio::fs::remove_file(&staged_path).await;
@@ -295,6 +324,13 @@ impl DeltaUpdater {
             launched: std::sync::Arc::new(AtomicBool::new(false)),
         };
 
+        // 新产物已就绪：旧记录（如有）作废，避免 auto_launch 路径下
+        // 下次启动重复安装上一版产物。
+        if let Some(guard) = pending_guard.as_mut() {
+            guard.commit();
+        }
+        self.clear_pending_record();
+
         // 按需启动替换脚本；不立即启动时落盘待安装记录，供下次启动消费。
         if launch {
             staged.launch()?;
@@ -310,6 +346,48 @@ impl DeltaUpdater {
         emit(&mut on_event, UpdateEvent::Ready { version });
 
         Ok(UpdateOutcome::Patched { staged })
+    }
+}
+
+/// 旧待安装产物的保底副本：新更新失败时还原，成功时丢弃。
+///
+/// `apply_patch` 的最后一跳会覆盖暂存路径；如果它属于一条 pending 记录，
+/// 失败时必须把旧产物放回去，否则用户"新版本没下到、旧产物也没了"。
+struct PendingArtifactGuard {
+    original: PathBuf,
+    keep: PathBuf,
+    committed: bool,
+}
+
+impl PendingArtifactGuard {
+    fn new(original: &Path, keep: PathBuf) -> Option<Self> {
+        if !original.is_file() {
+            return None;
+        }
+        let _ = std::fs::remove_file(&keep);
+        std::fs::copy(original, &keep).ok()?;
+        Some(Self {
+            original: original.to_path_buf(),
+            keep,
+            committed: false,
+        })
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+        let _ = std::fs::remove_file(&self.keep);
+    }
+}
+
+impl Drop for PendingArtifactGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if self.keep.is_file() {
+            let _ = std::fs::remove_file(&self.original);
+            let _ = std::fs::rename(&self.keep, &self.original);
+        }
     }
 }
 

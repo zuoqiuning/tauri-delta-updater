@@ -34,6 +34,12 @@ write_rollback() {
         "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$EVENTS_FILE" 2>/dev/null || true
 }
 
+# 正向阶段事件：主进程退出后仍能判断"卡在哪一步"。
+write_stage() {
+    printf '{"event":"%s","time":"%s"}\n' "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        >> "$EVENTS_FILE" 2>/dev/null || true
+}
+
 file_sha() {
     if command -v sha256sum > /dev/null 2>&1; then
         sha256sum "$1" | cut -d' ' -f1
@@ -152,12 +158,14 @@ printf '%s' "$WORK_DIR" > "$MARKER" 2>/dev/null
 # 清掉上一轮的回滚原因；健康检查失败时宿主会重新写入，脚本立即回滚。
 rm -f "$ROLLBACK_FILE"
 printf '%s' 'staged' > "$STATE_FILE" 2>/dev/null
+write_stage 'delta.stage.replace_started'
 launch_app
 
 WAITED=0
 while [ "$WAITED" -lt "$CONFIRM_TIMEOUT" ]; do
     if [ -f "$SUCCESS_FLAG" ]; then
         log '新版本启动成功，清理备份。'
+        write_stage 'delta.stage.startup_confirmed'
         rm -rf "$BACKUP"
         # 脚本不删除自身：执行期间删除正在被读取的文件有竞态。
         exit 0

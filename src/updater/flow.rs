@@ -380,6 +380,27 @@ impl DeltaUpdater {
         self.run_entry(false, None, None, None).await
     }
 
+    /// [`Self::prepare`] 的 UI 语义版本：产物就绪时返回 [`UpdateResult::Ready`]。
+    ///
+    /// 宿主不需要匹配 `UpdateOutcome::Patched` / `Bundled`，也不会把 `Ready`
+    /// 误当成"替换脚本已启动"。修复路径仍然立即启动脚本（它需要宿主尽快退出）。
+    pub async fn prepare_ui(&self) -> Result<UpdateResult> {
+        let outcome = self.prepare().await?;
+        match outcome {
+            UpdateOutcome::Patched { staged } => Ok(UpdateResult::Ready {
+                version: staged.manifest().version.clone(),
+            }),
+            UpdateOutcome::Bundled { staged } => Ok(UpdateResult::Ready {
+                version: staged.manifest().version.clone(),
+            }),
+            UpdateOutcome::Repair { staged, reason } => {
+                staged.launch()?;
+                Ok(UpdateResult::RepairRequired { reason })
+            }
+            other => Ok(other.into()),
+        }
+    }
+
     /// [`Self::prepare`] 的可观察、可取消版本。
     ///
     /// 与 `install_with_events` 的区别只在于**不启动替换脚本**：

@@ -549,6 +549,7 @@ mod ui_result_tests {
             needs_repair: false,
             startup_state: None,
             last_rollback: None,
+            rollback_history: Vec::new(),
             authenticode: None,
             authenticode_check_skipped: None,
             log_path: PathBuf::from("work/tdx_update.log"),

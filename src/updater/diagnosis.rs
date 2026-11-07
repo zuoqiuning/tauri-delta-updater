@@ -60,7 +60,14 @@ pub struct Diagnosis {
     ///
     /// 失败发生在宿主退出之后，进程内拿不到；脚本把原因写入工作目录，
     /// 新版本成功确认启动后自动清除。UI 可据此解释"为什么重启后版本没变"。
+    /// 成功后本字段为 `None`；历史回滚链见 [`Self::rollback_history`]。
     pub last_rollback: Option<String>,
+    /// 历史回滚链：从 `tdx_events.jsonl` 过滤出的 `delta.rollback.triggered`。
+    ///
+    /// 与 [`Self::last_rollback`] 的区别：后者只反映当前未清除的回滚标记，
+    /// 成功启动一次后就会被清空；本字段保留完整历史，适合诊断页展示
+    /// "这个版本之前为什么回滚过"。最多保留最近 20 条。
+    pub rollback_history: Vec<ScriptEvent>,
     /// Windows 上原版本是否通过 Authenticode 校验；其它平台为 `None`。
     ///
     /// `Some(true)` 表示已签名，新版本产物未签名会被直接阻断。
@@ -241,6 +248,12 @@ impl DeltaUpdater {
         let install_dir = self.executable_path.parent();
         let (authenticode, authenticode_check_skipped) =
             authenticode_diagnostics(&self.executable_path);
+        let script_events = read_script_events(&self.work_dir);
+        let rollback_history = script_events
+            .iter()
+            .filter(|event| event.event == crate::core::artifacts::EVENT_ROLLBACK)
+            .cloned()
+            .collect();
         Diagnosis {
             executable: self.executable_path.clone(),
             work_dir: self.work_dir.clone(),
@@ -258,11 +271,12 @@ impl DeltaUpdater {
             needs_repair: self.needs_bundle_repair(),
             startup_state: crate::core::startup::read(&self.work_dir),
             last_rollback: read_rollback_reason(&self.work_dir),
+            rollback_history,
             authenticode,
             authenticode_check_skipped,
             log_path: self.work_dir.join(crate::core::artifacts::LOG_FILE),
             events_path: self.work_dir.join(crate::core::artifacts::EVENTS_FILE),
-            script_events: read_script_events(&self.work_dir),
+            script_events,
             privilege_tools_available: privilege_tools_available(),
             insecure_transport: self.config.uses_insecure_transport(),
         }

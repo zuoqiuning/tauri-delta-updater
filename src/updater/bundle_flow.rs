@@ -122,6 +122,11 @@ impl DeltaUpdater {
             return Err(DeltaError::Cancelled);
         }
 
+        crate::core::artifacts::append_event(
+            &self.work_dir,
+            crate::core::artifacts::EVENT_DOWNLOAD_COMPLETED,
+        );
+
         let script = PlatformUpdater::generate_bundle_updater_with(
             &self.executable_path,
             &staging_dir,
@@ -130,6 +135,11 @@ impl DeltaUpdater {
             &self.work_dir,
             self.script_timings(),
         )?;
+
+        crate::core::artifacts::append_event(
+            &self.work_dir,
+            crate::core::artifacts::EVENT_SCRIPT_READY,
+        );
 
         // 启动替换脚本之后就无法撤销了：这是最后一次取消窗口。
         if is_cancelled(cancel) {
@@ -148,6 +158,10 @@ impl DeltaUpdater {
             manifest: Box::new(bundle_manifest),
             launched: std::sync::Arc::new(AtomicBool::new(false)),
         };
+
+        // 新产物已就绪：旧记录（如有）作废，避免 auto_launch 路径下
+        // 下次启动重复安装上一版产物。
+        self.clear_pending_record();
 
         if launch {
             staged.launch()?;
