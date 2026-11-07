@@ -98,3 +98,29 @@ pub(crate) fn is_unencrypted_payload(payload: &[u8]) -> bool {
 pub(crate) fn derive_public_key(sk: &minisign::SecretKey) -> Result<minisign::PublicKey, String> {
     minisign::PublicKey::from_secret_key(sk).map_err(|e| format!("无法导出公钥: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{base64_payload, is_unencrypted_payload, parse_secret_key};
+
+    /// 锁死对 minisign 内部布局的经验性依赖：升级依赖时这个测试先失败，
+    /// 而不是让加密密钥被误判成未加密、签名结果无法通过客户端校验。
+    #[test]
+    fn distinguishes_encrypted_and_plain_key_payloads() {
+        let plain = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let plain_text = plain.sk.to_box(None).unwrap().into_string();
+        let plain_payload = base64_payload(&plain_text).unwrap();
+        assert!(is_unencrypted_payload(&plain_payload));
+        assert!(parse_secret_key(plain_text.as_bytes(), None).is_ok());
+
+        let encrypted =
+            minisign::KeyPair::generate_encrypted_keypair(Some("secret".into())).unwrap();
+        let encrypted_text = encrypted.sk.to_box(None).unwrap().into_string();
+        assert!(!is_unencrypted_payload(
+            &base64_payload(&encrypted_text).unwrap()
+        ));
+        let err = parse_secret_key(encrypted_text.as_bytes(), None).unwrap_err();
+        assert!(err.contains("私钥已加密"), "{err}");
+        assert!(parse_secret_key(encrypted_text.as_bytes(), Some("secret")).is_ok());
+    }
+}

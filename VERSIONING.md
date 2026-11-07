@@ -83,6 +83,15 @@
   crates.io；需要分发时用 git tag 或本地构建。
 - 构建元数据（`+build.1`）不使用，避免与 crates.io 版本解析冲突。
 
+### 1.4 已知偏离（0.2.1）
+
+`0.2.1` 给 `UpdateConfig` / `UpdateManifest` / `PlatformInfo` 新增了可选字段。
+这三个结构体未标记 `#[non_exhaustive]`，严格按 §1.2 属于破坏性变更；当时按
+PATCH 发布，理由是新增字段都带 serde 默认值、不改变现有构造路径。
+
+**下一 MINOR 版本会给这三个结构体补 `#[non_exhaustive]`**，届时字面量构造需要
+加 `..Default::default()`。在此之前，新增公开结构体字段不再按 PATCH 处理。
+
 ---
 
 ## 2. 当前版本状态

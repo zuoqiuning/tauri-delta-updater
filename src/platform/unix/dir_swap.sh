@@ -67,11 +67,11 @@ restart_old() {
 }
 
 verify_staging() {
-    # shell 的返回码：0 = 通过，非 0 = 失败。用 _fail 而不是 _ok，
+    # shell 的返回码：0 = 通过，非 0 = 失败。用 _verify_failed 而不是 _ok，
     # 避免把"1 = 正常"这套布尔语义直接 return 出去（那会反过来）。
-    _fail=0
+    _verify_failed=0
 __VERIFY__
-    return $_fail
+    return $_verify_failed
 }
 
 # 应用目录必须可写：系统级目录对普通用户只读时不做任何文件操作，

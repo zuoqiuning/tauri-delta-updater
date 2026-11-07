@@ -215,7 +215,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "未配置 NPM_TOKEN，跳过 npm 发布"
+            echo "::warning::未配置 NPM_TOKEN，跳过 npm 发布；npm 包不会上线"
+            echo "### npm publish skipped: NPM_TOKEN not configured" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           npm publish --access public

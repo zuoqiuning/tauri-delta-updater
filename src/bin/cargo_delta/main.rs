@@ -18,13 +18,14 @@ fn main() {
 fn run(cli: Cli) -> Result<(), String> {
     let project = Project::discover(cli.project.as_deref())?;
     let is_init = matches!(cli.command, Command::Init { .. });
+    let is_migrate = matches!(&cli.command, Command::Migrate { .. });
     let changes = match cli.command {
         Command::Init {
             endpoint,
             pubkey,
             bundle_endpoint,
             force,
-            registry,
+            registry: _,
             check,
         } => {
             if check {
@@ -41,6 +42,11 @@ fn run(cli: Cli) -> Result<(), String> {
                             "未检测到 plugins.updater：全量回退由 install_full 负责（单栈）。"
                         );
                     }
+                    if project.dependency_is_git()? {
+                        println!(
+                            "提示：插件依赖仍是 git 形式；插件已发布，重新运行 init --apply 可切到版本依赖。"
+                        );
+                    }
                     print_next_steps(true);
                     return Ok(());
                 }
@@ -49,18 +55,12 @@ fn run(cli: Cli) -> Result<(), String> {
                     missing.join("\n  - ")
                 ));
             }
-            if registry {
-                println!(
-                    "[WARN] 插件尚未发布到 crates.io：--registry 写出的版本依赖在发布前无法解析；\
-                     当前请使用默认 git 依赖。"
-                );
-            }
             project.init_changes(
                 endpoint.trim(),
                 pubkey.trim(),
                 bundle_endpoint.as_deref(),
                 force,
-                registry,
+                false,
             )?
         }
         Command::Migrate {
@@ -83,6 +83,14 @@ fn run(cli: Cli) -> Result<(), String> {
         } else {
             println!("\n未写入任何文件。确认 diff 后加 --apply 落盘。");
         }
+    }
+
+    if is_migrate {
+        println!("\n迁移注意：");
+        println!(
+            "  - fallback_policy 默认 transport：主端点 404 不会切到备用；需要旧行为请设 \"any\""
+        );
+        println!("  - 前端进度监听需从 callback 改为 Channel 事件（命令签名不同）");
     }
 
     print_next_steps(is_init);

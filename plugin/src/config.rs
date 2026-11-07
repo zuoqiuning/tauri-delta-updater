@@ -226,6 +226,24 @@ fn expand_endpoint(
         );
     }
     let platform = tauri_delta_updater::current_platform();
+    expand_with_platform(url, platform, current_version, bundle_type, channel)
+}
+
+/// 展开占位符，平台作为参数传入以便测试 unknown 组合。
+fn expand_with_platform(
+    url: &str,
+    platform: &str,
+    current_version: &str,
+    bundle_type: Option<&str>,
+    channel: &str,
+) -> Result<String, String> {
+    let needs_platform = url.contains("{{target}}") || url.contains("{{arch}}");
+    if needs_platform && platform.contains("unknown") {
+        return Err(format!(
+            "无法识别当前平台（{platform}），不能展开 {{{{target}}}} / {{{{arch}}}}；\
+             请在 endpoints 中直接写具体平台路径"
+        ));
+    }
     let (target, arch) = platform.split_once('-').unwrap_or((platform, ""));
     let mut expanded = url
         .replace("{{target}}", target)
@@ -258,4 +276,46 @@ pub(crate) fn read_file_config<R: Runtime>(
         .into_update_config(&version)
         .map_err(std::io::Error::other)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_with_platform;
+
+    #[test]
+    fn expands_known_platform_placeholders() {
+        let url = expand_with_platform(
+            "https://cdn/{{target}}/{{arch}}/{{channel}}/{{current_version}}.json",
+            "windows-x86_64",
+            "1.2.3",
+            None,
+            "beta",
+        )
+        .unwrap();
+        assert_eq!(url, "https://cdn/windows/x86_64/beta/1.2.3.json");
+    }
+
+    /// `{{target}}` / `{{arch}}` 在未知平台上必须报错，而不是展开成 `unknown`。
+    /// 没有用到平台占位符时，未知平台不影响更新。
+    #[test]
+    fn rejects_unknown_platform_only_when_placeholder_is_used() {
+        assert!(expand_with_platform(
+            "https://cdn/latest.json",
+            "unknown-unknown",
+            "1.0.0",
+            None,
+            "stable"
+        )
+        .is_ok());
+
+        let err = expand_with_platform(
+            "https://cdn/{{target}}.json",
+            "unknown-unknown",
+            "1.0.0",
+            None,
+            "stable",
+        )
+        .unwrap_err();
+        assert!(err.contains("无法识别当前平台"), "{err}");
+    }
 }

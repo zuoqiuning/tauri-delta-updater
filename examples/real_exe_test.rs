@@ -1,6 +1,8 @@
 //! 用真实可执行文件验证增量更新与静默替换流程。
 //!
 //! 需要 `real_test/` 目录下存在 `Sereno_0.1.0.exe` 与 `Sereno_0.1.1.exe`。
+//! 准备方式：把任意两个相邻构建版本重命名为上述文件名放进 `real_test/`；
+//! 该目录被 `.gitignore` 忽略，不会进入发布包。
 
 use std::path::PathBuf;
 use std::time::Instant;

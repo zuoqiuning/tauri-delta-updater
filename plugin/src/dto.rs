@@ -110,3 +110,18 @@ impl From<DeltaError> for ErrorDto {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ErrorDto;
+
+    /// `launch` 在没有已就绪产物时必须返回稳定错误码，前端按码分支。
+    #[test]
+    fn launch_without_pending_has_stable_code() {
+        let err = ErrorDto::nothing_to_launch();
+        assert_eq!(err.code, "nothing_to_launch");
+        assert!(!err.retryable);
+        assert!(!err.security);
+        assert!(err.message.contains("prepare"));
+    }
+}

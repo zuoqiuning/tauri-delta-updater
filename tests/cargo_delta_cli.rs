@@ -99,10 +99,10 @@ fn init_apply_writes_all_files() {
     assert!(cargo.contains("tauri-plugin-delta-updater"));
     assert!(
         cargo.contains(&format!(
-            "tauri-plugin-delta-updater = {{ git = \"{}\" }}",
-            env!("CARGO_PKG_REPOSITORY")
+            "tauri-plugin-delta-updater = \"{}\"",
+            env!("CARGO_PKG_VERSION")
         )),
-        "默认必须写可直接构建的 git 依赖，而不是不存在的版本号: {cargo}"
+        "插件已发布，默认必须写版本依赖: {cargo}"
     );
 
     let (code, _stdout, stderr) = run(

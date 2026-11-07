@@ -7,9 +7,6 @@ use std::path::{Path, PathBuf};
 /// 插件依赖名（与 `plugin/Cargo.toml` 的 package 名一致）。
 const PLUGIN_DEP: &str = "tauri-plugin-delta-updater";
 
-/// 仓库地址：插件尚未发布到 crates.io 时默认用 git 依赖，保证接入后能编译。
-const PLUGIN_REPO: &str = env!("CARGO_PKG_REPOSITORY");
-
 /// 一次待写入的文件变更（dry-run 时只打印 diff）。
 pub(crate) struct Change {
     pub(crate) path: PathBuf,
@@ -127,6 +124,16 @@ impl Project {
     pub(crate) fn uses_official_updater(&self) -> Result<bool, String> {
         let (_, root) = read_json_or(&self.config_path, json!({}))?;
         Ok(root.pointer("/plugins/updater").is_some())
+    }
+
+    /// 依赖是否仍是 git 形式；插件发布后应改为版本依赖。
+    pub(crate) fn dependency_is_git(&self) -> Result<bool, String> {
+        let cargo = fs::read_to_string(&self.cargo_toml)
+            .map_err(|e| format!("读取 {} 失败: {e}", self.cargo_toml.display()))?;
+        Ok(cargo.lines().any(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with(PLUGIN_DEP) && trimmed.contains("git =")
+        }))
     }
 
     pub(crate) fn migrate_changes(
@@ -285,16 +292,16 @@ fn remove_plugin(config: &str, name: &str) -> Result<String, String> {
 
 /// 在 `[dependencies]` 下补齐插件依赖；已存在时不改动。
 ///
-/// 默认写 git 依赖：插件尚未发布到 crates.io，写版本号会让 `cargo build`
-/// 直接失败。`registry` 为 true 时写注册表版本，供插件发布后使用。
-fn ensure_dependency(text: &str, registry: bool) -> String {
+/// 插件已随 0.2.1 发布到 crates.io，因此写与工具自身一致的版本号；
+/// `_registry` 仅为旧脚本保留参数兼容，行为与默认一致。
+fn ensure_dependency(text: &str, _registry: bool) -> String {
     if has_dependency(text) {
         return text.to_string();
     }
 
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut lines: Vec<&str> = text.lines().collect();
-    let dependency = dependency_line(registry);
+    let dependency = dependency_line();
     let insert_at = lines
         .iter()
         .position(|line| line.trim() == "[dependencies]")
@@ -315,13 +322,9 @@ fn ensure_dependency(text: &str, registry: bool) -> String {
     rendered
 }
 
-/// 插件依赖声明。
-fn dependency_line(registry: bool) -> String {
-    if registry {
-        format!("{PLUGIN_DEP} = \"{}\"", env!("CARGO_PKG_VERSION"))
-    } else {
-        format!("{PLUGIN_DEP} = {{ git = \"{PLUGIN_REPO}\" }}")
-    }
+/// 插件依赖声明：版本号与工具自身一致，避免写死旧版本。
+fn dependency_line() -> String {
+    format!("{PLUGIN_DEP} = \"{}\"", env!("CARGO_PKG_VERSION"))
 }
 
 fn has_dependency(text: &str) -> bool {
@@ -387,26 +390,21 @@ mod tests {
         }
     }
 
-    /// 默认写 git 依赖（插件未发布时可直接构建），`--registry` 写当前版本。
+    /// 默认写版本依赖（插件已发布），与 `--registry` 行为一致。
     #[test]
     fn dependency_source_is_valid_cargo_syntax() {
-        let git = ensure_dependency("[dependencies]\n", false);
-        assert!(
-            git.contains(&format!(
-                "tauri-plugin-delta-updater = {{ git = \"{}\" }}",
-                env!("CARGO_PKG_REPOSITORY")
-            )),
-            "默认必须写 git 依赖: {git}"
+        let expected = format!(
+            "[dependencies]\ntauri-plugin-delta-updater = \"{}\"",
+            env!("CARGO_PKG_VERSION")
         );
-
-        let registry = ensure_dependency("[dependencies]\n", true);
         assert_eq!(
-            registry.trim_end(),
-            format!(
-                "[dependencies]\ntauri-plugin-delta-updater = \"{}\"",
-                env!("CARGO_PKG_VERSION")
-            ),
-            "注册表依赖必须与工具版本一致"
+            ensure_dependency("[dependencies]\n", false).trim_end(),
+            expected
+        );
+        assert_eq!(
+            ensure_dependency("[dependencies]\n", true).trim_end(),
+            expected,
+            "旧 --registry 参数必须保持同样结果"
         );
     }
 }

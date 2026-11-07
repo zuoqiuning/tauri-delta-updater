@@ -123,4 +123,12 @@ mod tests {
             );
         }
     }
+
+    /// Linux 的 `min_os` 比较内核 release，不是发行版版本：写 `24.04` 会把
+    /// 所有内核判成过低。测试锁死这个语义，避免有人把发行版版本当成内核版本。
+    #[test]
+    fn linux_min_os_uses_kernel_release() {
+        assert_eq!(compare("5.15.0-91-generic", "24.04"), Some(Ordering::Less));
+        assert_eq!(compare("6.8.0-40-generic", "5.15"), Some(Ordering::Greater));
+    }
 }

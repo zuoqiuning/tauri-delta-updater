@@ -59,9 +59,9 @@ cargo delta init ... --apply     # writes the files
 cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
 ```
 
-`init` writes the plugin as a **git dependency by default**: the plugin crate is
-not published on crates.io yet, and a version-only line would make `cargo build`
-fail. Once it is published, pass `--registry` to write `"<version>"` instead.
+`init` writes the plugin as a **version dependency** (`0.2`), matching the
+published plugin crate. `--registry` is kept for older scripts and produces the
+same line. `--check` also warns when a project still pins the git form.
 
 Already on the official updater? `cargo delta migrate` copies
 `plugins.updater` into `plugins.delta-updater` and keeps the official plugin as
@@ -93,21 +93,18 @@ or absent (single-stack, full fallback owned by `install_full`).
 
 ```toml
 [dependencies]
-# Not on crates.io yet; the git form works today and is what `cargo delta init` writes.
-tauri-plugin-delta-updater = { git = "https://github.com/zuoqiuning/tauri-delta-updater" }
-# Published later: tauri-plugin-delta-updater = "0.2"
-# Local checkout:   tauri-plugin-delta-updater = { path = "../plugin" }
+tauri-plugin-delta-updater = "0.2"
+# Local checkout: tauri-plugin-delta-updater = { path = "../plugin" }
 ```
 
 The plugin is distributed as **two packages**: this Rust crate (engine, commands,
 permissions) and a separate npm package with the typed frontend bindings. The
 crate tarball deliberately excludes `guest-js` / `dist-js`, so `cargo add` alone
 gives you `invoke('plugin:delta-updater|...')` — not typed imports. Add the npm
-package in your frontend when you want the bindings (not published yet; install
-from a checkout):
+package in your frontend when you want the bindings:
 
 ```bash
-npm install /path/to/repo/plugin
+npm install tauri-plugin-delta-updater
 ```
 
 `src-tauri/capabilities/default.json`:
@@ -578,7 +575,9 @@ tauri-delta-updater = { version = "0.2", features = ["generator"] }
 ```
 
 `rust-version = "1.88"` (the real floor of the `reqwest 0.13` → `url` → `icu_*`
-chain; declared honestly and checked by a CI job).
+chain; declared honestly and checked by a CI job). `reqwest` is constrained to
+`>=0.13, <0.14`: an app still on 0.12 will resolve two copies, so upgrade the
+app's `reqwest` before adopting this engine.
 
 ### 2. Client-side integration (Tauri backend)
 

@@ -202,14 +202,14 @@ fn verify_line(staging_dir: &Path, file: &BundleFile) -> String {
             let missing = shell_quote(&format!("暂存文件缺失: {}", file.path));
             let mismatch = shell_quote(&format!("暂存文件哈希不符: {}", file.path));
             format!(
-                "    if [ ! -f {staged} ]; then\n        log {missing}\n        _fail=1\n    else\n        _sha=$(file_sha {staged})\n        if [ -n \"$_sha\" ] && [ \"$_sha\" != {hash} ]; then\n            log {mismatch}\n            _fail=1\n        fi\n    fi\n",
+                "    if [ ! -f {staged} ]; then\n        log {missing}\n        _verify_failed=1\n    else\n        _sha=$(file_sha {staged})\n        if [ -n \"$_sha\" ] && [ \"$_sha\" != {hash} ]; then\n            log {mismatch}\n            _verify_failed=1\n        fi\n    fi\n",
                 hash = shell_quote(&file.sha256.to_lowercase())
             )
         }
         BundleFileKind::Symlink => {
             let missing = shell_quote(&format!("暂存符号链接缺失: {}", file.path));
             format!(
-                "    if [ ! -L {staged} ]; then\n        log {missing}\n        _fail=1\n    fi\n"
+                "    if [ ! -L {staged} ]; then\n        log {missing}\n        _verify_failed=1\n    fi\n"
             )
         }
     }

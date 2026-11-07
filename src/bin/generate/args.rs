@@ -11,12 +11,23 @@ use std::path::PathBuf;
     about = "生成 Tauri 增量更新的 latest.json 与补丁",
     long_about = None,
     after_help = r#"示例（私钥从 TAURI_SIGNING_PRIVATE_KEY 读取）：
-  generate --old-dir ./old_binaries --app-binary target/release/app.exe \
-           --installer dist/app_0.2.0_x64-setup.exe --version 0.2.0 \
-           --base-url https://cdn.example.com/releases/0.2.0 \
-           --archive-dir ./old_binaries --report release-report.json
-产物：latest.json、latest.json.sig 与补丁文件。
---archive-dir 会把本次主程序归档为下一次发布的基线；--report 输出机器可读的补丁结果。"#
+  最小（只发主程序补丁）：
+    generate --old-dir ./old_binaries --app-binary target/release/app.exe \
+             --version 0.2.0 --base-url https://cdn.example.com/releases/0.2.0
+  含全量回退（安装包与主程序哈希不同）：
+    generate --old-dir ./old_binaries --app-binary target/release/app.exe \
+             --installer dist/app_0.2.0_x64-setup.exe --version 0.2.0 \
+             --base-url https://cdn.example.com/releases/0.2.0
+  整包（sidecar / resources，额外生成 latest.bundle.json）：
+    generate --old-dir ./old_binaries --app-binary target/release/app.exe \
+             --new-app-dir ./app --old-app-dir ./v0.1.0 --version 0.2.0 \
+             --base-url https://cdn.example.com/releases/0.2.0
+  双签（密钥轮换期，清单与安装包都会签两块）：
+    generate ... --secondary-private-key ./new.key
+
+目录参数：--old-dir 是历史主程序目录，--installer 是安装包（用于全量回退），
+--new-app-dir / --old-app-dir 是整包目录。--archive-dir 归档本次基线，
+--report 输出机器可读的补丁结果。"#
 )]
 pub(crate) struct Args {
     /// 历史版本**主程序**所在目录（不是安装包）。
@@ -54,6 +65,9 @@ pub(crate) struct Args {
     pub(crate) private_key: String,
 
     /// 私钥口令（加密私钥时必填）。
+    ///
+    /// CI 里若 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 已设置但密钥未加密，
+    /// 需显式传 `--password ""` 覆盖环境变量。
     #[arg(long, env = "TAURI_SIGNING_PRIVATE_KEY_PASSWORD")]
     pub(crate) password: Option<String>,
 
@@ -75,6 +89,7 @@ pub(crate) struct Args {
 
     /// 目标平台的最低系统版本（如 Windows `10.0.19045`、macOS `13.0`、Linux 内核 `5.15`）。
     ///
+    /// Linux 比较的是内核 release，不是发行版版本（写 `24.04` 不会生效）。
     /// 写入受清单签名保护的 `platforms[].min_os`；省略即清除该平台的门槛。
     #[arg(long, value_name = "VERSION")]
     pub(crate) min_os: Option<String>,

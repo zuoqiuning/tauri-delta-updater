@@ -70,6 +70,12 @@ cargo run --all-features --bin cargo-delta -- delta init --project <dir> --endpo
   the template and its real-execution test.
 - Do not add error handling for cases that cannot happen. Do add it at
   boundaries (HTTP responses, archive bytes, user-supplied paths).
+- `minisign` is pinned to 0.7.9 and `generate/keys.rs::is_unencrypted_payload`
+  relies on its payload layout. Before upgrading, run
+  `cargo test --all-features distinguishes_encrypted_and_plain_key_payloads`
+  and confirm encrypted/plain keys are still classified correctly.
+- The project is maintained by a single maintainer; issue/PR response time is
+  not guaranteed. Security reports follow `SECURITY.md`.
 
 ## Commit / PR
 

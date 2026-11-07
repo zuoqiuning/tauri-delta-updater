@@ -315,13 +315,16 @@ fn set_cancel(state: &State<'_, UpdaterState>, token: Option<CancelToken>) {
     }
 }
 
+/// 退出前的等待时间：让命令返回值与最后一条事件到达前端。
+const EXIT_DELAY: Duration = Duration::from_millis(500);
+
 /// 稍后退出进程：先让命令的返回值与最后一条事件到达前端，再退出。
 ///
 /// 立即退出会杀掉 IPC，前端收不到最终状态；500ms 对本地 IPC 足够宽裕。
 fn exit_soon<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(EXIT_DELAY);
         app.exit(0);
     });
 }

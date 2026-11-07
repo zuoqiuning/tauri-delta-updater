@@ -131,6 +131,9 @@ pub enum UpdateOutcome {
     /// 若 `auto_launch` 为 `true`（默认），替换脚本已经启动；
     /// 否则需要宿主调用 [`Staged::launch`]。
     ///
+    /// 插件 `prepare` 命令把这个变体映射为 [`UpdateResult::Ready`]
+    /// （脚本尚未启动），`install` 路径则映射为 [`UpdateResult::Updated`]。
+    ///
     /// # 调用方必须让当前进程退出
     ///
     /// 替换脚本会等待旧进程退出后才替换可执行文件。
@@ -255,7 +258,12 @@ pub enum UpdateOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum UpdateResult {
-    /// 已通过增量补丁更新。
+    /// 已通过增量补丁更新，**替换脚本已启动**。
+    ///
+    /// # 调用方必须让当前进程退出
+    ///
+    /// 脚本会等旧 PID 消失后才替换文件；不退出会等到超时并回滚。
+    /// 插件命令会自动退出；直接用库时用 `std::process::exit(0)` 或 `app.exit(0)`。
     ///
     /// `install_full()` 也返回该变体：此时表示**安装器已启动**，
     /// 安装失败的回滚由安装器负责，而不是本引擎的备份/修复脚本。
