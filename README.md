@@ -943,6 +943,29 @@ if let Some(patch) = manifest.find_patch(current_version, current_platform()) {
 
 ### 3. CI/CD integration (release workflow)
 
+The release path is one command. Install the CLI once, then publish from your build output:
+
+```bash
+cargo install tauri-delta-updater --features generator
+
+cargo delta release \
+  --from old_binaries \
+  --to 0.1.1 \
+  --app-binary ./target/release/Sereno.exe \
+  --installer ./target/release/Sereno_0.1.1_x64-setup.exe \
+  --base-url https://your-cos-endpoint.com \
+  --output-dir ./dist \
+  --archive-dir old_binaries \
+  --report ./dist/release-report.json \
+  --fail-on-empty
+```
+
+`--from` is repeatable and accepts either a directory of old executables or an
+explicit baseline binary. Every flag documented below is also available under
+`cargo delta release` with the same meaning. The standalone `generate` binary
+and the library API (`tauri_delta_updater::release::run_release`) remain
+available for custom pipelines.
+
 Build the CLI generator (the `generator` feature is required):
 
 ```bash

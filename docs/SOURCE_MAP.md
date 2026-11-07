@@ -9,7 +9,7 @@
 | 检查更新（不下载） | `src/updater/flow.rs` (`check`) | `src/updater/fetch.rs`、`src/updater/outcome.rs` | `tests/e2e_delta.rs`、`tests/integration.rs` |
 | 单文件增量（补丁 → 替换） | `src/updater/delta.rs` (`run_locked`) | `src/updater/flow.rs`、`src/core/diff.rs` | `tests/e2e_delta.rs`、`tests/integration.rs` |
 | 跨重启待安装（pending） | `src/updater/pending.rs` | `src/updater/{delta,bundle_flow}.rs`、`src/core/artifacts.rs` | `src/updater/pending.rs` 单测、`tests/e2e_delta.rs` |
-| 补丁规划（直达 / 多跳链 / 全量） | `src/updater/plan.rs` | `src/models/manifest.rs`、`src/bin/generate/patches.rs` | `src/updater/plan.rs` 单测、`src/bin/generate/patches.rs` 单测、`tests/e2e_delta.rs` |
+| 补丁规划（直达 / 多跳链 / 全量） | `src/updater/plan.rs` | `src/models/manifest.rs`、`src/release/patches.rs` | `src/updater/plan.rs` 单测、`src/release/patches.rs` 单测、`tests/e2e_delta.rs` |
 | 系统版本门槛（`min_os`） | `src/platform/os_version.rs` | `src/updater/{flow,delta}.rs`、`src/models/manifest.rs` | `src/platform/os_version.rs` 单测、`tests/e2e_delta.rs` |
 | 整包增量（多文件） | `src/updater/bundle_flow.rs` | `src/core/bundle/`、`src/platform/dir_swap.rs` | `tests/e2e_bundle.rs`、`tests/macos_bundle.rs` |
 | 全量安装包下载与验签 | `src/updater/full.rs` | `src/core/downloader.rs`、`src/core/verify.rs` | `tests/e2e_full.rs`、`tests/integration.rs` |
@@ -24,7 +24,7 @@
 | 安全模式与失败计数 | `src/core/safety.rs` | `src/updater/flow.rs` | `src/core/safety.rs` 单测、`tests/integration.rs` |
 | 环境诊断与启动 doctor | `src/updater/diagnosis.rs`（`warnings`） | `src/platform/target.rs`、`plugin/src/lib.rs` | `src/updater/mod.rs` 单测 |
 | 本地验证闭环（无网络） | `src/updater/simulate.rs` | `src/core/diff.rs` | 文档示例（`cargo test --doc`） |
-| 发布端 CLI | `src/bin/generate/` | `src/core/{diff,bundle,verify}/` | `tests/generate_cli.rs` |
+| 发布端（清单 / 补丁 / 报告） | `src/release/` | `src/bin/generate/`、`src/bin/cargo_delta/` | `tests/generate_cli.rs`、`tests/cargo_delta_cli.rs` |
 | 接入脚手架（init/migrate） | `src/bin/cargo_delta/` | `serde_json`、`similar`（仅 generator feature） | `tests/cargo_delta_cli.rs` |
 | Tauri 插件与命令 | `plugin/src/lib.rs` | `plugin/permissions/` | 插件 crate 内单测 |
 | 对外 API 契约 | `src/lib.rs` | `tests/public_api.rs` | `cargo test --test public_api` |
@@ -36,10 +36,10 @@
 ## 2. 依赖方向
 
 ```
-bin/generate ─┐
-              ├→ core（diff / bundle / verify / downloader / safety …）
-updater ──────┤        ↑                 ↑
-  │           └→ platform ──────────────┘
+bin/generate、bin/cargo_delta ─→ release ─┐
+                                          ├→ core（diff / bundle / verify / downloader / safety …）
+updater ──────────────────────────────────┤        ↑                 ↑
+  │           └→ platform ────────────────┘
   ├→ models（清单）
   └→ session（事件与会话） ─→ updater（仅公开 API）
 plugin ─→ updater（公开 API）
@@ -60,6 +60,7 @@ plugin ─→ updater（公开 API）
 | `models/` | 清单数据结构与版本规则 | 网络、文件写入 |
 | `platform/` | 脚本生成、进程启动、签名状态、目录切换 | 清单解析、补丁下载 |
 | `updater/` | 编排与对宿主可见的结果类型 | 具体平台的命令行参数（放 `platform/`） |
+| `release/` | 发布期清单、补丁与报告生成（仅 `generator` feature） | 运行时更新逻辑（那在 `updater/`） |
 | `plugin/` | Tauri 命令、权限、事件桥接、前端类型包（`guest-js` → `dist-js`） | 更新算法本身 |
 | `tests/` | 跨模块行为契约 | 单个私有函数的细节（放源码内单测） |
 
@@ -91,10 +92,11 @@ plugin ─→ updater（公开 API）
 | 原文件 | 拆分后 | 变更原因 |
 | --- | --- | --- |
 | `core/bundle.rs`（1069 行） | `bundle/mod.rs`（公共导出与测试）、`bundle/archive/{mod,format}.rs`（归档与格式原语）、`bundle/patch.rs`（补丁与清单） | 归档 IO 与补丁逻辑互不相关，客户端/发布端各自只看一侧 |
-| `bin/generate.rs`（965 行） | `generate/main.rs`（入口与编排）、`args.rs`、`files.rs`、`keys.rs`、`patches.rs`、`bundles.rs`、`baseline.rs` | 发布端工具按流水线阶段划分，补丁生成逻辑可单独阅读 |
+| `bin/generate.rs`（965 行） | 发布实现 `src/release/`（`mod.rs` 编排 + `files/keys/patches/bundles/baseline.rs`）；CLI 只留 `src/bin/generate/` 与 `src/bin/cargo_delta/` 的薄入口 | 发布逻辑与命令行解耦，`generate` 与 `cargo delta release` 共用一份实现 |
 
-`generate` 的入口现在跑在独立线程上（16 MB 栈）：调试构建的 Future 比发行构建大得多，
-Windows 默认 1 MB 主线程栈在嵌套的补丁/哈希/解压调用下会溢出。
+两个发布入口都通过 `release::run_release_blocking` 在独立线程（16 MB 栈）上运行：
+调试构建的 Future 比发行构建大得多，Windows 默认 1 MB 主线程栈在嵌套的
+补丁/哈希/解压调用下会溢出。
 
 脚本模板外置（`include_str!`，行为与占位符不变）：
 
