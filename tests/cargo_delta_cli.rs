@@ -120,6 +120,35 @@ fn init_apply_writes_all_files() {
     assert!(stderr.contains("--force"), "错误必须说明如何覆盖: {stderr}");
 }
 
+/// 改写配置时必须保留原有键顺序，只追加新键。
+///
+/// `serde_json` 默认按键名字母序输出；不加 `preserve_order` 会把用户整份
+/// `tauri.conf.json` 重排，产生无意义的 diff。
+#[test]
+fn init_preserves_config_key_order() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let text = read(&root, "tauri.conf.json");
+    let product = text.find("\"productName\"").expect("原有键必须保留");
+    let plugins = text.find("\"plugins\"").expect("plugins 必须存在");
+    assert!(
+        product < plugins,
+        "原有键顺序必须保留（productName 在 plugins 之前）: {text}"
+    );
+}
+
 /// `--registry` 写注册表版本，且版本号必须与工具自身一致（防止再次写死旧版本）。
 #[test]
 fn init_registry_writes_current_version() {

@@ -6,13 +6,12 @@ use tauri::ipc::Channel;
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{AppHandle, Runtime, State};
 use tauri_delta_updater::{
-    CancelToken, CheckOutcome, Diagnosis, UpdateConfig, UpdateEvent, UpdateResult,
+    CancelToken, CheckOutcome, Diagnosis, UpdateConfig, UpdateEvent, UpdateOutcome, UpdateResult,
 };
 
 use crate::config::read_file_config;
 use crate::dto::{ErrorDto, FullDownloadDto};
-use crate::register;
-use crate::UpdaterState;
+use crate::{register, PendingUpdate, UpdaterState};
 
 /// 只检查是否有新版本，不下载任何内容。
 #[tauri::command]
@@ -51,6 +50,66 @@ pub(crate) async fn install<R: Runtime>(
     }
 
     Ok(result)
+}
+
+/// 下载并合并补丁，**不启动替换脚本**。
+///
+/// 返回 `{"kind":"ready","version":"..."}` 后，宿主可以先提示用户、
+/// 保存草稿、完成清理，再调用 `launch` 触发替换并退出进程。
+/// 其余结果（已最新 / 灰度未命中 / 需要全量 / 安全模式）语义与 `install` 一致。
+#[tauri::command]
+pub(crate) async fn prepare<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, UpdaterState>,
+    on_event: Channel<UpdateEvent>,
+) -> Result<UpdateResult, ErrorDto> {
+    let updater = state.updater()?;
+    let token = CancelToken::new();
+    set_cancel(&state, Some(token.clone()));
+
+    let outcome = updater
+        .prepare_with_events(&token, |event| {
+            let _ = on_event.send(event);
+        })
+        .await;
+    set_cancel(&state, None);
+
+    match outcome.map_err(ErrorDto::from)? {
+        UpdateOutcome::Patched { staged } => {
+            let version = staged.manifest().version.clone();
+            state.set_pending(Some(PendingUpdate::Exe(staged)));
+            Ok(UpdateResult::Ready { version })
+        }
+        UpdateOutcome::Bundled { staged } => {
+            let version = staged.manifest().version.clone();
+            state.set_pending(Some(PendingUpdate::Bundle(staged)));
+            Ok(UpdateResult::Ready { version })
+        }
+        UpdateOutcome::Repair { staged, reason } => {
+            // 修复是恢复动作，不是用户可延后的更新：立刻启动并让前端退出。
+            staged.launch().map_err(ErrorDto::from)?;
+            exit_soon(&app);
+            Ok(UpdateResult::RepairRequired { reason })
+        }
+        other => Ok(other.into()),
+    }
+}
+
+/// 启动 `prepare` 就绪的替换脚本，然后退出进程。
+///
+/// 没有待启动产物时返回 `nothing_to_launch`；启动失败时可重试（产物仍保留）。
+#[tauri::command]
+pub(crate) async fn launch<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, UpdaterState>,
+) -> Result<UpdateResult, ErrorDto> {
+    let pending = state.pending().ok_or_else(ErrorDto::nothing_to_launch)?;
+    pending.launch().map_err(ErrorDto::from)?;
+    state.set_pending(None);
+
+    let version = pending.version();
+    exit_soon(&app);
+    Ok(UpdateResult::Updated { version })
 }
 
 /// 下载全量安装包并校验签名，**不执行安装**。
@@ -126,6 +185,8 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             check,
             install,
+            prepare,
+            launch,
             download_full,
             install_full,
             diagnose,
@@ -146,7 +207,11 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 ///     "delta-updater": {
 ///       "endpoints": ["https://cdn.example.com/latest.json"],
 ///       "pubkey": "RWQ...",
-///       "bundle_endpoint": "https://cdn.example.com/latest.bundle.json"
+///       "bundle_endpoint": "https://cdn.example.com/latest.bundle.json",
+///       "work_dir": "/custom/writable/dir",
+///       "wait_timeout_secs": 60,
+///       "confirm_timeout_secs": 60,
+///       "proxy": "http://127.0.0.1:7890"
 ///     }
 ///   }
 /// }
@@ -161,6 +226,8 @@ pub fn init_from_config<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             check,
             install,
+            prepare,
+            launch,
             download_full,
             install_full,
             diagnose,

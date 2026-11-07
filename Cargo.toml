@@ -26,6 +26,8 @@ generator = [
     "dep:chrono",
     "dep:clap",
     "dep:similar",
+    # `cargo delta` 改写 tauri.conf.json 时保留原始键顺序，避免整文件重排的 diff 噪音
+    "serde_json/preserve_order",
 ]
 # 可选的结构化事件：宿主可桥接到 tracing / 日志 / 监控。
 # 不启用时零依赖、零开销。

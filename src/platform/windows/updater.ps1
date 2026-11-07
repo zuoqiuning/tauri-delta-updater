@@ -103,8 +103,15 @@ function Restart-Old {
         Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $target) {
-        Write-Log '更新中止，重新启动旧版本。'
-        Start-App $target
+        # 旧进程可能仍在运行（用户拒绝 UAC 时脚本刚启动，旧版本还没退出）。
+        # 再拉起会得到两个实例，因此先按 PID + 路径确认它确实已退出。
+        $old = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+        if ($old -and (-not $old.Path -or $old.Path -eq $target)) {
+            Write-Log '旧进程仍在运行，跳过重新启动。'
+        } else {
+            Write-Log '更新中止，重新启动旧版本。'
+            Start-App $target
+        }
     }
 }
 

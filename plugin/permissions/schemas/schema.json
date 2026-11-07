@@ -367,6 +367,30 @@
           "markdownDescription": "Denies the install_full command without any pre-configured scope."
         },
         {
+          "description": "Enables the launch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-launch",
+          "markdownDescription": "Enables the launch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the launch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-launch",
+          "markdownDescription": "Denies the launch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the prepare command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-prepare",
+          "markdownDescription": "Enables the prepare command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the prepare command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-prepare",
+          "markdownDescription": "Denies the prepare command without any pre-configured scope."
+        },
+        {
           "description": "Enables the reset_safety command without any pre-configured scope.",
           "type": "string",
           "const": "allow-reset-safety",
@@ -379,10 +403,10 @@
           "markdownDescription": "Denies the reset_safety command without any pre-configured scope."
         },
         {
-          "description": "默认权限：检查、增量安装、全量下载、诊断、取消与退出安全模式。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`",
+          "description": "默认权限：检查、增量安装、全量下载、诊断、取消与退出安全模式。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "默认权限：检查、增量安装、全量下载、诊断、取消与退出安全模式。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`"
+          "markdownDescription": "默认权限：检查、增量安装、全量下载、诊断、取消与退出安全模式。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`"
         }
       ]
     }

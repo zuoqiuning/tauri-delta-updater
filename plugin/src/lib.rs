@@ -44,6 +44,9 @@
 //!
 //! await invoke('plugin:delta-updater|check');            // 只检查，不下载
 //! await invoke('plugin:delta-updater|install', { onEvent: events });
+//! // 需要自己控制退出时机（先保存、先提示）：prepare 只下载合并，launch 触发替换并退出
+//! await invoke('plugin:delta-updater|prepare', { onEvent: events }); // → kind: "ready"
+//! await invoke('plugin:delta-updater|launch');                       // → kind: "updated"，进程退出
 //! await invoke('plugin:delta-updater|download_full', { onEvent: events }); // 全量回退：仅下载
 //! await invoke('plugin:delta-updater|install_full', { onEvent: events });  // 全量回退：下载并安装
 //! await invoke('plugin:delta-updater|cancel');           // 任意时刻取消
@@ -62,7 +65,30 @@ pub use dto::{ErrorDto, FullDownloadDto};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use tauri_delta_updater::{CancelToken, DeltaUpdater, UpdateConfig};
+use tauri_delta_updater::{CancelToken, DeltaUpdater, Staged, StagedBundle, UpdateConfig};
+
+/// 已就绪、等待 `launch` 的更新产物（`prepare` 路径）。
+#[derive(Clone)]
+enum PendingUpdate {
+    Exe(Staged),
+    Bundle(StagedBundle),
+}
+
+impl PendingUpdate {
+    fn version(&self) -> String {
+        match self {
+            PendingUpdate::Exe(staged) => staged.manifest().version.clone(),
+            PendingUpdate::Bundle(staged) => staged.manifest().version.clone(),
+        }
+    }
+
+    fn launch(&self) -> tauri_delta_updater::Result<()> {
+        match self {
+            PendingUpdate::Exe(staged) => staged.launch(),
+            PendingUpdate::Bundle(staged) => staged.launch(),
+        }
+    }
+}
 
 struct UpdaterState {
     /// 构造成功时可用；失败时为 `None`，命令统一返回 `updater_unavailable`。
@@ -73,6 +99,8 @@ struct UpdaterState {
     unavailable: Option<String>,
     /// 正在进行的更新会话的取消令牌；空闲时为 `None`。
     cancel: Mutex<Option<CancelToken>>,
+    /// `prepare` 生成、等待 `launch` 的产物。
+    pending: Mutex<Option<PendingUpdate>>,
 }
 
 impl UpdaterState {
@@ -81,6 +109,7 @@ impl UpdaterState {
             updater: Some(updater),
             unavailable: None,
             cancel: Mutex::new(None),
+            pending: Mutex::new(None),
         }
     }
 
@@ -89,6 +118,7 @@ impl UpdaterState {
             updater: None,
             unavailable: Some(reason),
             cancel: Mutex::new(None),
+            pending: Mutex::new(None),
         }
     }
 
@@ -101,6 +131,17 @@ impl UpdaterState {
                     .unwrap_or_else(|| "更新器不可用".to_string()),
             )
         })
+    }
+
+    fn set_pending(&self, pending: Option<PendingUpdate>) {
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = pending;
+        }
+    }
+
+    /// 读取待启动产物（克隆共享状态，启动失败时仍可重试）。
+    fn pending(&self) -> Option<PendingUpdate> {
+        self.pending.lock().ok().and_then(|slot| slot.clone())
     }
 }
 
@@ -208,6 +249,41 @@ mod tests {
         );
     }
 
+    /// 工作目录、超时与代理必须能从 `tauri.conf.json` 配置。
+    #[test]
+    fn file_config_exposes_runtime_controls() {
+        let value = serde_json::json!({
+            "endpoints": ["https://cdn.example.com/latest.json"],
+            "pubkey": "PK",
+            "work_dir": "/tmp/tdx",
+            "wait_timeout_secs": 20,
+            "confirm_timeout_secs": 120,
+            "proxy": "http://127.0.0.1:7890"
+        });
+        let file: FileConfig = serde_json::from_value(value).unwrap();
+        let config = file.into_update_config("1.0.0").unwrap();
+        assert_eq!(
+            config.work_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/tdx"))
+        );
+        assert_eq!(config.wait_timeout_secs, 20);
+        assert_eq!(config.confirm_timeout_secs, 120);
+        assert!(config.client.is_some(), "代理配置必须注入自定义客户端");
+    }
+
+    /// 非法代理必须在启动阶段报错，而不是等到第一次请求才失败。
+    #[test]
+    fn invalid_proxy_is_rejected() {
+        let value = serde_json::json!({
+            "endpoints": ["https://cdn.example.com/latest.json"],
+            "pubkey": "PK",
+            "proxy": "http://["
+        });
+        let file: FileConfig = serde_json::from_value(value).unwrap();
+        let err = file.into_update_config("1.0.0").unwrap_err();
+        assert!(err.contains("proxy"), "错误必须说明字段: {err}");
+    }
+
     /// 官方配置里的额外字段（windows/dmg 等）必须被忽略，而不是报错。
     #[test]
     fn file_config_ignores_official_extra_fields() {
@@ -231,6 +307,10 @@ mod tests {
             bundle_endpoint: None,
             bundle_type: None,
             install_id: None,
+            work_dir: None,
+            wait_timeout_secs: None,
+            confirm_timeout_secs: None,
+            proxy: None,
         };
         let err = file.into_update_config("1.0.0").unwrap_err();
         assert!(err.contains("endpoints"), "错误必须说明字段: {err}");

@@ -6,6 +6,8 @@ description = """
 permissions = [
     "allow-check",
     "allow-install",
+    "allow-prepare",
+    "allow-launch",
     "allow-download-full",
     "allow-install-full",
     "allow-diagnose",

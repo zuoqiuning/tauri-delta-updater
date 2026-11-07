@@ -66,6 +66,16 @@ impl ErrorDto {
             security: false,
         }
     }
+
+    /// 没有已就绪的产物却调用了 `launch`。
+    pub(crate) fn nothing_to_launch() -> Self {
+        Self {
+            code: "nothing_to_launch",
+            message: "没有待启动的更新产物：请先调用 prepare".into(),
+            retryable: false,
+            security: false,
+        }
+    }
 }
 
 impl From<DeltaError> for ErrorDto {

@@ -157,8 +157,14 @@ function Restart-Old {
     Restore-Backup
     Remove-Item -LiteralPath $journalFile -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $target) {
-        Write-Log '更新中止，重新启动旧版本。'
-        Start-App $target
+        # 旧进程可能仍在运行（例如用户拒绝 UAC）：再拉起会得到两个实例。
+        $old = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+        if ($old -and (-not $old.Path -or $old.Path -eq $target)) {
+            Write-Log '旧进程仍在运行，跳过重新启动。'
+        } else {
+            Write-Log '更新中止，重新启动旧版本。'
+            Start-App $target
+        }
     }
 }
 

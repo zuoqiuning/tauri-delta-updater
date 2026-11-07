@@ -353,6 +353,26 @@ impl DeltaUpdater {
         self.run_entry(false, None, None, None).await
     }
 
+    /// [`Self::prepare`] 的可观察、可取消版本。
+    ///
+    /// 与 `install_with_events` 的区别只在于**不启动替换脚本**：
+    /// 返回 `Patched` / `Bundled` 时产物已就绪，由宿主调用
+    /// [`Staged::launch`] / [`crate::StagedBundle::launch`] 决定退出时机。
+    ///
+    /// 修复路径（`Repair`）仍不启动脚本：它需要宿主尽快退出，因此
+    /// 调用方应先 `launch` 再退出（或直接用 `update()`）。
+    pub async fn prepare_with_events<F>(
+        &self,
+        cancel: &crate::core::cancel::CancelToken,
+        on_event: F,
+    ) -> Result<UpdateOutcome>
+    where
+        F: FnMut(UpdateEvent) + Send,
+    {
+        self.run_entry(false, None, Some(Box::new(on_event)), Some(cancel))
+            .await
+    }
+
     /// 标记新版本启动成功（使用本更新器的工作目录）。
     ///
     /// 新版本必须在启动早期调用一次（或调用静态的

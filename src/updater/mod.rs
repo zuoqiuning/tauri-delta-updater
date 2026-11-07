@@ -367,6 +367,15 @@ mod ui_result_tests {
             json!({ "kind": "updated", "version": "1.2.3" })
         );
 
+        // prepare 路径：产物就绪但未启动，前端必须与 Updated 区分
+        let ready = UpdateResult::Ready {
+            version: "1.2.3".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&ready).unwrap(),
+            json!({ "kind": "ready", "version": "1.2.3" })
+        );
+
         let full = UpdateResult::RequiresFullDownload {
             url: Some("https://cdn.example.com/app.exe".into()),
             reason: FallbackReason::NoMatchingPatch {
@@ -563,6 +572,7 @@ mod ui_result_tests {
 
         let token = crate::core::cancel::CancelToken::new();
         assert_send(updater.install_with_events(&token, |_| {}));
+        assert_send(updater.prepare_with_events(&token, |_| {}));
     }
 
     /// 构造一个"刚被替换脚本拉起"的更新器：exe 旁存在工作目录指针。

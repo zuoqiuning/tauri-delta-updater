@@ -226,8 +226,8 @@ mod macos {
             DeltaError::FullInstallFailed(format!("{} 里没有找到 .app 目录", installer.display()))
         })?;
 
-        // 解包完成后安装包本身不再需要，先删掉避免占用工作目录。
-        let _ = std::fs::remove_file(installer);
+        // 安装包不在这里删除：目录切换失败时它是唯一的恢复来源。
+        // 成功后由 `confirm_startup_success` 的 `cleanup_full_installers` 回收。
 
         let files = describe_dir(&app_dir)?;
         let script = crate::platform::macos::generate_bundle_updater_with_timings(

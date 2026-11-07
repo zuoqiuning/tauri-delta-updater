@@ -115,6 +115,10 @@ tauri-plugin-delta-updater = { git = "https://github.com/zuoqiuning/tauri-delta-
 }
 ```
 
+Optional keys (all have safe defaults): `work_dir` (override the user-writable
+cache directory), `wait_timeout_secs` / `confirm_timeout_secs` (replacement
+timings), `proxy` (`http://127.0.0.1:7890`), `bundle_type`, `install_id`.
+
 `src-tauri/src/lib.rs` — the only Rust you write:
 
 ```rust
@@ -142,6 +146,11 @@ events.onmessage = (e) => {
 };
 
 await invoke('plugin:delta-updater|install', { onEvent: events });
+// Need to control when the app exits (save drafts, show a prompt first)?
+// `prepare` downloads and merges but does not touch the running exe:
+await invoke('plugin:delta-updater|prepare', { onEvent: events }); // → { kind: "ready" }
+// ... then, when the UI is ready:
+await invoke('plugin:delta-updater|launch');                       // → { kind: "updated" }, process exits
 // 增量不可用时，回退路径也不需要官方插件：
 await invoke('plugin:delta-updater|install_full', { onEvent: events });
 ```
@@ -1146,6 +1155,7 @@ fallback, this library is the deeper option.
 | `DeltaError::SafeMode` from `check()` | Three deterministic failures; wait for the 6-hour cooldown or call `reset_safety()`. |
 | `DeltaError::AuthenticodeUnsigned` on Windows | The running build is signed but the patched artifact is not — usually a release that forgot to sign the new executable. Blocked on purpose: AppLocker/WDAC would refuse to start it. Sign the new build (or ship the full installer) and republish; `diagnose().authenticode` shows the current state. |
 | `plugin:delta-updater\|check` not found / denied at runtime | The capability is missing. Add `"delta-updater:default"` to `src-tauri/capabilities/default.json` and restart. |
+| `nothing_to_launch` from `launch` | `launch` was called without a successful `prepare` in this process. Call `prepare` first; `requires_full_download` / `up_to_date` / `safe_mode` have nothing to launch. |
 | Every command returns `updater_unavailable` | The updater could not be constructed (read-only work directory, missing/invalid `plugins.delta-updater`). The app still starts by design; read the message, fix the config or permissions, restart. The reason is also appended to `tdx_update.log`. |
 | After a crash, the app reports `RepairRequired` / `needs_repair` | A previous whole-app swap was interrupted. Exit the process (or call `install()`); the repair script restores the backup and relaunches the old version — no network needed. |
 | "It said updated, but the version is still old after restart" | Read `diagnose().last_rollback` (`update_failed` / `startup_timeout`): the new version never confirmed startup, so the script restored the old one. Parse `diagnose().events_path` (`tdx_events.jsonl`) for the structured rollback event; details are in `tdx_update.log`. Usually the app exits before `confirm_startup_success*` runs, or the new build crashes at launch. |

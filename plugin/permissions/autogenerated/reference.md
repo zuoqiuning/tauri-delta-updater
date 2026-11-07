@@ -7,6 +7,8 @@
 
 - `allow-check`
 - `allow-install`
+- `allow-prepare`
+- `allow-launch`
 - `allow-download-full`
 - `allow-install-full`
 - `allow-diagnose`
@@ -174,6 +176,58 @@ Enables the install_full command without any pre-configured scope.
 <td>
 
 Denies the install_full command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:allow-launch`
+
+</td>
+<td>
+
+Enables the launch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:deny-launch`
+
+</td>
+<td>
+
+Denies the launch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:allow-prepare`
+
+</td>
+<td>
+
+Enables the prepare command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:deny-prepare`
+
+</td>
+<td>
+
+Denies the prepare command without any pre-configured scope.
 
 </td>
 </tr>

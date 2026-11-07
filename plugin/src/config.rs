@@ -25,6 +25,18 @@ pub(crate) struct FileConfig {
     /// 可选：灰度分桶使用的稳定安装 ID；缺省由库自动生成并持久化。
     #[serde(default)]
     pub(crate) install_id: Option<String>,
+    /// 可选：覆盖工作目录（补丁、脚本、日志与标志文件所在处）。
+    #[serde(default)]
+    pub(crate) work_dir: Option<String>,
+    /// 可选：等待旧进程退出的秒数（默认 60）。
+    #[serde(default)]
+    pub(crate) wait_timeout_secs: Option<u32>,
+    /// 可选：等待新版本确认启动的秒数（默认 60）。
+    #[serde(default)]
+    pub(crate) confirm_timeout_secs: Option<u32>,
+    /// 可选：HTTP 代理（如 `http://127.0.0.1:7890`），用于企业网络。
+    #[serde(default)]
+    pub(crate) proxy: Option<String>,
 }
 
 impl FileConfig {
@@ -41,6 +53,24 @@ impl FileConfig {
         let mut config = UpdateConfig::new(endpoint, self.pubkey).current_version(current_version);
         if let Some(id) = self.install_id.filter(|id| !id.trim().is_empty()) {
             config = config.install_id(id);
+        }
+        if let Some(dir) = self.work_dir.filter(|dir| !dir.trim().is_empty()) {
+            config = config.work_dir(dir.trim());
+        }
+        if let Some(secs) = self.wait_timeout_secs {
+            config = config.wait_timeout_secs(secs);
+        }
+        if let Some(secs) = self.confirm_timeout_secs {
+            config = config.confirm_timeout_secs(secs);
+        }
+        if let Some(proxy) = self.proxy.filter(|proxy| !proxy.trim().is_empty()) {
+            let proxy = reqwest::Proxy::all(proxy.trim())
+                .map_err(|err| format!("plugins.delta-updater.proxy 非法: {err}"))?;
+            let client = tauri_delta_updater::client_builder()
+                .proxy(proxy)
+                .build()
+                .map_err(|err| format!("构建 HTTP 客户端失败: {err}"))?;
+            config = config.client(client);
         }
         if let Some(bundle) = self.bundle_endpoint {
             config =

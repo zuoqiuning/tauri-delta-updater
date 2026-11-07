@@ -234,6 +234,7 @@ pub enum UpdateOutcome {
 ///
 /// ```json
 /// {"kind":"updated","version":"1.2.3"}
+/// {"kind":"ready","version":"1.2.3"}
 /// {"kind":"repair_required","reason":"repaired_partial_update"}
 /// {"kind":"up_to_date","version":"1.2.3"}
 /// {"kind":"deferred","version":"1.2.3","percentage":20}
@@ -247,6 +248,15 @@ pub enum UpdateResult {
     /// 已通过增量补丁更新。
     Updated {
         /// 更新后的版本号。
+        version: String,
+    },
+    /// 产物已就绪，等待宿主动手（`prepare` 路径）。
+    ///
+    /// 与 [`Self::Updated`] 的区别：替换脚本**尚未启动**，宿主应先展示
+    /// "即将重启"的提示、完成自身清理，再调用 `launch` 命令 / `Staged::launch`。
+    /// `install()` 不会返回该变体。
+    Ready {
+        /// 已就绪的版本号。
         version: String,
     },
     /// 上次整包替换未完成，修复脚本已就绪（或已启动）。
