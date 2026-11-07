@@ -258,7 +258,8 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 ///       "headers": { "Authorization": "Bearer ..." },
 ///       "fallback_policy": "transport",
 ///       "install_mode": "passive",
-///       "allow_insecure_transport": false
+///       "allow_insecure_transport": false,
+///       "rollback_notice": true
 ///     }
 ///   }
 /// }
