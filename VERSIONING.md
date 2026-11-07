@@ -83,15 +83,16 @@
   crates.io；需要分发时用 git tag 或本地构建。
 - 构建元数据（`+build.1`）不使用，避免与 crates.io 版本解析冲突。
 
-### 1.4 已知偏离（0.2.1）
+### 1.4 历史偏离（0.2.1）与 0.3.0 修正
 
 `0.2.1` 给 `UpdateConfig` / `UpdateManifest` / `PlatformInfo` 新增了可选字段。
-这三个结构体未标记 `#[non_exhaustive]`，严格按 §1.2 属于破坏性变更；当时按
-PATCH 发布，理由是新增字段都带 serde 默认值、不改变现有构造路径。
+当时这三个结构体未标记 `#[non_exhaustive]`，严格按 §1.2 属于破坏性变更；
+因新增字段都带 serde 默认值、不影响 builder 路径，按 PATCH 发布。
 
-未发布的工作树已给这三个结构体补上 `#[non_exhaustive]`（随下一次 MINOR 发布），
-此后新增公开字段不再破坏下游；代价是字面量构造需要改为 serde 反序列化或 builder。
-在此之前，新增公开结构体字段不再按 PATCH 处理。
+`0.3.0` 已给这三个结构体补上 `#[non_exhaustive]`，并把
+`allow_legacy_signatures` / `allow_insecure_transport` 默认值收紧为 `false`。
+此后新增公开字段不再破坏下游；代价是外部字面量构造需要改为 serde 反序列化
+或 builder。新增公开结构体字段不再按 PATCH 处理。
 
 ---
 
@@ -101,9 +102,9 @@ PATCH 发布，理由是新增字段都带 serde 默认值、不改变现有构�
 
 | 制品 | 状态 |
 |---|---|
-| 核心 crate | `0.1.0`（2026-11-06）、`0.2.0`、`0.2.1`（2026-11-07）已发布 |
-| 插件 crate | `0.2.1` 已发布（2026-11-07） |
-| npm 包 | `0.2.1` 已发布（2026-11-07） |
+| 核心 crate | `0.1.0`（2026-11-06）、`0.2.0`、`0.2.1`（2026-11-07）已发布；`0.3.0` 本地已准备，待发布 |
+| 插件 crate | `0.2.1` 已发布（2026-11-07）；`0.3.0` 随核心同步 |
+| npm 包 | `0.2.1` 已发布（2026-11-07）；`0.3.0` 随核心同步 |
 | git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1` |
 
 `0.2.1` 相对 `0.2.0` 的新增面（全部为可选 API，见 `CHANGELOG.md`）：
@@ -125,7 +126,7 @@ PATCH 发布，理由是新增字段都带 serde 默认值、不改变现有构�
 | PE 感知差分（Zucchini / `--pe-normalize`） | 非破坏性（新增可选后端） | 真实产物基准测试证明收益 |
 | 并行目录 / 原子切换 | 可能破坏性（`Staged` 生命周期重设计） | Windows 独占锁、跨卷、杀软边界验证 |
 | macOS tar-level 增量路径 | 非破坏性（新增可选后端） | 真实签名/公证应用验证 |
-| 收紧安全默认值（`allow_legacy_signatures` / `allow_insecure_transport` 默认 `false`） | 破坏性（签名与传输行为变更） | 0.3.0 发布前完成，附迁移说明 |
-| 给 `UpdateConfig` / `UpdateManifest` / `PlatformInfo` 补 `#[non_exhaustive]` | 破坏性（字面量构造需改 serde / builder） | 已在未发布工作树完成，随下一 MINOR 发布；见 §1.4 |
+| 收紧安全默认值（`allow_legacy_signatures` / `allow_insecure_transport` 默认 `false`） | 破坏性（签名与传输行为变更） | 已在 0.3.0 完成，附迁移说明 |
+| 给 `UpdateConfig` / `UpdateManifest` / `PlatformInfo` 补 `#[non_exhaustive]` | 破坏性（字面量构造需改 serde / builder） | 已在 0.3.0 完成；见 §1.4 |
 
 上表只有项目所有者明确启动时才进入排期；列出不等于默许实施。

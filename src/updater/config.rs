@@ -128,11 +128,11 @@ pub struct UpdateConfig {
     /// 自定义客户端使用 rustls 时，必须在创建前调用
     /// [`crate::install_crypto_provider`]。
     pub client: Option<reqwest::Client>,
-    /// 是否接受旧版（legacy）minisign 签名，默认 `true`。
+    /// 是否接受旧版（legacy）minisign 签名，默认 `false`。
     ///
-    /// 本项目发布端固定 minisign 0.7.9，产出的是 pre-hash 格式；
-    /// 该开关只影响第三方历史管线的兼容。安全要求高的宿主可设为
-    /// `false`，让非预哈希签名直接失败（属于签名校验行为收紧）。
+    /// 本项目发布端固定 minisign 0.7.9，产出的是 pre-hash 格式。
+    /// 只有仍在使用第三方历史管线、需要兼容旧格式签名的宿主才应显式设为
+    /// `true`；开启会接受非预哈希签名，属于签名校验行为放宽。
     pub allow_legacy_signatures: bool,
     /// 备用清单地址（主地址失败时按策略依次尝试）。
     ///
@@ -168,9 +168,9 @@ pub struct UpdateConfig {
     /// 消费。宿主若继续用官方 `tauri-plugin-updater` 执行全量安装，
     /// 这里配置什么都不会生效：官方插件只会按 NSIS 参数调用安装包。
     pub installer_kind: Option<InstallerKind>,
-    /// 是否允许明文 HTTP 端点，默认 `true`（保持兼容）。
+    /// 是否允许明文 HTTP 端点，默认 `false`。
     ///
-    /// `false` 时，非回环地址的 `http://` 会在构造阶段被拒绝；
+    /// 默认拒绝非回环地址的 `http://`；本地开发/内网测试可显式设为 `true`。
     /// 无论取值如何，明文端点都会出现在 `diagnose().warnings()` 中。
     pub allow_insecure_transport: bool,
     /// 插件是否在下次启动时自动执行待安装记录，默认 `false`。
@@ -211,13 +211,13 @@ impl UpdateConfig {
             install_id: None,
             bundle_manifest_url: None,
             client: None,
-            allow_legacy_signatures: true,
+            allow_legacy_signatures: false,
             fallback_manifest_urls: Vec::new(),
             fallback_policy: FallbackPolicy::default(),
             headers: Vec::new(),
             install_mode: InstallMode::default(),
             installer_kind: None,
-            allow_insecure_transport: true,
+            allow_insecure_transport: false,
             install_on_next_launch: false,
             rollback_notice: true,
         }
@@ -302,10 +302,10 @@ impl UpdateConfig {
         self
     }
 
-    /// 是否接受旧版（legacy）minisign 签名，默认 `true`。
+    /// 是否接受旧版（legacy）minisign 签名，默认 `false`。
     ///
-    /// `false` 时只接受 pre-hash 签名（本项目发布端产出的格式）。
-    /// 这是签名校验行为收紧：拒绝旧格式，不会放行任何内容。
+    /// 仅第三方历史管线需要显式开启；本项目的发布端始终产出 pre-hash 签名。
+    /// 这是签名校验行为放宽，开启前确认上游确实使用旧格式。
     pub fn allow_legacy_signatures(mut self, allow: bool) -> Self {
         self.allow_legacy_signatures = allow;
         self
@@ -345,7 +345,7 @@ impl UpdateConfig {
         self
     }
 
-    /// 是否允许明文 HTTP 端点（默认允许，仅用于兼容；建议保持 `false`）。
+    /// 是否允许明文 HTTP 端点（默认拒绝；仅本地开发/内网测试可临时开启）。
     pub fn allow_insecure_transport(mut self, allow: bool) -> Self {
         self.allow_insecure_transport = allow;
         self

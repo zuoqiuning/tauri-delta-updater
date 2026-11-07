@@ -64,8 +64,8 @@ cargo delta init ... --apply     # writes the files
 cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
 ```
 
-`init` writes `"0.2"` by default (patch updates within the minor are allowed).
-`--registry` pins the exact version (`"0.2.1"`) for pipelines that require the
+`init` writes `"0.3"` by default (patch updates within the minor are allowed).
+`--registry` pins the exact version (`"0.3.0"`) for pipelines that require the
 dependency to match the tool exactly. `--check` warns when a project still pins
 the git form, but keeps exit code 0 so existing integrations stay green.
 
@@ -99,7 +99,7 @@ or absent (single-stack, full fallback owned by `install_full`).
 
 ```toml
 [dependencies]
-tauri-plugin-delta-updater = "0.2"
+tauri-plugin-delta-updater = "0.3"
 # Local checkout: tauri-plugin-delta-updater = { path = "../plugin" }
 ```
 
@@ -110,11 +110,11 @@ gives you `invoke('plugin:delta-updater|...')` — not typed imports. Add the np
 package in your frontend when you want the bindings:
 
 ```bash
-npm install tauri-plugin-delta-updater   # current: 0.2.1
+npm install tauri-plugin-delta-updater   # current: 0.3.0
 ```
 
 The bundled `examples/tauri-app` uses `path = "../plugin"` for in-repo
-development; real projects should depend on `"0.2"` from crates.io.
+development; real projects should depend on `"0.3"` from crates.io.
 
 `src-tauri/capabilities/default.json`:
 
@@ -140,10 +140,12 @@ Optional keys (all have safe defaults): `work_dir` (override the user-writable
 cache directory), `wait_timeout_secs` / `confirm_timeout_secs` (replacement
 timings), `proxy` (`http://127.0.0.1:7890`), `headers` (extra HTTP headers for
 private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
-(`false` rejects pre-0.7 minisign signatures), `fallback_policy`
-(`transport` / `any`), `install_mode` (`passive` / `basicUi` / `quiet`),
-`installer_kind` (`inno` for Inno Setup builds; NSIS / MSI are inferred from the
-`.exe` / `.msi` suffix), `allow_insecure_transport`, `bundle_type`, `install_id`,
+(`false` by default; set `true` only for third-party legacy signing pipelines),
+`fallback_policy` (`transport` / `any`), `install_mode` (`passive` / `basicUi` /
+`quiet`), `installer_kind` (`inno` for Inno Setup builds; NSIS / MSI are inferred
+from the `.exe` / `.msi` suffix), `allow_insecure_transport` (`false` by default;
+non-loopback `http://` is rejected unless explicitly enabled), `bundle_type`,
+`install_id`,
 `install_on_next_launch` (install the staged update on the next start; off by
 default), `rollback_notice` (show a minimal system notice after a rollback; on
 by default, turn it off for kiosks and headless deployments),
@@ -462,17 +464,16 @@ worth knowing before an audit:
   install directory or work directory can forge it and make the script keep the
   new version. That is inside the "the machine is already compromised" threat
   model; it is not a security boundary for the updater.
-- **Legacy minisign signatures are accepted.** `verify_manifest_signature`
-  accepts the legacy format (`allow_legacy = true`). Our generator is pinned to
-  minisign 0.7.9, which emits pre-hash signatures (asserted by a unit test), so
-  in practice the compatibility window only matters for third-party pipelines.
-  Removing `allow_legacy` changes signature-validation behavior and is therefore
-  a MINOR release per `VERSIONING.md`.
-- **Plaintext HTTP is allowed by default for compatibility.** Non-loopback
-  `http://` endpoints are flagged by `diagnose().insecure_transport`; setting
-  `allow_insecure_transport(false)` rejects them at construction. Signatures
-  still protect integrity, but URLs, versions and update cadence are visible to
-  the network. Use HTTPS in production.
+- **Legacy minisign signatures are rejected by default.** Our generator is pinned
+  to minisign 0.7.9, which emits pre-hash signatures (asserted by a unit test),
+  so the default only rejects third-party historical pipelines. Set
+  `allow_legacy_signatures(true)` if you really consume one; it is a deliberate
+  validation relaxation, not a compatibility default.
+- **Plaintext HTTP is rejected by default.** Non-loopback `http://` endpoints are
+  rejected at construction (loopback is still allowed for local tests).
+  `diagnose().insecure_transport` flags them; setting
+  `allow_insecure_transport(true)` opts back in, but URLs, versions and update
+  cadence are visible to the network. Use HTTPS in production.
 - **The Windows Authenticode check is offline** (`WTD_CACHE_ONLY_URL_RETRIEVAL`).
   A trusted original whose artifact is unsigned is blocked; when the cache has
   no chain for an otherwise valid artifact, the check is skipped rather than
@@ -576,7 +577,7 @@ release. Omit it to clear the floor on the next publish.
 
 ```toml
 [dependencies]
-tauri-delta-updater = "0.2"
+tauri-delta-updater = "0.3"
 ```
 
 Inside a Tauri app, `tauri-plugin-delta-updater` (the `plugin/` crate) wraps this
@@ -587,7 +588,7 @@ The library has **no default features**. If you need the `generate` CLI, enable 
 publisher tooling explicitly:
 
 ```toml
-tauri-delta-updater = { version = "0.2", features = ["generator"] }
+tauri-delta-updater = { version = "0.3", features = ["generator"] }
 ```
 
 `rust-version = "1.88"` (the real floor of the `reqwest 0.13` → `url` → `icu_*`
@@ -1418,21 +1419,15 @@ still consume patches; switch back once they have been replaced.
   gained `Deferred` (`UpdateOutcome`, `UpdateResult`, `UpdateEvent`). All enums
   are `non_exhaustive` — keep a wildcard arm. Manifests without the new fields
   keep working. Details: [CHANGELOG.md](CHANGELOG.md).
-- **Unreleased**: `UpdateResult` gained `Ready` (returned by the plugin's
-  `prepare` command); `UpdateConfig` gained `headers`, `fallback_endpoints`,
-  `fallback_policy`, `install_mode`, `allow_insecure_transport`,
-  `install_on_next_launch`, `additional_public_keys` and `trust_policy`;
-  `Diagnosis` gained `insecure_transport`; `PlatformInfo` gained `min_os`;
-  `UpdateManifest` gained `notes_i18n` / `extra` and `notes_for(locale)`;
-  `BundleManifest` gained `extra`; `UpdateOutcome` / `UpdateResult` gained
-  `UnsupportedOs`; `DeltaError` gained `ChainHopFailed` (delegates its code);
-  new `PendingUpdate` / `PendingArtifact` types, `TrustPolicy`,
-  `current_os_version()`, `discard_pending()`,
-  `verify_manifest_signature_multi`, `verify_file_signature_multi`,
-  `MAX_DELTA_CHAIN_HOPS`, and the `pending` / `discard_pending` /
-  `install_pending` plugin commands. The release workflow now publishes both
-  crates; until the plugin appears on crates.io, `cargo delta init` writes a git
-  dependency.
+- **0.3.0 (breaking)**: `InstallerKind` gained `Inno` and `#[non_exhaustive]`;
+  `UpdateConfig` gained `installer_kind` and `#[non_exhaustive]`;
+  `UpdateManifest` / `PlatformInfo` are now `#[non_exhaustive]` (construct them
+  via serde or builder methods); `allow_legacy_signatures` /
+  `allow_insecure_transport` now default to `false`. New APIs include
+  `cargo delta release`, `cargo delta doctor`, the `release` module
+  (`ReleaseOptions` / `run_release`), rollback notices, `generate --sha256sums`,
+  `generate --legacy-patch`, `Diagnosis::rollback_history` and
+  `installer_kind`. Details: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

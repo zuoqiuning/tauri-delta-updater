@@ -5,6 +5,83 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-11-08
+
+### 兼容性
+
+**0.3.0 是 MINOR 版本，包含以下破坏性变更**：
+
+1. `InstallerKind` 新增 `Inno` 变体并标记 `#[non_exhaustive]`：下游 `match`
+   需要保留 `_ => {}` 通配分支。
+2. `UpdateConfig` 新增 `installer_kind` 字段并标记 `#[non_exhaustive]`：
+   结构体字面量构造需改用 builder（推荐）或 serde。
+3. `UpdateManifest` / `PlatformInfo` 标记 `#[non_exhaustive]`：外部字面量构造
+   需改为按真实发布格式反序列化（或 builder）。
+4. 安全默认收紧：`allow_legacy_signatures` / `allow_insecure_transport`
+   默认值从 `true` 改为 `false`。使用第三方旧格式签名或非回环明文 HTTP 的
+   宿主必须显式开启；本地回环 `http://127.0.0.1` 仍默认允许。
+
+非破坏性新增：`install_with_mode` 签名不变，新增
+`install_with_mode_and_kind`；`Diagnosis` 本就是 `#[non_exhaustive]`，新增
+`installer_kind` 字段不影响已有匹配。
+
+### 新增
+
+- **Inno Setup 全量安装**：`InstallerKind::Inno` + `UpdateConfig::installer_kind`
+  （插件配置 `"installer_kind": "inno"`）。参数映射：
+  `Passive → /SILENT /NORESTART /SP-`、`Quiet → /VERYSILENT /NORESTART /SP-`、
+  `BasicUi → 空`（Inno 默认 UI）。`.exe` 无法区分 NSIS 与 Inno，必须显式声明；
+  配置与后缀明显矛盾时在安装阶段返回 `DeltaError::Config`。
+  **边界**：该配置只被引擎 `install_full` 消费；官方 `tauri-plugin-updater`
+  不支持 Inno，只会传 NSIS 参数。Inno 没有 `/R` 等价参数，静默安装后的重启
+  必须由 `.iss` 的 `[Run]` 承担，且不能加 `skipifsilent`（其语义是“静默不执行”）。
+- **一条命令发布**：`cargo delta release`，与 `generate` 全部参数等价；基线用
+  可重复的 `--from`（目录或单个可执行文件）。发布逻辑抽到库的 `release` 模块
+  （`ReleaseOptions` / `run_release` / `run_release_blocking`），两个 CLI
+  共用同一实现。
+- **发布源体检**：`cargo delta doctor <latest.json>`，校验清单签名与
+  `tdu:v=` 版本绑定、安装包可下载性与体积、补丁 SHA-256、补丁链可达性，
+  以及整包清单（`--bundle-url`）的补丁哈希与路径安全。`--deep` 额外下载
+  安装包验签；`--json` 输出机器可读报告；任何错误退出码非零。
+- **`generate --sha256sums`**：一条命令产出清单、签名、公钥、安装包与全部
+  补丁的 `SHA256SUMS`，上传前即可核对 CDN 完整性。
+- **`generate --legacy-patch`**：输出未压缩 `BSDIFF40`，供不认 zstd 容器的
+  旧引擎客户端；补丁哈希与体积按未压缩文件计算。
+- **回滚提示**：更新失败并恢复旧版本后，Windows 显示消息框、macOS/Linux
+  发送桌面通知（独立进程/非阻塞，无交互桌面自动跳过）。默认开启，
+  `UpdateConfig::rollback_notice(false)` 或插件配置 `rollback_notice` 关闭；
+  直接调用 `PlatformUpdater` 生成脚本时默认不弹提示。
+- **可观测性**：`Diagnosis::rollback_history` 暴露完整回滚链；替换脚本新增
+  正向阶段事件（`download_completed` / `script_ready` / `replace_started` /
+  `startup_confirmed`），进程退出后仍能定位卡点。
+
+### 修复
+
+- **跨代际升级不确认启动**：`confirm_startup_success_if_pending` 现在把旧引擎
+  脚本残留识别为替换证据；新引擎首发仍应调用无条件确认，避免依赖兼容判据。
+- **已准备好的待安装产物被误删**：清理会保留 `tdx_pending.json` 引用的路径；
+  下载更高版本失败、清单为最新或灰度未命中时不再删除已就绪产物；新记录写入
+  成功后才清除旧记录。
+- **`cargo delta init` 依赖与检查**：默认写 `"0.3"`（同 minor 补丁可升级），
+  `--registry` 写精确 `"0.3.0"`；`--check` 对 git 依赖只告警不失败；
+  未知平台使用 `{{target}}` / `{{arch}}` 时直接报错，而不是展开为
+  `unknown-unknown`。
+- **平台边界与文案**：修正 Linux `min_os` 的“内核 release ≠ 发行版版本”说明；
+  `dir_swap` 校验标志改名为 `_verify_failed`，避免返回码语义反转。
+- **CI 发布**：插件发布对“npm 单独重试”幂等；Ubuntu 发布 job 安装 Tauri
+  依赖；已发布的 crate 跳过重复发布。
+
+### 升级注意
+
+- Inno 宿主：配置 `installer_kind`，并确保全量路径走引擎 `install_full`
+  （官方 updater 不会识别 Inno 参数）；`.iss` 的 `[Run]` 负责重启，不能加
+  `skipifsilent`。
+- 用结构体字面量构造 `UpdateConfig` / `UpdateManifest` / `PlatformInfo`
+  的代码需要改用 builder 或 serde；这是本次 MINOR 的破坏性部分。
+- 默认拒绝非回环明文 HTTP 与旧格式 minisign 签名；需要兼容的宿主显式开启
+  对应开关，并确认这是有意放宽。
+- 旧清单、旧补丁文件与已发布客户端不受影响；历史补丁仍需保留在 CDN 上。
+
 ## [0.2.1] - 2026-11-07
 
 ### 兼容性

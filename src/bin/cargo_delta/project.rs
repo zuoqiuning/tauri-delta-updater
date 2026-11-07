@@ -292,8 +292,8 @@ fn remove_plugin(config: &str, name: &str) -> Result<String, String> {
 
 /// 在 `[dependencies]` 下补齐插件依赖；已存在时不改动。
 ///
-/// 默认写 `"0.2"`（允许同 minor 内 patch 升级）；`--registry` 写精确版本
-/// `"0.2.1"`，用于必须与工具版本一致的宿主。
+/// 默认写 `"0.3"`（允许同 minor 内 patch 升级）；`--registry` 写精确版本
+/// `"0.3.0"`，用于必须与工具版本一致的宿主。
 fn ensure_dependency(text: &str, registry: bool) -> String {
     if has_dependency(text) {
         return text.to_string();
@@ -324,7 +324,7 @@ fn ensure_dependency(text: &str, registry: bool) -> String {
 
 /// 插件依赖声明。
 ///
-/// 默认只约束到 minor（`"0.2"`），让宿主拿到同系列补丁；`registry` 写精确
+/// 默认只约束到 minor（`"0.3"`），让宿主拿到同系列补丁；`registry` 写精确
 /// 版本，适合要求"依赖版本必须等于发布工具版本"的流水线。
 fn dependency_line(registry: bool) -> String {
     if registry {
@@ -334,7 +334,7 @@ fn dependency_line(registry: bool) -> String {
     }
 }
 
-/// 从工具版本推导 minor 约束（`0.2.1` → `0.2`）。
+/// 从工具版本推导 minor 约束（`0.3.0` → `0.3`）。
 fn minor_requirement() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let mut parts = version.split('.');
@@ -376,7 +376,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_dependency, has_dependency};
+    use super::{ensure_dependency, has_dependency, minor_requirement};
 
     /// 依赖插入必须保留原有内容与换行风格。
     #[test]
@@ -395,7 +395,7 @@ mod tests {
         for line in [
             "tauri-plugin-delta-updater = { path = \"../plugin\" }",
             "tauri-plugin-delta-updater = { git = \"https://example.com/repo\" }",
-            "tauri-plugin-delta-updater = \"0.2.0\"",
+            "tauri-plugin-delta-updater = \"0.3.0\"",
         ] {
             let text = format!("[dependencies]\n{line}\n");
             assert_eq!(
@@ -407,13 +407,16 @@ mod tests {
         }
     }
 
-    /// 默认写 minor 约束（`"0.2"`），`--registry` 写精确版本。
+    /// 默认写 minor 约束，`--registry` 写精确版本。
     #[test]
     fn dependency_source_is_valid_cargo_syntax() {
         let default = ensure_dependency("[dependencies]\n", false);
         assert_eq!(
             default.trim_end(),
-            "[dependencies]\ntauri-plugin-delta-updater = \"0.2\"",
+            format!(
+                "[dependencies]\ntauri-plugin-delta-updater = \"{}\"",
+                minor_requirement()
+            ),
             "默认必须只约束到 minor"
         );
 

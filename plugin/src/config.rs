@@ -49,9 +49,9 @@ pub(crate) struct FileConfig {
     /// 可选：HTTP 代理（如 `http://127.0.0.1:7890`），用于企业网络。
     #[serde(default)]
     pub(crate) proxy: Option<String>,
-    /// 可选：是否接受旧版 minisign 签名，默认 `true`。
+    /// 可选：是否接受旧版 minisign 签名，默认 `false`。
     ///
-    /// 本项目发布端产出 pre-hash 签名；设为 `false` 可拒绝第三方旧格式。
+    /// 本项目发布端产出 pre-hash 签名；只有第三方历史管线才需要设为 `true`。
     #[serde(default)]
     pub(crate) allow_legacy_signatures: Option<bool>,
     /// 可选：主端点失败后何时切换备用端点（`transport` 默认 / `any`）。
@@ -67,7 +67,7 @@ pub(crate) struct FileConfig {
     /// `nsis` / `msi` 可省略（按文件后缀推断）。
     #[serde(default)]
     pub(crate) installer_kind: Option<String>,
-    /// 可选：是否允许明文 HTTP 端点，默认 `true`（仅兼容，建议 `false`）。
+    /// 可选：是否允许明文 HTTP 端点，默认 `false`（仅本地开发/内网测试可开启）。
     #[serde(default)]
     pub(crate) allow_insecure_transport: Option<bool>,
     /// 可选：下次启动时自动执行 `prepare` 落盘的待安装记录，默认 `false`。
