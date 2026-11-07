@@ -45,9 +45,15 @@ fn run(cli: Cli) -> Result<(), String> {
                     return Ok(());
                 }
                 return Err(format!(
-                    "接入配置不完整，缺少：\n  - {}",
+                    "接入配置不完整，缺少：\n  - {}\n\n修复：cargo delta init --endpoint <URL> --pubkey <KEY> --apply",
                     missing.join("\n  - ")
                 ));
+            }
+            if registry {
+                println!(
+                    "[WARN] 插件尚未发布到 crates.io：--registry 写出的版本依赖在发布前无法解析；\
+                     当前请使用默认 git 依赖。"
+                );
             }
             project.init_changes(
                 endpoint.trim(),
@@ -101,7 +107,11 @@ fn print_next_steps(is_init: bool) {
         "  2. install() 返回 Updated / RepairRequired 后退出进程，或直接用 install_and_exit()"
     );
     println!("  3. 需要覆盖 sidecar/resources 时，在 tauri.conf.json 配置 bundle_endpoint");
+    println!("  4. 上线前在每个目标平台实测一次完整更新：");
+    println!("     - Updated 后进程是否真的退出（脚本要等旧 PID 消失）");
+    println!("     - 重启后是否被 tauri-plugin-single-instance 判定为第二实例");
+    println!("     - 工作目录是否残留 .update.lock / tdx_update.ps1");
     if !is_init {
-        println!("  4. 官方插件配置默认保留；完全替代请运行 cargo delta migrate --remove-official --apply");
+        println!("  5. 官方插件配置默认保留；完全替代请运行 cargo delta migrate --remove-official --apply");
     }
 }

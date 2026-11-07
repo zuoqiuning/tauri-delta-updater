@@ -246,6 +246,9 @@ pub enum UpdateOutcome {
 #[non_exhaustive]
 pub enum UpdateResult {
     /// 已通过增量补丁更新。
+    ///
+    /// `install_full()` 也返回该变体：此时表示**安装器已启动**，
+    /// 安装失败的回滚由安装器负责，而不是本引擎的备份/修复脚本。
     Updated {
         /// 更新后的版本号。
         version: String,

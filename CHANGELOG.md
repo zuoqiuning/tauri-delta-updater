@@ -41,6 +41,11 @@
   `delta-updater://diagnosis` 事件；重新发布 `delta-updater://unavailable`
   事件说明不可用原因。
 - `DeltaUpdater::prepare_with_events`：可观察、可取消的 prepare 路径。
+- `UpdateConfig::allow_legacy_signatures(bool)` 与插件配置
+  `allow_legacy_signatures`：默认仍接受旧格式（兼容），安全要求高的宿主
+  可设为 `false` 只接受 pre-hash 签名；新增 `verify_manifest_signature_with`。
+- `cargo delta`：`--registry` 明确提示“插件尚未发布”，`--check` 失败时给出
+  修复命令，接入后的下一步包含退出姿势/单实例/残留文件的真机检查清单。
 - 前端类型包：`plugin/guest-js` + `plugin/dist-js`（npm 名 `tauri-plugin-delta-updater`），
   提供 `check` / `install` / `prepare` / `launch` / `diagnose` 等函数与完整事件/结果类型；
   未配置 `NPM_TOKEN` 时发布流程自动跳过 npm。
@@ -59,7 +64,9 @@
 ### 升级注意
 
 - `UpdateResult` 新增 `Ready` 变体（`#[non_exhaustive]`，外部 `match` 保留通配分支即可）。
-- 破坏性变更：无。清单格式、签名语义与替换脚本行为保持不变。
+- `UpdateConfig` 新增公开字段 `allow_legacy_signatures`：用 builder 的调用方无需改动；
+  用结构体字面量构造的调用方需要补齐该字段。
+- 破坏性变更：无。清单格式、签名默认语义与替换脚本行为保持不变。
 
 ## [0.2.0] - 2026-11-07
 

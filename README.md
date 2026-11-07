@@ -9,13 +9,15 @@ A high-performance, secure, and fault-tolerant delta update engine for Tauri v2 
 
 ### Is this for you?
 
-Five questions, asked before the long docs:
+Seven questions, asked before the long docs:
 
 1. **Do you ship only the main executable?** Yes → single-file patches are the sweet spot. No (`externalBin` / `resources`) → configure `bundle_endpoint` and use whole-app deltas.
 2. **Which platforms?** Windows exe/NSIS, macOS `.app`, and Linux bare binaries/AppImage are supported. Linux `.deb` / `.rpm` installs should stay with the package manager; use this engine for notification only.
 3. **Can your app exit when the update is ready?** Yes → three lines (`install()` + exit). Not yet → use `prepare()` and exit when your UI is done.
 4. **Do you need signed manifests, downgrade protection, deterministic rollback?** Yes → this engine. If you only want a smaller download and nothing else, a transparent layer over the official updater is simpler.
 5. **Already running a stable official-updater flow?** Read “Migration cost vs benefit” below before switching; the frontend contract changes.
+6. **Do you ship on macOS?** Whole-app swaps are code-complete, but Gatekeeper/notarization cannot be proven in CI. Budget one real update on your signed + notarized build before shipping.
+7. **Can you test one full update per platform?** The swap script waits for the old PID to disappear. Whether your `exit(0)` leaves a single-instance lock behind is only observable on a real machine.
 
 **Skip it if** your installer is small (roughly under 30 MB) and you release less than once a month: full downloads plus a CDN are simpler, and the extra moving parts (rollback scripts, elevation, installer conventions) are not worth the maintenance.
 
@@ -117,7 +119,8 @@ tauri-plugin-delta-updater = { git = "https://github.com/zuoqiuning/tauri-delta-
 
 Optional keys (all have safe defaults): `work_dir` (override the user-writable
 cache directory), `wait_timeout_secs` / `confirm_timeout_secs` (replacement
-timings), `proxy` (`http://127.0.0.1:7890`), `bundle_type`, `install_id`.
+timings), `proxy` (`http://127.0.0.1:7890`), `allow_legacy_signatures`
+(`false` rejects pre-0.7 minisign signatures), `bundle_type`, `install_id`.
 
 `src-tauri/src/lib.rs` — the only Rust you write:
 

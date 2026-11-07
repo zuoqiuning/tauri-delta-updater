@@ -51,7 +51,8 @@ pub(crate) enum Command {
         force: bool,
         /// 写注册表版本依赖（插件已发布到 crates.io 时使用）。
         ///
-        /// 缺省写 git 依赖：插件尚未发布时直接写版本号会让 `cargo build` 失败。
+        /// 当前插件尚未发布；此刻使用 --registry 会让 `cargo build` 找不到包。
+        /// 默认写 git 依赖是唯一可直接构建的形式。
         #[arg(long)]
         registry: bool,
         /// 只检查配置是否完整，不打印 diff；缺失时以非零状态退出。

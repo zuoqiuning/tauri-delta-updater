@@ -72,6 +72,7 @@ cargo run --all-features --bin cargo-delta -- delta init --project <dir> --endpo
 ## Commit / PR
 
 - Small, focused commits; explain *why* in the message (the "what" is in the diff).
+- When you add or remove tests, update the counts in `docs/设计文档.md` §6.1.
 - PRs should state: affected platform(s), how it was verified, and any new
   fallback / failure path.
 - CI must be green, including the plugin crate and the version-consistency job.
