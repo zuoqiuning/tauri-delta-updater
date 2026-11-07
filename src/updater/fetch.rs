@@ -26,13 +26,19 @@ impl DeltaUpdater {
         let manifest_bytes = manifest_bytes?;
         let signature = signature?;
 
-        verify_manifest_signature_multi(
+        if let Err(err) = verify_manifest_signature_multi(
             &manifest_bytes,
             &signature,
             &self.config.trusted_keys(),
             self.config.trust_policy,
             self.config.allow_legacy_signatures,
-        )?;
+        ) {
+            // 整包清单是独立制品：双签遗漏/密钥不一致时，必须让运维一眼看出
+            // 是"整包清单"而不是主清单出了问题。
+            return Err(DeltaError::SignatureInvalid(format!(
+                "整包清单（{url}）验签失败: {err}"
+            )));
+        }
 
         let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes)
             .map_err(|e| DeltaError::ManifestInvalid(format!("整包清单格式错误: {e}")))?;

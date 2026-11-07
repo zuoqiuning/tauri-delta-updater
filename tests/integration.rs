@@ -424,6 +424,16 @@ async fn test_cleanup_preserves_failure_counter_and_success_flag() {
         .join(tauri_delta_updater::core::artifacts::staged_file());
     fs::write(&patch, b"patch").await.unwrap();
     fs::write(&staged, b"staged").await.unwrap();
+    // 多跳链中断后残留的中间产物：必须在下一次更新开始时清掉，
+    // 否则旧字节可能被误当作下一跳的输入。
+    let hop_a = dir
+        .path()
+        .join(tauri_delta_updater::core::artifacts::STAGED_HOP_A);
+    let hop_b = dir
+        .path()
+        .join(tauri_delta_updater::core::artifacts::STAGED_HOP_B);
+    fs::write(&hop_a, b"hop").await.unwrap();
+    fs::write(&hop_b, b"hop").await.unwrap();
     fs::write(dir.path().join("app.exe.bak"), b"old")
         .await
         .unwrap();
@@ -442,6 +452,7 @@ async fn test_cleanup_preserves_failure_counter_and_success_flag() {
 
     assert!(!patch.exists(), "补丁文件应被清理");
     assert!(!staged.exists(), "暂存文件应被清理");
+    assert!(!hop_a.exists() && !hop_b.exists(), "多跳中间产物应被清理");
     assert!(
         !dir.path().join("app.exe.bak").exists(),
         "本项目产生的备份应被清理"

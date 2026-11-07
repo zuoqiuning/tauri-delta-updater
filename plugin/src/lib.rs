@@ -49,6 +49,9 @@
 //! await invoke('plugin:delta-updater|launch');                       // → kind: "updated"，进程退出
 //! await invoke('plugin:delta-updater|download_full', { onEvent: events }); // 全量回退：仅下载
 //! await invoke('plugin:delta-updater|install_full', { onEvent: events });  // 全量回退：下载并安装
+//! await invoke('plugin:delta-updater|pending');        // 读取跨重启待安装记录
+//! await invoke('plugin:delta-updater|discard_pending');// 清单版本更高时先丢弃旧记录
+//! await invoke('plugin:delta-updater|install_pending');// 执行待安装记录并退出
 //! await invoke('plugin:delta-updater|cancel');           // 任意时刻取消
 //! ```
 //!
@@ -332,6 +335,7 @@ mod tests {
             ("install_mode", "silentish"),
             ("trust_policy", "majority"),
             ("channel", "be ta"),
+            ("channel", "../evil"),
         ] {
             let mut raw = serde_json::json!({
                 "endpoints": ["https://cdn.example.com/latest.json"],

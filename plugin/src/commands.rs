@@ -182,6 +182,16 @@ pub(crate) async fn pending(
     Ok(pending.as_ref().map(PendingUpdateDto::from_pending))
 }
 
+/// 丢弃跨重启待安装记录；`true` 表示确实删除了记录。
+///
+/// 宿主在 `check()` 发现清单版本高于 `pending` 的版本时应调用本命令，
+/// 再安装新版本；否则会先执行一个基于旧清单的暂存脚本。
+#[tauri::command]
+pub(crate) async fn discard_pending(state: State<'_, UpdaterState>) -> Result<bool, ErrorDto> {
+    let updater = state.updater()?;
+    updater.discard_pending().await.map_err(ErrorDto::from)
+}
+
 /// 执行跨重启待安装记录；`true` 表示已启动替换，插件会随后退出进程。
 ///
 /// 与 `install` 一样必须退出：替换脚本在等旧进程退出，不退出更新不会生效。
@@ -219,6 +229,7 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
             cancel,
             reset_safety,
             pending,
+            discard_pending,
             install_pending
         ])
         .build()
@@ -270,6 +281,7 @@ pub fn init_from_config<R: Runtime>() -> TauriPlugin<R> {
             cancel,
             reset_safety,
             pending,
+            discard_pending,
             install_pending
         ])
         .build()

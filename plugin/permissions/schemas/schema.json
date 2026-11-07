@@ -331,6 +331,18 @@
           "markdownDescription": "Denies the diagnose command without any pre-configured scope."
         },
         {
+          "description": "Enables the discard_pending command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-discard-pending",
+          "markdownDescription": "Enables the discard_pending command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the discard_pending command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-discard-pending",
+          "markdownDescription": "Denies the discard_pending command without any pre-configured scope."
+        },
+        {
           "description": "Enables the download_full command without any pre-configured scope.",
           "type": "string",
           "const": "allow-download-full",
@@ -427,10 +439,10 @@
           "markdownDescription": "Denies the reset_safety command without any pre-configured scope."
         },
         {
-          "description": "默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-install-pending`",
+          "description": "默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-discard-pending`\n- `allow-install-pending`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-install-pending`"
+          "markdownDescription": "默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-discard-pending`\n- `allow-install-pending`"
         }
       ]
     }

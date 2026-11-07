@@ -126,6 +126,13 @@ impl DeltaUpdater {
     ///
     /// 返回 `true` 表示已启动替换（调用方应退出进程）；`false` 表示没有
     /// 可执行的待安装记录。启动成功后记录会被删除，避免下次重复触发。
+    ///
+    /// # 与"有更新版本可用"的关系
+    ///
+    /// 本方法不联网，只校验记录本身。若宿主希望在服务端已有更高版本时
+    /// 直接安装新版本，应先 [`Self::check`]，发现清单版本高于
+    /// [`Self::pending_update`] 的版本时调用 [`Self::discard_pending`]，
+    /// 再执行新的更新；否则会先装到 pending 的旧版本，再走一次更新。
     pub async fn install_pending(&self) -> Result<bool> {
         let _lock = UpdateLock::acquire_in(self.work_dir())?;
         let Some(record) = self.pending_update().await? else {
@@ -135,6 +142,21 @@ impl DeltaUpdater {
         let _ = tokio::fs::remove_file(self.work_dir().join(artifacts::PENDING_FILE)).await;
         crate::core::events::launch();
         Ok(true)
+    }
+
+    /// 丢弃跨重启待安装记录；返回是否确实删除了记录。
+    ///
+    /// `pending_update()` 不联网，无从知道服务端是否已经发布了更高版本。
+    /// 宿主应在 `check()` 拿到已验签清单后比较版本：清单更高时调用本方法，
+    /// 再执行新的更新，避免先执行一个基于旧清单的暂存脚本。
+    /// 暂存产物本身会在下一次更新开始时统一清理。
+    pub async fn discard_pending(&self) -> Result<bool> {
+        let _lock = UpdateLock::acquire_in(self.work_dir())?;
+        match tokio::fs::remove_file(self.work_dir().join(artifacts::PENDING_FILE)).await {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// 写入待安装记录；`prepare` 在未立即启动替换时调用。
@@ -323,6 +345,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let updater = test_updater(dir.path(), "0.2.0");
         assert!(!updater.install_pending().await.unwrap());
+    }
+
+    /// 显式丢弃：第一次返回 true，之后返回 false。
+    #[tokio::test]
+    async fn discard_pending_reports_whether_record_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let updater = test_updater(dir.path(), "0.2.0");
+        assert!(!updater.discard_pending().await.unwrap());
+
+        write_exe_record(dir.path(), "0.3.0", b"new").await;
+        assert!(updater.discard_pending().await.unwrap());
+        assert!(!dir.path().join(artifacts::PENDING_FILE).exists());
+        assert!(!updater.discard_pending().await.unwrap());
     }
 
     #[test]

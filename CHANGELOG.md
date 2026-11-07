@@ -5,7 +5,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.2.1] - 2026-11-07
+
+### 兼容性
+
+**0.2.1 相对 0.2.0 无破坏性变更**：现有接入代码零改动即可升级。
+
+- 新增的都是**可选 API**（`additional_public_keys` / `trust_policy` 等）或
+  **新增可选配置项**（`channel`、`min_os`、`install_on_next_launch`）。
+- `UpdateOutcome` / `UpdateResult` 新增了 `UnsupportedOs` 变体；两个枚举都标记了
+  `#[non_exhaustive]`，下游已有的通配分支不受影响（按 `VERSIONING.md` 属于 PATCH）。
+- `DeltaError` 新增 `ChainHopFailed` 变体（同样 `#[non_exhaustive]`）：错误码与
+  安全分类委托给底层错误，`Display` 额外指出失败跳数。
+- 清单新增字段（`min_os` / `notes_i18n`）全部可选，旧清单与旧客户端继续工作。
 
 ### 修复（接入与运行时）
 
@@ -86,8 +98,9 @@
   下次启动由 `pending_update()` / `install_pending()` 校验并执行。
   记录必须满足：目标版本严格高于当前版本、脚本与产物位于工作目录内、
   单文件产物重算 SHA-256 与 prepare 时的 `target_hash` 一致；启动时不联网。
-  插件新增 `pending` / `install_pending` 命令与 `install_on_next_launch`
-  配置（默认关闭，开启后启动时自动安装并退出进程）。
+  插件新增 `pending` / `discard_pending` / `install_pending` 命令与
+  `install_on_next_launch` 配置（默认关闭，开启后启动时自动安装并退出进程）。
+  `discard_pending()` 用于"服务端已有更高版本"时先丢弃旧记录，避免先装旧版本。
 - 前端类型包：`plugin/guest-js` + `plugin/dist-js`（npm 名 `tauri-plugin-delta-updater`），
   提供 `check` / `install` / `prepare` / `launch` / `diagnose` 等函数与完整事件/结果类型；
   未配置 `NPM_TOKEN` 时发布流程自动跳过 npm。

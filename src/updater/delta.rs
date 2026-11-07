@@ -182,6 +182,27 @@ impl DeltaUpdater {
                 .map(|size| size.saturating_add(1024 * 1024))
                 .unwrap_or(MAX_PATCH_BYTES);
 
+            let hop_label = format!(
+                "第 {}/{} 跳（{} → {}）",
+                index + 1,
+                chain.len(),
+                patch.from_version,
+                patch.to_version
+            );
+            let hop_error = |source: DeltaError| {
+                if chain.len() == 1 {
+                    // 直达补丁保持原有错误，不额外包装。
+                    return source;
+                }
+                DeltaError::ChainHopFailed {
+                    hop: index + 1,
+                    total: chain.len(),
+                    from: patch.from_version.clone(),
+                    to: patch.to_version.clone(),
+                    source: Box::new(source),
+                }
+            };
+
             super::download_and_verify_patch(
                 &self.client,
                 &patch.patch_url,
@@ -193,7 +214,11 @@ impl DeltaUpdater {
                 cancel,
                 &mut on_event,
             )
-            .await?;
+            .await
+            .map_err(|source| {
+                crate::core::events::patch_rejected(&format!("{hop_label}: {source}"));
+                hop_error(source)
+            })?;
 
             // 中间产物交替写入两个临时文件，最后一跳写最终暂存路径：
             // apply_patch 读输入、写输出，输入与输出不能是同一个文件。
@@ -205,16 +230,22 @@ impl DeltaUpdater {
                 hop_b.clone()
             };
             let _ = tokio::fs::remove_file(&output).await;
-            artifact = Some(
-                apply_patch(
-                    &input,
-                    &patch_path,
-                    &output,
-                    &patch.patch_hash,
-                    &patch.target_hash,
-                )
-                .await?,
-            );
+
+            artifact = match apply_patch(
+                &input,
+                &patch_path,
+                &output,
+                &patch.patch_hash,
+                &patch.target_hash,
+            )
+            .await
+            {
+                Ok(verified) => Some(verified),
+                Err(source) => {
+                    crate::core::events::patch_rejected(&format!("{hop_label}: {source}"));
+                    return Err(hop_error(source));
+                }
+            };
             input = output;
 
             // 清理补丁文件与其身份记录

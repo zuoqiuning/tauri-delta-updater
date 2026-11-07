@@ -207,6 +207,13 @@ export declare function cancel(): Promise<boolean>;
  */
 export declare function pending(): Promise<PendingUpdate | null>;
 /**
+ * Discard the persisted pending record; `true` if one existed.
+ *
+ * Call this after `check()` shows a newer version than `pending()`:
+ * otherwise the app installs the older staged version first and updates again.
+ */
+export declare function discardPending(): Promise<boolean>;
+/**
  * 执行跨重启待安装记录；`true` 表示已启动替换，插件随后退出进程。
  *
  * 通常在启动时调用，把"重启后继续安装"变成一次显式动作。

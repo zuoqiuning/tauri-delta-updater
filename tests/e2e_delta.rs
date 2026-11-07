@@ -569,8 +569,24 @@ async fn test_end_to_end_check_does_not_download() {
 }
 
 /// 端到端：prepare() 合并补丁但不启动替换脚本。
-#[tokio::test]
-async fn test_end_to_end_prepare_does_not_launch() {
+///
+/// 场景覆盖 prepare → UpToDate / Deferred 三条路径，调试构建的 async 状态机
+/// 在 Windows 默认测试线程栈（2 MB）上会溢出；与 `generate` 一样给足栈空间。
+#[test]
+fn test_end_to_end_prepare_does_not_launch() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(prepare_does_not_launch());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn prepare_does_not_launch() {
     let dir = tempdir().unwrap();
     let work_dir = dir.path().to_path_buf();
 
@@ -666,6 +682,29 @@ async fn test_end_to_end_prepare_does_not_launch() {
                 updater.pending_update().await.unwrap().is_some(),
                 "UpToDate 之后待安装记录与产物必须仍然可用"
             );
+
+            // 灰度未命中也属于"没有新东西可做"，同样不得清理待安装产物。
+            let (deferred_manifest, deferred_sig) = build_manifest_with_rollout(
+                &sk,
+                &server.base_url,
+                "0.2.0",
+                platform,
+                &patch_hash,
+                &new_hash,
+                None,
+                0,
+                None,
+            );
+            server.set("/latest.json", deferred_manifest);
+            server.set("/latest.json.sig", deferred_sig.into_bytes());
+            match updater.update().await.unwrap() {
+                UpdateOutcome::Deferred { .. } => {}
+                other => panic!("灰度 0% 应当返回 Deferred，实际: {other:?}"),
+            }
+            assert!(
+                updater.pending_update().await.unwrap().is_some(),
+                "Deferred 之后待安装记录与产物必须仍然可用"
+            );
         }
         other => panic!("prepare() 应当完成补丁合并，实际得到: {other:?}"),
     }
@@ -751,7 +790,7 @@ async fn test_end_to_end_multi_hop_chain() {
     server.set("/latest.json.sig", sign(&sk, &manifest_bytes).into_bytes());
 
     let updater = DeltaUpdater::new(
-        UpdateConfig::new(server.url("/latest.json"), pk_b64)
+        UpdateConfig::new(server.url("/latest.json"), pk_b64.clone())
             .current_version("0.1.0")
             .executable_path(&exe)
             .work_dir(&work_dir)
@@ -772,6 +811,37 @@ async fn test_end_to_end_multi_hop_chain() {
     assert!(
         server.was_requested("/0.1_to_0.2.patch") && server.was_requested("/0.2_to_0.3.patch"),
         "链式更新必须请求两跳补丁"
+    );
+
+    // 反向：第二跳的 target_hash 不符时，错误必须指出失败跳数，
+    // 且错误码/安全分类保持底层哈希校验的语义。
+    let mut bad = manifest.clone();
+    bad["patches"][platform][1]["target_hash"] = "0".repeat(64).into();
+    let bad_bytes = serde_json::to_vec_pretty(&bad).unwrap();
+    server.set("/latest.json", bad_bytes.clone());
+    server.set("/latest.json.sig", sign(&sk, &bad_bytes).into_bytes());
+
+    let bad_work = dir.path().join("work_bad");
+    std::fs::create_dir_all(&bad_work).unwrap();
+    let bad_updater = DeltaUpdater::new(
+        UpdateConfig::new(server.url("/latest.json"), pk_b64.clone())
+            .current_version("0.1.0")
+            .executable_path(&exe)
+            .work_dir(&bad_work),
+    )
+    .unwrap();
+    let err = bad_updater.prepare().await.unwrap_err();
+    match &err {
+        DeltaError::ChainHopFailed { hop, total, .. } => {
+            assert_eq!((*hop, *total), (2, 2), "必须指出第 2/2 跳失败");
+        }
+        other => panic!("链式失败必须包装为 ChainHopFailed，实际: {other:?}"),
+    }
+    assert_eq!(err.code(), "hash_mismatch", "错误码必须保持底层语义");
+    assert!(err.is_security_blocking(), "中间产物校验失败属于安全阻断");
+    assert!(
+        err.to_string().contains("第 2/2 跳"),
+        "错误文案必须包含跳数: {err}"
     );
 }
 

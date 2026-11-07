@@ -171,6 +171,10 @@ await invoke('plugin:delta-updater|launch');                       // → { kind
 // The user quit before launch? The staged artifact is persisted; on the next
 // start, verify and execute it (no network):
 const pending = await invoke('plugin:delta-updater|pending');      // null | { version, kind, created_at }
+// If check() reports a newer version than the persisted one, drop the stale
+// record first; otherwise the app installs the older staged version and
+// updates again.
+await invoke('plugin:delta-updater|discard_pending');
 await invoke('plugin:delta-updater|install_pending');              // → true, process exits
 // 增量不可用时，回退路径也不需要官方插件：
 await invoke('plugin:delta-updater|install_full', { onEvent: events });
@@ -182,8 +186,8 @@ exits the process once the swap is ready. Errors arrive as
 
 Typed bindings (optional) live in `plugin/guest-js` and build to `plugin/dist-js`:
 `check`, `install`, `prepare`, `launch`, `downloadFull`, `installFull`,
-`pending`, `installPending`, `diagnose`, `cancel`, `resetSafety`, plus
-`UpdateEvent` / `UpdateResult` / `ErrorDto` types. The npm package is **not published yet**; until it is, install
+`pending`, `discardPending`, `installPending`, `diagnose`, `cancel`,
+`resetSafety`, plus `UpdateEvent` / `UpdateResult` / `ErrorDto` types. The npm package is **not published yet**; until it is, install
 it from a checkout (`npm install /path/to/repo/plugin`) or copy `dist-js`.
 
 > [!WARNING]
@@ -365,7 +369,7 @@ Platform support:
 - **Environment diagnosis** — `DeltaUpdater::diagnose()` reports work-directory/install-directory writability, platform eligibility, safe-mode state, the exact log path, `last_rollback` (why the last replacement script rolled back, e.g. `update_failed` / `startup_timeout`), `events_path` for the structured stream below, and `user_message()` for a ready-to-display one-line summary. Linux builds also report whether a privilege-drop tool (`runuser` / `su`) was found; Windows builds report `authenticode` (whether the running exe is trusted) and `authenticode_check_skipped` (true when the check could not reach a conclusion, e.g. offline with no cached chain).
 - **Multi-hop delta chains** — when no direct patch exists, `update()` applies up to 3 verified hops (0.1 → 0.2 → 0.3), checking each intermediate result against its signed `target_hash` before it becomes the next hop's input. The planner prefers a direct patch, then the cheapest viable chain, then the full installer; a chain whose total size exceeds 80% of the installer falls back to full. The generator keeps only chainable history (`MAX_DELTA_CHAIN_HOPS`) so manifests don't grow forever.
 - **Key rotation without breaking old clients** — `additional_public_keys` / `additional_pubkeys` extend the trusted set; `trust_policy: "any"` accepts a signature from any of them, `"all"` requires every key to sign (dual-sign window). `.sig` files may contain multiple minisign blocks, and `generate --secondary-private-key` signs both the manifest and the installer with both keys.
-- **Minimum OS gate** — `generate --min-os 10.0.19045` writes a signed `platforms[].min_os`. The client refuses the update **before any download** when the detected OS is older (`UpdateOutcome::UnsupportedOs`), and hides both the patch and the full-installer URL from `check()`. Detection is Windows `RtlGetVersion`, macOS `sw_vers`, Linux kernel release; if it cannot be determined, the update proceeds (unknown ≠ unsupported).
+- **Minimum OS gate** — `generate --min-os 10.0.19045` writes a signed `platforms[].min_os`. The client refuses the update **before any download** when the detected OS is older (`UpdateOutcome::UnsupportedOs`), and hides both the patch and the full-installer URL from `check()`. Detection is Windows `RtlGetVersion`, macOS `sw_vers`, Linux kernel release; if it cannot be determined, the update proceeds (unknown ≠ unsupported). This is a **best-effort compatibility guard, not a security boundary**; on Linux it compares the kernel release, not the distro version.
 - **Localized release notes and custom metadata** — `generate --notes-i18n zh-CN=... --notes-i18n en=...` writes signed `notes_i18n`; `manifest.notes_for(locale)` resolves exact → language prefix → `notes`. Unknown top-level manifest fields are preserved in `UpdateManifest::extra`, and `generate --existing` carries them across releases, so hosts can read custom release metadata without forking the format.
 - **Signed percentage rollout** — `generate --rollout 20` writes `platforms[].rollout` into the signed manifest; clients bucket on `sha256(install_id + version) % 100`. Misses get `Deferred` and download nothing; `0` pauses the release, `100` behaves like a normal release. The install ID persists in `tdx_install_id`, or pass `UpdateConfig::install_id(...)`. No server-side bucketing and no second manifest.
 - **Forced minimum version** — `generate --min-version 0.1.5` writes a signed floor into the manifest. Clients below it ignore the rollout percentage and must update, so a bad release can be reversed without waiting for the bucket.
@@ -1068,6 +1072,11 @@ on the old key still verify (default `trust_policy: "any"`). Only after old
 clients are gone should a release be signed with the new key alone. Setting
 `trust_policy: "all"` forces dual-signing but makes a forgotten second
 signature a release-wide outage — use it only for the explicit transition window.
+`AllOf` requires **one signature block per trusted key**: if the app embeds 3
+keys, every release must carry 3 signatures (main manifest, bundle manifest and
+installer); a partial dual-sign is rejected with an explicit "bundle manifest
+signature failed" message. `AnyOf` has **no revocation** — remove the old key
+from the app after the rotation window (see SECURITY.md).
 
 <details>
 <summary>GitHub Actions sketch</summary>
@@ -1089,11 +1098,23 @@ signature a release-wide outage — use it only for the explicit transition wind
       --archive-dir old_binaries \
       --report dist/release-report.json \
       --fail-on-empty
+
+- name: Archive release state snapshot
+  uses: actions/upload-artifact@v4
+  with:
+    name: tdx-release-state-${{ github.ref_name }}
+    path: |
+      dist/latest.json
+      dist/latest.json.sig
+      dist/release-report.json
+    retention-days: 365
 ```
 
 Upload `dist/` together with the installer, and persist `old_binaries/` (cache or
 artifact) so the next run keeps its baselines. The `release-report.json` is handy
-as a CI job summary.
+as a CI job summary. The snapshot artifact is the rollback/audit record: the CDN
+only keeps the *current* manifest, so without it "which rollout/min_os was live
+when" cannot be reconstructed later.
 
 </details>
 
@@ -1241,9 +1262,11 @@ fallback, this library is the deeper option.
   `Diagnosis` gained `insecure_transport`; `PlatformInfo` gained `min_os`;
   `UpdateManifest` gained `notes_i18n` / `extra` and `notes_for(locale)`;
   `BundleManifest` gained `extra`; `UpdateOutcome` / `UpdateResult` gained
-  `UnsupportedOs`; new `PendingUpdate` / `PendingArtifact` types, `TrustPolicy`,
-  `current_os_version()`, `verify_manifest_signature_multi`,
-  `verify_file_signature_multi`, `MAX_DELTA_CHAIN_HOPS`, and the `pending` /
+  `UnsupportedOs`; `DeltaError` gained `ChainHopFailed` (delegates its code);
+  new `PendingUpdate` / `PendingArtifact` types, `TrustPolicy`,
+  `current_os_version()`, `discard_pending()`,
+  `verify_manifest_signature_multi`, `verify_file_signature_multi`,
+  `MAX_DELTA_CHAIN_HOPS`, and the `pending` / `discard_pending` /
   `install_pending` plugin commands. The release workflow now publishes both
   crates; until the plugin appears on crates.io, `cargo delta init` writes a git
   dependency.

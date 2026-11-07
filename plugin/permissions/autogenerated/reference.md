@@ -15,6 +15,7 @@
 - `allow-cancel`
 - `allow-reset-safety`
 - `allow-pending`
+- `allow-discard-pending`
 - `allow-install-pending`
 
 ## Permission Table
@@ -100,6 +101,32 @@ Enables the diagnose command without any pre-configured scope.
 <td>
 
 Denies the diagnose command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:allow-discard-pending`
+
+</td>
+<td>
+
+Enables the discard_pending command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:deny-discard-pending`
+
+</td>
+<td>
+
+Denies the discard_pending command without any pre-configured scope.
 
 </td>
 </tr>

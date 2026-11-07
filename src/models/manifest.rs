@@ -74,6 +74,9 @@ impl UpdateManifest {
     }
 
     /// 按语言取更新说明：精确匹配 → 语言前缀（`zh-CN` → `zh`）→ `notes` 兜底。
+    ///
+    /// 只**向下**匹配：`zh-CN` 能命中 `zh` 条目；`zh` 不会命中 `zh-CN` 条目。
+    /// 未知语言（包括空字符串）一律回退到 [`Self::notes`]。
     pub fn notes_for(&self, locale: &str) -> &str {
         let locale = locale.trim();
         if let Some(text) = self.notes_i18n.get(locale) {
@@ -169,6 +172,16 @@ pub struct PlatformInfo {
     ///
     /// 受清单签名保护。客户端无法确定本机版本时**不阻断**（宁可放行也不误伤）；
     /// 能确定且低于该值时拒绝下载，并返回 `UpdateOutcome::UnsupportedOs`。
+    ///
+    /// # 平台语义
+    ///
+    /// - Windows：`major.minor.build`（经 `RtlGetVersion` 探测）；
+    /// - macOS：`sw_vers -productVersion`（如 `13.4`）；
+    /// - Linux：**内核 release**（如 `5.15.0`），不是发行版版本；写 `"24.04"`
+    ///   之类的发行版号没有意义，Linux 上建议不要使用本字段。
+    ///
+    /// 这是**尽力而为的约束，不是安全边界**：探测失败（命令缺失、权限受限、
+    /// 内核接口不可读）时更新会继续。不要用它替代平台自身的兼容性检查。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_os: Option<String>,
     /// 可选灰度配置；缺省表示全量发布（旧清单天然全量）。

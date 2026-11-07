@@ -51,6 +51,16 @@ jobs:
             exit 1
           fi
 
+      - name: Verify npm package version matches core
+        run: |
+          CORE=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(p['version'] for p in d['packages'] if p['name']=='tauri-delta-updater'))")
+          NPM=$(node -p "require('./plugin/package.json').version")
+          if [ "$CORE" != "$NPM" ]; then
+            echo "核心 crate ($CORE) 与 npm 包 ($NPM) 版本不一致"
+            exit 1
+          fi
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -74,6 +84,22 @@ jobs:
 
       - name: Package dry-run
         run: cargo publish --dry-run --locked
+
+      # 插件的 publish --dry-run 依赖 crates.io 上已存在的核心版本，
+      # 核心发布前必然失败；这里只校验打包内容，真正的插件校验放在 publish job
+      # 的核心可见轮询之后。
+      - name: Package contents
+        run: |
+          cargo package --list --allow-dirty > /tmp/core-files
+          cargo package --list --manifest-path plugin/Cargo.toml --allow-dirty > /tmp/plugin-files
+          if grep -E '(^|/)target/|\.env$|node_modules/' /tmp/core-files /tmp/plugin-files; then
+            echo "包内出现不应发布的文件"
+            exit 1
+          fi
+          if grep -qE 'dist-js|guest-js' /tmp/plugin-files; then
+            echo "前端类型包应由 npm 发布，不应进入插件 crate tarball"
+            exit 1
+          fi
 
   publish:
     name: Publish to crates.io

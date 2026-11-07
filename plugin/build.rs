@@ -9,6 +9,7 @@ const COMMANDS: &[&str] = &[
     "cancel",
     "reset_safety",
     "pending",
+    "discard_pending",
     "install_pending",
 ];
 

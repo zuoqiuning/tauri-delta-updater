@@ -14,5 +14,6 @@ permissions = [
     "allow-cancel",
     "allow-reset-safety",
     "allow-pending",
+    "allow-discard-pending",
     "allow-install-pending",
 ]

@@ -171,6 +171,25 @@ pub enum DeltaError {
     #[error("全量安装失败: {0}")]
     FullInstallFailed(String),
 
+    /// 多跳补丁链中的某一跳失败（`hop` 从 1 开始）。
+    ///
+    /// 保留底层错误的错误码、可重试性与安全分类；`Display` 额外指出跳数与
+    /// 版本区间，便于定位是哪一跳、哪个中间产物校验失败。
+    #[error("补丁链第 {hop}/{total} 跳（{from} → {to}）失败: {source}")]
+    ChainHopFailed {
+        /// 失败的跳数（从 1 开始）。
+        hop: usize,
+        /// 链的总跳数。
+        total: usize,
+        /// 该跳的起始版本。
+        from: String,
+        /// 该跳的目标版本。
+        to: String,
+        /// 底层错误（保留原始错误码与安全分类）。
+        #[source]
+        source: Box<DeltaError>,
+    },
+
     /// 连续更新失败次数已达上限，已进入安全模式。
     ///
     /// [`crate::DeltaUpdater::check`] 用它表示"检查无法进行"——此时连清单
@@ -225,6 +244,7 @@ impl DeltaError {
             DeltaError::BundleInvalid(_) => "bundle_invalid",
             DeltaError::AuthenticodeUnsigned => "authenticode_unsigned",
             DeltaError::FullInstallFailed(_) => "full_install_failed",
+            DeltaError::ChainHopFailed { source, .. } => source.code(),
             DeltaError::SafeMode => "safe_mode",
         }
     }
@@ -239,6 +259,8 @@ impl DeltaError {
             DeltaError::Network(_) => true,
             // 服务端临时故障或限流可以重试
             DeltaError::HttpStatus(code) => *code >= 500 || *code == 429,
+            // 链路上的网络/超时错误与单跳完全相同；确定性错误仍不重试。
+            DeltaError::ChainHopFailed { source, .. } => source.is_retryable(),
             _ => false,
         }
     }
@@ -253,12 +275,14 @@ impl DeltaError {
     ///
     /// 其余错误（网络、磁盘、配置）是普通失败，可按需重试或回退全量。
     pub fn is_security_blocking(&self) -> bool {
-        matches!(
-            self,
+        match self {
             DeltaError::SignatureInvalid(_)
-                | DeltaError::HashMismatch { .. }
-                | DeltaError::AuthenticodeUnsigned
-        )
+            | DeltaError::HashMismatch { .. }
+            | DeltaError::AuthenticodeUnsigned => true,
+            // 链中任何一跳的哈希不符仍然是安全阻断。
+            DeltaError::ChainHopFailed { source, .. } => source.is_security_blocking(),
+            _ => false,
+        }
     }
 }
 
@@ -310,13 +334,26 @@ mod tests {
             E::BundleInvalid(String::new()),
             E::AuthenticodeUnsigned,
             E::FullInstallFailed(String::new()),
+            E::ChainHopFailed {
+                hop: 1,
+                total: 2,
+                from: String::new(),
+                to: String::new(),
+                source: Box::new(E::Network(String::new())),
+            },
             E::SafeMode,
         ]
     }
 
     #[test]
     fn codes_are_unique_snake_case() {
-        let mut codes: Vec<&'static str> = all_variants().iter().map(DeltaError::code).collect();
+        // ChainHopFailed 有意委托底层错误码（宿主仍按 hash_mismatch / network 分支），
+        // 因此不参与"每个变体一个唯一码"的计数；委托关系由上一条测试守住。
+        let mut codes: Vec<&'static str> = all_variants()
+            .iter()
+            .filter(|err| !matches!(err, DeltaError::ChainHopFailed { .. }))
+            .map(DeltaError::code)
+            .collect();
         for code in &codes {
             assert!(
                 code.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
@@ -328,5 +365,38 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), total, "错误码必须唯一，否则前端无法分支");
+    }
+
+    /// 链式错误必须保留底层错误的错误码与安全分类，同时指出失败跳数。
+    #[test]
+    fn chain_hop_failed_preserves_inner_classification() {
+        let security = DeltaError::ChainHopFailed {
+            hop: 2,
+            total: 3,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            source: Box::new(DeltaError::HashMismatch {
+                expected: "a".into(),
+                actual: "b".into(),
+            }),
+        };
+        assert_eq!(security.code(), "hash_mismatch");
+        assert!(security.is_security_blocking());
+        assert!(!security.is_retryable());
+        assert!(
+            security.to_string().contains("第 2/3 跳"),
+            "错误文案必须指出失败跳数: {security}"
+        );
+
+        let transient = DeltaError::ChainHopFailed {
+            hop: 1,
+            total: 2,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            source: Box::new(DeltaError::Network("timeout".into())),
+        };
+        assert_eq!(transient.code(), "network");
+        assert!(transient.is_retryable());
+        assert!(!transient.is_security_blocking());
     }
 }
