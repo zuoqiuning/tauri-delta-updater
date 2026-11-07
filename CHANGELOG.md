@@ -28,6 +28,8 @@
 - **`cargo delta` 重排 `tauri.conf.json`**：启用 `serde_json/preserve_order`
   后只插入新键，不再产生整文件 diff。
 - **清单与签名串行下载**：两者改为并行拉取，检查更新少一个 RTT。
+- **替换脚本可能静默不启动**：启动改为绝对路径并先校验文件存在；
+  缺失时返回明确错误，而不是 spawn 一个必然失败的 PowerShell。
 
 ### 新增
 

@@ -193,6 +193,12 @@ launch_app() {
 /// 启动替换脚本。
 #[cfg(unix)]
 pub fn launch_updater(script_path: &Path) -> Result<()> {
+    if !script_path.is_file() {
+        return Err(DeltaError::PatchApplyFailed(format!(
+            "替换脚本不存在: {}",
+            script_path.display()
+        )));
+    }
     let _ = std::process::Command::new("chmod")
         .arg("+x")
         .arg(script_path)

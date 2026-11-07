@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri_delta_updater::{
-    DeltaError, DeltaUpdater, UpdateConfig, UpdateEvent, UpdateOutcome, UpdateResult,
+    CancelToken, DeltaError, DeltaUpdater, UpdateConfig, UpdateEvent, UpdateOutcome, UpdateResult,
 };
 use tempfile::tempdir;
 
@@ -37,6 +37,51 @@ async fn test_end_to_end_delta_update() {
         }
         other => panic!("应当完成增量更新，实际得到: {other:?}"),
     }
+}
+
+/// `prepare_with_events`：只下载合并、不启动替换，事件流与安装路径一致。
+///
+/// 插件 `prepare` 命令依赖这条语义：前端拿到 `Ready` 后自己决定退出时机。
+#[tokio::test]
+async fn test_prepare_with_events_reports_progress_without_launch() {
+    let (_dir, updater, _server, new_bytes) = delta_fixture().await;
+    let token = CancelToken::new();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+
+    let outcome = updater
+        .prepare_with_events(&token, move |event| {
+            sink.lock().unwrap().push(event);
+        })
+        .await
+        .unwrap();
+
+    match outcome {
+        UpdateOutcome::Patched { staged } => {
+            assert_eq!(std::fs::read(staged.staged_exe()).unwrap(), new_bytes);
+            assert!(
+                staged.script_path().exists(),
+                "替换脚本已生成，但不得自动启动"
+            );
+        }
+        other => panic!("prepare 应完成合并，实际得到: {other:?}"),
+    }
+
+    let events = events.lock().unwrap();
+    assert!(
+        matches!(events.first(), Some(UpdateEvent::Checking)),
+        "事件流必须从 Checking 开始: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, UpdateEvent::Downloading { .. })),
+        "必须报告下载进度: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(UpdateEvent::Ready { .. })),
+        "最后一条事件必须是 Ready: {events:?}"
+    );
 }
 
 /// 配置了整包清单、但当前平台不支持整包替换时，仍必须使用单文件补丁。

@@ -730,6 +730,18 @@ fn assert_no_placeholder(script: &Path) {
     );
 }
 
+/// 脚本不存在时必须立刻报错，而不是 spawn 一个必然失败的 PowerShell 进程。
+#[test]
+fn test_launch_updater_rejects_missing_script() {
+    let dir = tempdir_path();
+    let missing = dir.join("does-not-exist.ps1");
+    let err = tauri_delta_updater::platform::windows::launch_updater(&missing).unwrap_err();
+    assert!(
+        matches!(err, tauri_delta_updater::DeltaError::PatchApplyFailed(_)),
+        "缺失脚本必须返回明确错误，实际: {err:?}"
+    );
+}
+
 #[test]
 fn test_generated_scripts_have_no_placeholders() {
     let dir = tempdir_path();

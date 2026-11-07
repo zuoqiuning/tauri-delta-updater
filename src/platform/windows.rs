@@ -428,25 +428,31 @@ fn bundle_plan(
 
 /// 启动替换脚本。
 ///
-/// 用 `powershell -File <脚本名>` 并把工作目录设为脚本所在目录：
-/// 这样路径里即使有空格或特殊字符也不会被命令行解析出问题。
+/// 用绝对脚本路径 + `-File`，工作目录设为脚本所在目录：
+/// 相对路径在不同 PowerShell 版本/调用环境下解析规则不一致，
+/// 一旦解析失败只会得到"脚本不存在"，更新静默不生效。
 pub fn launch_updater(script_path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+        if !script_path.is_file() {
+            return Err(DeltaError::PatchApplyFailed(format!(
+                "替换脚本不存在: {}",
+                script_path.display()
+            )));
+        }
         let work_dir = script_path
             .parent()
             .ok_or_else(|| DeltaError::PatchApplyFailed("找不到脚本所在目录".into()))?;
-        let script_name = file_name(script_path)?;
 
         let mut cmd = std::process::Command::new("powershell.exe");
         cmd.arg("-NoProfile")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
             .arg("-File")
-            .arg(&script_name)
+            .arg(script_path)
             .current_dir(work_dir);
         // 不弹出黑色控制台窗口
         cmd.creation_flags(CREATE_NO_WINDOW);
