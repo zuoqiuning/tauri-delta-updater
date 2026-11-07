@@ -82,6 +82,12 @@ pub fn staged_file() -> &'static str {
     }
 }
 
+/// 多跳补丁链的中间产物（交替使用：`apply_patch` 的输入与输出不能是同一个文件）。
+pub const STAGED_HOP_A: &str = "tdx_staged_hop_a";
+
+/// 多跳补丁链的中间产物（第二路）。
+pub const STAGED_HOP_B: &str = "tdx_staged_hop_b";
+
 /// 更新脚本日志。
 pub const LOG_FILE: &str = "tdx_update.log";
 

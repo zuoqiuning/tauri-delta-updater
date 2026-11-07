@@ -227,7 +227,9 @@ pub mod session;
 pub mod updater;
 
 pub use error::{DeltaError, Result};
-pub use models::{PatchInfo, PatchScope, PlatformInfo, Rollout, UpdateManifest};
+pub use models::{
+    PatchInfo, PatchScope, PlatformInfo, Rollout, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
+};
 pub use session::{UpdateEvent, UpdateSession};
 
 pub use core::bundle::{

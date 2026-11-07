@@ -2,12 +2,12 @@
 
 use crate::files::{extract_version, infer_os, is_app_binary_candidate};
 use crate::SkipRecord;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tauri_delta_updater::{
     apply_patch, calculate_hash, create_patch_with_level, detect_arch, normalize_version,
-    DeltaError, PatchInfo, PatchScope,
+    DeltaError, PatchInfo, PatchScope, MAX_DELTA_CHAIN_HOPS,
 };
 use walkdir::WalkDir;
 
@@ -253,4 +253,172 @@ pub(crate) async fn generate_single_patches(
     platform_patches.dedup_by(|a, b| a.from_version == b.from_version);
 
     Ok((platform_patches, skipped))
+}
+
+/// 保留仍能链到目标版本的补丁，并按跳数上限裁剪。
+///
+/// 每轮发布都会为每个可用基线重新生成"直达新版本"的补丁；这里额外保留
+/// 历史补丁，让跨多个版本的客户端可以 `0.1 -> 0.2 -> 0.3` 逐跳升级，
+/// 而不必下载全量安装包。超过 [`MAX_DELTA_CHAIN_HOPS`] 的补丁用不上，
+/// 必须裁掉，否则清单会随发布次数无限膨胀。
+///
+/// 保留的是**元数据**：旧补丁文件必须继续留在 CDN 上，否则链会在下载阶段
+/// 断掉。发布流水线不应删除历史补丁。
+pub(crate) fn retain_chain_patches(
+    mut grouped: HashMap<String, Vec<PatchInfo>>,
+    new_version: &str,
+) -> HashMap<String, Vec<PatchInfo>> {
+    let Ok(target) = semver::Version::parse(normalize_version(new_version)) else {
+        return grouped;
+    };
+
+    for patches in grouped.values_mut() {
+        // 去重：同一 (from,to) 只保留最后写入的那份（本轮生成的新补丁）。
+        let mut latest: HashMap<(String, String), PatchInfo> = HashMap::new();
+        for patch in patches.drain(..) {
+            let (Ok(from), Ok(to)) = (
+                semver::Version::parse(normalize_version(&patch.from_version)),
+                semver::Version::parse(normalize_version(&patch.to_version)),
+            ) else {
+                continue;
+            };
+            if from >= to || to > target {
+                continue;
+            }
+            latest.insert((from.to_string(), to.to_string()), patch);
+        }
+        let edges: Vec<PatchInfo> = latest.into_values().collect();
+
+        // 反向 BFS：从目标版本出发，标出 `MAX_DELTA_CHAIN_HOPS` 跳内可达的起点。
+        let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
+        for patch in &edges {
+            reverse
+                .entry(normalize_version(&patch.to_version).to_string())
+                .or_default()
+                .push(normalize_version(&patch.from_version).to_string());
+        }
+        let mut keep: HashSet<String> = HashSet::new();
+        let mut queue = VecDeque::from([(target.to_string(), 0usize)]);
+        while let Some((node, depth)) = queue.pop_front() {
+            if depth >= MAX_DELTA_CHAIN_HOPS {
+                continue;
+            }
+            let Some(predecessors) = reverse.get(&node) else {
+                continue;
+            };
+            for from in predecessors {
+                if keep.insert(from.clone()) {
+                    queue.push_back((from.clone(), depth + 1));
+                }
+            }
+        }
+
+        // 只保留"从该版本出发一定能走到目标"的边。
+        let mut kept: Vec<PatchInfo> = edges
+            .into_iter()
+            .filter(|patch| keep.contains(normalize_version(&patch.from_version)))
+            .collect();
+        // 排序保证清单稳定，避免每次发布都产生无意义的 diff。
+        kept.sort_by(|a, b| {
+            let from_a = semver::Version::parse(normalize_version(&a.from_version)).ok();
+            let from_b = semver::Version::parse(normalize_version(&b.from_version)).ok();
+            from_a.cmp(&from_b).then_with(|| {
+                let to_a = semver::Version::parse(normalize_version(&a.to_version)).ok();
+                let to_b = semver::Version::parse(normalize_version(&b.to_version)).ok();
+                to_a.cmp(&to_b)
+            })
+        });
+        *patches = kept;
+    }
+
+    grouped.retain(|_, patches| !patches.is_empty());
+    grouped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retain_chain_patches;
+    use std::collections::HashMap;
+    use tauri_delta_updater::{PatchInfo, PatchScope};
+
+    fn patch(from: &str, to: &str, url: &str) -> PatchInfo {
+        PatchInfo {
+            from_version: from.into(),
+            to_version: to.into(),
+            patch_url: url.into(),
+            patch_hash: "patch".into(),
+            target_hash: "target".into(),
+            patch_size: None,
+            scope: Some(PatchScope::MainExecutableOnly),
+        }
+    }
+
+    fn group(patches: Vec<PatchInfo>) -> HashMap<String, Vec<PatchInfo>> {
+        let mut grouped = HashMap::new();
+        grouped.insert("windows-x86_64".to_string(), patches);
+        grouped
+    }
+
+    fn hops(grouped: &HashMap<String, Vec<PatchInfo>>) -> Vec<(String, String)> {
+        grouped["windows-x86_64"]
+            .iter()
+            .map(|p| (p.from_version.clone(), p.to_version.clone()))
+            .collect()
+    }
+
+    /// 链前缀必须保留，孤立的历史补丁必须清掉。
+    #[test]
+    fn keeps_chainable_prefix_and_drops_orphans() {
+        let grouped = retain_chain_patches(
+            group(vec![
+                patch("0.1.0", "0.2.0", "old.patch"),
+                patch("0.0.9", "0.0.10", "orphan.patch"),
+                patch("0.2.0", "0.3.0", "new.patch"),
+            ]),
+            "0.3.0",
+        );
+        assert_eq!(
+            hops(&grouped),
+            vec![
+                ("0.1.0".to_string(), "0.2.0".to_string()),
+                ("0.2.0".to_string(), "0.3.0".to_string()),
+            ]
+        );
+    }
+
+    /// 超过跳数上限的链前缀必须裁掉：客户端永远不会用到。
+    #[test]
+    fn drops_prefixes_beyond_hop_limit() {
+        let grouped = retain_chain_patches(
+            group(vec![
+                patch("0.1.0", "0.2.0", "a.patch"),
+                patch("0.2.0", "0.3.0", "b.patch"),
+                patch("0.3.0", "0.4.0", "c.patch"),
+                patch("0.4.0", "0.5.0", "d.patch"),
+            ]),
+            "0.5.0",
+        );
+        assert_eq!(
+            hops(&grouped),
+            vec![
+                ("0.2.0".to_string(), "0.3.0".to_string()),
+                ("0.3.0".to_string(), "0.4.0".to_string()),
+                ("0.4.0".to_string(), "0.5.0".to_string()),
+            ],
+            "0.1→0.2 是第 4 跳，必须裁掉"
+        );
+    }
+
+    /// 同一对版本在旧清单与本轮生成里都存在时，本轮生成的新补丁必须胜出。
+    #[test]
+    fn new_patch_overwrites_same_edge() {
+        let grouped = retain_chain_patches(
+            group(vec![
+                patch("0.2.0", "0.3.0", "old.patch"),
+                patch("0.2.0", "0.3.0", "new.patch"),
+            ]),
+            "0.3.0",
+        );
+        assert_eq!(grouped["windows-x86_64"][0].patch_url, "new.patch");
+    }
 }

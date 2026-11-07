@@ -26,6 +26,7 @@ mod flow;
 mod full;
 mod outcome;
 mod pending;
+mod plan;
 mod rollout;
 mod simulate;
 mod staged;

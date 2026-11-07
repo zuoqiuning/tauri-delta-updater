@@ -122,9 +122,13 @@ impl DeltaUpdater {
             ));
         }
 
-        // 匹配补丁
-        let Some(patch) = manifest.find_patch(&self.config.current_version, &self.config.platform)
-        else {
+        // 规划补丁路径：直达优先，其次最多 MAX_CHAIN_HOPS 跳；
+        // 链的总成本不划算时返回 None，直接走全量。
+        let Some(chain) = super::plan::plan_single(
+            &manifest,
+            &self.config.platform,
+            &self.config.current_version,
+        ) else {
             // 整包不支持且单文件也没补丁时，报整包原因更准确：
             // 用户会知道"这台机器本来就不支持整包"，而不是"发布端漏了补丁"。
             let reason = bundle_unsupported
@@ -136,52 +140,82 @@ impl DeltaUpdater {
             return Ok(fallback_to_full(full_download_url, reason, &mut on_event));
         };
 
-        crate::core::events::patch_matched(
-            &patch.from_version,
-            &patch.to_version,
-            patch.patch_size,
-        );
-
-        // 下载补丁
+        // 下载并逐跳应用。每跳复用同一个补丁文件名，应用后立即校验**中间产物**
+        // 的哈希（每个 `target_hash` 都在签名清单里）——任何一跳不符都中止，
+        // 不能把未经验证的字节当作下一跳的输入。
         let patch_path = self.work_dir.join(crate::core::artifacts::PATCH_FILE);
-        // 体积上限从清单的 patch_size 推导（清单签名覆盖了它，所以可信）：
-        // 1 MB 余量足够吸收服务端的分块差异；响应体在传输中仍可能被替换，
-        // 无上限的流式写入会灌满磁盘。
-        // 清单未声明 patch_size 时退到固定硬上限，保证任何路径下都有约束。
-        let max_bytes = patch
-            .patch_size
-            .map(|size| size.saturating_add(1024 * 1024))
-            .unwrap_or(MAX_PATCH_BYTES);
-
-        super::download_and_verify_patch(
-            &self.client,
-            &patch.patch_url,
-            &patch_path,
-            &self.work_dir.join(crate::core::artifacts::PATCH_META),
-            &patch.patch_hash,
-            max_bytes,
-            "Patch",
-            cancel,
-            &mut on_event,
-        )
-        .await?;
-
-        // 应用补丁，生成新版本（产物经双端哈希校验，类型上排除未验证字节）
         let staged_path = self.work_dir.join(crate::core::artifacts::staged_file());
+        let hop_a = self.work_dir.join(crate::core::artifacts::STAGED_HOP_A);
+        let hop_b = self.work_dir.join(crate::core::artifacts::STAGED_HOP_B);
         let _ = tokio::fs::remove_file(&staged_path).await;
-        let artifact = apply_patch(
-            &self.executable_path,
-            &patch_path,
-            &staged_path,
-            &patch.patch_hash,
-            &patch.target_hash,
-        )
-        .await?;
+        let _ = tokio::fs::remove_file(&hop_a).await;
+        let _ = tokio::fs::remove_file(&hop_b).await;
 
-        // 清理补丁文件与其身份记录
-        let _ = tokio::fs::remove_file(&patch_path).await;
-        let _ =
-            tokio::fs::remove_file(self.work_dir.join(crate::core::artifacts::PATCH_META)).await;
+        let last = chain.len() - 1;
+        let mut input = self.executable_path.clone();
+        let mut artifact = None;
+        for (index, patch) in chain.iter().enumerate() {
+            crate::core::events::patch_matched(
+                &patch.from_version,
+                &patch.to_version,
+                patch.patch_size,
+            );
+
+            // 体积上限从清单的 patch_size 推导（清单签名覆盖了它，所以可信）：
+            // 1 MB 余量足够吸收服务端的分块差异；响应体在传输中仍可能被替换，
+            // 无上限的流式写入会灌满磁盘。
+            // 清单未声明 patch_size 时退到固定硬上限，保证任何路径下都有约束。
+            let max_bytes = patch
+                .patch_size
+                .map(|size| size.saturating_add(1024 * 1024))
+                .unwrap_or(MAX_PATCH_BYTES);
+
+            super::download_and_verify_patch(
+                &self.client,
+                &patch.patch_url,
+                &patch_path,
+                &self.work_dir.join(crate::core::artifacts::PATCH_META),
+                &patch.patch_hash,
+                max_bytes,
+                "Patch",
+                cancel,
+                &mut on_event,
+            )
+            .await?;
+
+            // 中间产物交替写入两个临时文件，最后一跳写最终暂存路径：
+            // apply_patch 读输入、写输出，输入与输出不能是同一个文件。
+            let output = if index == last {
+                staged_path.clone()
+            } else if index % 2 == 0 {
+                hop_a.clone()
+            } else {
+                hop_b.clone()
+            };
+            let _ = tokio::fs::remove_file(&output).await;
+            artifact = Some(
+                apply_patch(
+                    &input,
+                    &patch_path,
+                    &output,
+                    &patch.patch_hash,
+                    &patch.target_hash,
+                )
+                .await?,
+            );
+            input = output;
+
+            // 清理补丁文件与其身份记录
+            let _ = tokio::fs::remove_file(&patch_path).await;
+            let _ = tokio::fs::remove_file(self.work_dir.join(crate::core::artifacts::PATCH_META))
+                .await;
+        }
+        let _ = tokio::fs::remove_file(&hop_a).await;
+        let _ = tokio::fs::remove_file(&hop_b).await;
+
+        let artifact = artifact.ok_or_else(|| {
+            DeltaError::PatchApplyFailed("补丁链为空：规划阶段保证至少有一跳".into())
+        })?;
 
         // 脚本执行前最后一次确认产物仍是校验时的那份字节，
         // 封住"校验完成 → 脚本执行"之间的 TOCTOU 窗口。

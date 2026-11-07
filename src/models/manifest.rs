@@ -1,6 +1,13 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
+/// 客户端允许的最长补丁链跳数。
+///
+/// 发布端按同一上限保留历史补丁（`cargo delta generate` 会自动裁剪），
+/// 两端必须一致：客户端放宽只会走上永远走不通的链，收紧则让已发布的历史
+/// 补丁失效。
+pub const MAX_DELTA_CHAIN_HOPS: usize = 3;
+
 /// 完全兼容 Tauri 官方 Updater 插件的 latest.json 格式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateManifest {
@@ -39,6 +46,10 @@ impl UpdateManifest {
     ///
     /// 只返回目标版本与清单版本一致的补丁：清单里可能残留其它平台上一轮发布的
     /// 补丁，直接使用会把应用更新到错误的版本。
+    ///
+    /// **只返回直达补丁（1 跳）。** 更新流程会自动串起最多
+    /// [`MAX_DELTA_CHAIN_HOPS`] 跳的历史补丁（`0.1 -> 0.2 -> 0.3`）；
+    /// 需要同样的能力时用 `check()` / `update()`，不要自行拼装。
     pub fn find_patch(&self, current_version: &str, platform: &str) -> Option<&PatchInfo> {
         self.patches
             .get(platform)?

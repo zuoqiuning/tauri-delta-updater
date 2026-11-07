@@ -20,7 +20,7 @@ use tauri_delta_updater::{
     Rollout, ScriptEvent, ScriptTimings, SimulationReport, Staged, StagedBundle,
     StagedFullInstaller, StagedRepair, StartupState, UpdateCheck, UpdateConfig, UpdateEvent,
     UpdateLock, UpdateManifest, UpdateOutcome, UpdateResult, UpdateSession, VerifiedArtifact,
-    MAX_INCREMENTAL_FILE_BYTES,
+    MAX_DELTA_CHAIN_HOPS, MAX_INCREMENTAL_FILE_BYTES,
 };
 
 /// 模块级路径同样属于契约（文档与示例直接引用这些路径）。

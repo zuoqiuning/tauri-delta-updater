@@ -35,7 +35,7 @@ use baseline::archive_baseline;
 use bundles::generate_bundles;
 use files::{infer_platform, manifest_names};
 use keys::{derive_public_key, load_secret_key};
-use patches::{generate_single_patches, PatchContext};
+use patches::{generate_single_patches, retain_chain_patches, PatchContext};
 
 mod args;
 mod baseline;
@@ -387,23 +387,15 @@ async fn run(args: Args) -> Result<(), String> {
     )
     .await?;
 
-    // 只保留目标版本与本次发布一致的补丁。
-    // 上一轮遗留的补丁指向旧版本，既无法使用，也会让清单不断膨胀。
-    let mut all_patches: HashMap<String, Vec<PatchInfo>> = manifest
-        .patches
-        .clone()
-        .into_iter()
-        .filter_map(|(platform, patches)| {
-            let kept: Vec<PatchInfo> = patches
-                .into_iter()
-                .filter(|p| p.to_version == new_version)
-                .collect();
-            (!kept.is_empty()).then_some((platform, kept))
-        })
-        .collect();
-
-    all_patches.insert(platform_key.clone(), platform_patches);
-    manifest.patches = all_patches;
+    // 保留仍能链到新版本的旧补丁：跨多个版本的客户端可以逐跳升级，
+    // 而不必下载全量。超出跳数上限或与目标无关的补丁会被裁掉，
+    // 清单不会随发布次数无限膨胀。
+    let mut all_patches: HashMap<String, Vec<PatchInfo>> = manifest.patches.clone();
+    all_patches
+        .entry(platform_key.clone())
+        .or_default()
+        .extend(platform_patches);
+    manifest.patches = retain_chain_patches(all_patches, new_version);
 
     manifest.version = new_version.to_string();
     manifest.pub_date = chrono::Utc::now().to_rfc3339();

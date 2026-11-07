@@ -101,6 +101,8 @@ pub async fn cleanup_previous_updates(work_dir: &Path, exe_path: &Path) {
     }
 
     let _ = fs::remove_file(work_dir.join(artifacts::staged_file())).await;
+    let _ = fs::remove_file(work_dir.join(artifacts::STAGED_HOP_A)).await;
+    let _ = fs::remove_file(work_dir.join(artifacts::STAGED_HOP_B)).await;
     let _ = fs::remove_file(work_dir.join(artifacts::updater_script())).await;
     // 全量安装的临时解包目录（替换脚本已在执行时不会走到清理，安全）
     let _ = fs::remove_dir_all(work_dir.join(artifacts::FULL_STAGING_DIR)).await;

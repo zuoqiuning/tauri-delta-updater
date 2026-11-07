@@ -360,6 +360,7 @@ Platform support:
 - **Download-cost visibility** — `generate` stamps `platforms[].size` into the signed manifest, so `CheckOutcome::patch_size_ratio()` returns `patch_size / installer_size` before any download. **Lower is better**: `0.1` means the patch is 10% of the installer; values near `1.0` mean the delta saves little and the full installer may be faster. Manifests without `size` return `None` instead of a guessed number.
 - **Local verification harness** — `simulate_update(old, new, work_dir)` runs generate → apply → dual-hash verification with no network or signing key, so you can see the real patch ratio before integrating.
 - **Environment diagnosis** — `DeltaUpdater::diagnose()` reports work-directory/install-directory writability, platform eligibility, safe-mode state, the exact log path, `last_rollback` (why the last replacement script rolled back, e.g. `update_failed` / `startup_timeout`), `events_path` for the structured stream below, and `user_message()` for a ready-to-display one-line summary. Linux builds also report whether a privilege-drop tool (`runuser` / `su`) was found; Windows builds report `authenticode` (whether the running exe is trusted) and `authenticode_check_skipped` (true when the check could not reach a conclusion, e.g. offline with no cached chain).
+- **Multi-hop delta chains** — when no direct patch exists, `update()` applies up to 3 verified hops (0.1 → 0.2 → 0.3), checking each intermediate result against its signed `target_hash` before it becomes the next hop's input. The planner prefers a direct patch, then the cheapest viable chain, then the full installer; a chain whose total size exceeds 80% of the installer falls back to full. The generator keeps only chainable history (`MAX_DELTA_CHAIN_HOPS`) so manifests don't grow forever.
 - **Signed percentage rollout** — `generate --rollout 20` writes `platforms[].rollout` into the signed manifest; clients bucket on `sha256(install_id + version) % 100`. Misses get `Deferred` and download nothing; `0` pauses the release, `100` behaves like a normal release. The install ID persists in `tdx_install_id`, or pass `UpdateConfig::install_id(...)`. No server-side bucketing and no second manifest.
 - **Forced minimum version** — `generate --min-version 0.1.5` writes a signed floor into the manifest. Clients below it ignore the rollout percentage and must update, so a bad release can be reversed without waiting for the bucket.
 - **Deterministic startup handshake** — the replacement script writes `staged`, the new process writes `booting`, and `confirm_startup_success_with(|| ...)` writes `committed` only after the host's health check passes. Failure writes `health_check_failed` and rolls back immediately; `diagnose().startup_state` / `last_rollback` distinguish "never started", "crashed before commit", "started but unhealthy" and "committed".
@@ -966,6 +967,15 @@ next release can reuse the same `--old-dir` without any manual file shuffling.
 `--report` writes a machine-readable summary of every baseline (patch size, ratio,
 skip reason), and `--fail-on-empty` turns "no patch was produced" into a CI
 failure instead of a silently full-download-only release.
+
+`generate` also **retains chainable history**: patch entries from previous
+manifests are kept when they form a path to the new version within
+`MAX_DELTA_CHAIN_HOPS` (default 3), and everything else is pruned. That lets a
+client on `0.1.0` reach `0.3.0` through `0.1 -> 0.2 -> 0.3` without the full
+installer. Two consequences for the release pipeline:
+
+- **Keep old patch files on the CDN.** The manifest keeps pointing at them; deleting them turns a chain into a download failure.
+- **Ship the old executables to `--old-dir`.** `generate` can only add a new edge when it has the binary that edge starts from.
 
 **Whole-app bundles.** If the app ships sidecars or resources, add
 `--new-app-dir` and one or more `--old-app-dir` (the directory name must contain

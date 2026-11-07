@@ -37,6 +37,11 @@
 
 ### 新增
 
+- 多跳补丁链：没有直达补丁时按最多 3 跳依次应用（`0.1 → 0.2 → 0.3`），
+  每一跳都用签名清单里的 `target_hash` 校验中间产物，再作为下一跳输入；
+  链的总大小超过安装包 80% 时回退全量。`cargo delta generate` 自动保留
+  能链到新版本的历史补丁并按 `MAX_DELTA_CHAIN_HOPS` 裁剪，清单不会无限膨胀。
+  历史补丁文件必须继续留在 CDN 上，否则链会在下载阶段断掉。
 - 插件新增 `prepare` / `launch` 命令与 `UpdateResult::Ready`：先下载合并、
   由前端决定退出时机（保存草稿、二次确认），再触发替换。
 - 插件配置新增 `work_dir` / `wait_timeout_secs` / `confirm_timeout_secs` /

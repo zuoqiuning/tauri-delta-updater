@@ -69,19 +69,27 @@ impl DeltaUpdater {
         } else {
             None
         };
-        // 不是更新时不应展示补丁信息：清单里可能残留同版本的补丁记录
-        let single_patch = if is_newer && !deferred_by_rollout {
-            manifest.find_patch(&self.config.current_version, &self.config.platform)
+        // 单文件补丁路径：直达优先，其次最多 MAX_CHAIN_HOPS 跳；
+        // 链的总成本超过安装包预算时视为"没有补丁"。
+        let single_chain = if is_newer && !deferred_by_rollout {
+            super::plan::plan_single(
+                &manifest,
+                &self.config.platform,
+                &self.config.current_version,
+            )
         } else {
             None
         };
+        let single_patch_size = single_chain.as_ref().and_then(|chain| {
+            chain.iter().try_fold(0u64, |total, patch| {
+                patch.patch_size.map(|size| total.saturating_add(size))
+            })
+        });
 
         let patch_size = match &bundle {
             BundleResolution::Ready { patch, .. } => patch.patch_size,
             // 整包不可用时单文件补丁仍可用，UI 应展示真实的补丁体积
-            BundleResolution::Unsupported(_) | BundleResolution::NotConfigured => {
-                single_patch.and_then(|p| p.patch_size)
-            }
+            BundleResolution::Unsupported(_) | BundleResolution::NotConfigured => single_patch_size,
             BundleResolution::NoPatch => None,
         };
 
@@ -100,7 +108,7 @@ impl DeltaUpdater {
                 BundleResolution::Unsupported(detail) => {
                     if let Some(detail) = environment {
                         Some(FallbackReason::EnvironmentUnsupported(detail))
-                    } else if single_patch.is_some() {
+                    } else if single_chain.is_some() {
                         None
                     } else {
                         Some(FallbackReason::EnvironmentUnsupported(detail))
@@ -110,7 +118,7 @@ impl DeltaUpdater {
                 BundleResolution::NotConfigured => {
                     if let Some(detail) = environment {
                         Some(FallbackReason::EnvironmentUnsupported(detail))
-                    } else if single_patch.is_some() {
+                    } else if single_chain.is_some() {
                         None
                     } else {
                         Some(no_matching())

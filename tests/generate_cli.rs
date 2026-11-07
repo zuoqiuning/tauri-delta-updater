@@ -314,10 +314,11 @@ fn test_generate_cli_warns_on_platform_mismatch() {
         "平台条目必须写入显式指定的平台键"
     );
     assert!(
-        manifest["patches"]["darwin-aarch64"]
-            .as_array()
-            .is_some_and(|a| a.is_empty()),
-        "架构不同的旧主程序不得生成补丁"
+        manifest["patches"]
+            .get("darwin-aarch64")
+            .and_then(|p| p.as_array())
+            .is_none_or(|a| a.is_empty()),
+        "架构不同的旧主程序不得生成补丁（空平台键会被省略）"
     );
 }
 
@@ -489,10 +490,11 @@ fn test_generate_cli_skips_low_value_patch() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
     assert!(
-        manifest["patches"]["windows-x86_64"]
-            .as_array()
-            .is_some_and(|a| a.is_empty()),
-        "劣质补丁不得写入清单"
+        manifest["patches"]
+            .get("windows-x86_64")
+            .and_then(|p| p.as_array())
+            .is_none_or(|a| a.is_empty()),
+        "劣质补丁不得写入清单（空平台键会被省略）"
     );
 }
 

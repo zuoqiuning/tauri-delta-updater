@@ -552,6 +552,110 @@ async fn test_end_to_end_prepare_does_not_launch() {
     }
 }
 
+/// 端到端：没有直达补丁时，逐跳应用 0.1 → 0.2 → 0.3。
+///
+/// 链上的每一跳都必须校验中间产物哈希；最终产物必须与 0.3 的字节完全一致。
+#[tokio::test]
+async fn test_end_to_end_multi_hop_chain() {
+    let dir = tempdir().unwrap();
+    let work_dir = dir.path().to_path_buf();
+
+    let v1: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+    let v2: Vec<u8> = (0..4096u32).map(|i| ((i / 2) % 241) as u8).collect();
+    let v3: Vec<u8> = (0..4096u32).map(|i| ((i / 3) % 233) as u8).collect();
+    let exe = work_dir.join("app.exe");
+    let v2_path = dir.path().join("v2.exe");
+    let v3_path = dir.path().join("v3.exe");
+    std::fs::write(&exe, &v1).unwrap();
+    std::fs::write(&v2_path, &v2).unwrap();
+    std::fs::write(&v3_path, &v3).unwrap();
+
+    let patch12 = dir.path().join("0.1_to_0.2.patch");
+    let patch23 = dir.path().join("0.2_to_0.3.patch");
+    tauri_delta_updater::create_patch(&exe, &v2_path, &patch12)
+        .await
+        .unwrap();
+    tauri_delta_updater::create_patch(&v2_path, &v3_path, &patch23)
+        .await
+        .unwrap();
+
+    let patch12_hash = sha256(&std::fs::read(&patch12).unwrap());
+    let patch23_hash = sha256(&std::fs::read(&patch23).unwrap());
+    let server = MockServer::start(HashMap::from([
+        (
+            "/0.1_to_0.2.patch".to_string(),
+            std::fs::read(&patch12).unwrap(),
+        ),
+        (
+            "/0.2_to_0.3.patch".to_string(),
+            std::fs::read(&patch23).unwrap(),
+        ),
+    ]));
+
+    let (sk, pk_b64) = signing_keypair();
+    let platform = tauri_delta_updater::current_platform();
+    // 只有两跳，刻意不提供 0.1 → 0.3 的直达补丁。
+    let manifest = serde_json::json!({
+        "version": "0.3.0",
+        "notes": "chain",
+        "pub_date": "2026-01-01T00:00:00Z",
+        "platforms": {
+            platform: {
+                "signature": "dummy",
+                "url": format!("{}/full.exe", server.base_url),
+                "size": 100_000u64
+            }
+        },
+        "patches": {
+            platform: [
+                {
+                    "from_version": "0.1.0",
+                    "to_version": "0.2.0",
+                    "patch_url": server.url("/0.1_to_0.2.patch"),
+                    "patch_hash": patch12_hash,
+                    "target_hash": sha256(&v2),
+                    "patch_size": std::fs::metadata(&patch12).unwrap().len()
+                },
+                {
+                    "from_version": "0.2.0",
+                    "to_version": "0.3.0",
+                    "patch_url": server.url("/0.2_to_0.3.patch"),
+                    "patch_hash": patch23_hash,
+                    "target_hash": sha256(&v3),
+                    "patch_size": std::fs::metadata(&patch23).unwrap().len()
+                }
+            ]
+        }
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    server.set("/latest.json", manifest_bytes.clone());
+    server.set("/latest.json.sig", sign(&sk, &manifest_bytes).into_bytes());
+
+    let updater = DeltaUpdater::new(
+        UpdateConfig::new(server.url("/latest.json"), pk_b64)
+            .current_version("0.1.0")
+            .executable_path(&exe)
+            .work_dir(&work_dir)
+            .auto_launch(false),
+    )
+    .unwrap();
+
+    match updater.prepare().await.unwrap() {
+        UpdateOutcome::Patched { staged } => {
+            assert_eq!(
+                std::fs::read(staged.staged_exe()).unwrap(),
+                v3,
+                "链式合并的最终产物必须与目标版本一致"
+            );
+        }
+        other => panic!("两跳链应当完成合并，实际得到: {other:?}"),
+    }
+    assert!(
+        server.was_requested("/0.1_to_0.2.patch") && server.was_requested("/0.2_to_0.3.patch"),
+        "链式更新必须请求两跳补丁"
+    );
+}
+
 /// 端到端：Staged::launch 只能成功启动一次，重复调用必须报错。
 #[tokio::test]
 async fn test_end_to_end_launch_is_idempotent() {
