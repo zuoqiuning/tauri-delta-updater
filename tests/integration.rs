@@ -1084,22 +1084,8 @@ async fn test_diagnose_reports_environment() {
     let exe = dir.path().join("app.exe");
     std::fs::write(&exe, b"app").unwrap();
 
-    let updater = tauri_delta_updater::DeltaUpdater::auto(
-        "https://cdn.example.com/latest.json",
-        "PK",
-        "1.2.3",
-    )
-    .unwrap();
-    let diag = updater.diagnose().await;
-    assert!(diag.work_dir_writable, "默认工作目录必须可写");
-    assert_eq!(diag.platform, tauri_delta_updater::current_platform());
-    assert_eq!(
-        diag.log_path.file_name().unwrap(),
-        tauri_delta_updater::core::artifacts::LOG_FILE
-    );
-    assert!(!diag.safe_mode);
-
-    // 显式指向可写的临时目录时，安装目录可写性也应被如实报告
+    // 显式工作目录：缓存目录是否可写属于机器状态（受限配置、杀软占用都可能
+    // 让探针瞬时失败），用它做断言会让测试在真实环境里偶发红灯。
     let updater = tauri_delta_updater::DeltaUpdater::new(
         tauri_delta_updater::UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
             .current_version("1.2.3")
@@ -1108,9 +1094,17 @@ async fn test_diagnose_reports_environment() {
     )
     .unwrap();
     let diag = updater.diagnose().await;
+
     assert_eq!(diag.work_dir, work);
     assert!(diag.work_dir_writable);
     assert_eq!(diag.executable, exe);
+    assert_eq!(diag.platform, tauri_delta_updater::current_platform());
+    assert_eq!(
+        diag.log_path.file_name().unwrap(),
+        tauri_delta_updater::core::artifacts::LOG_FILE
+    );
+    assert!(!diag.safe_mode);
+    assert!(diag.can_use_delta());
 }
 
 /// 普通启动（没有 `tdx_update_dir` 指针）时，启动确认必须是零写入的空操作。

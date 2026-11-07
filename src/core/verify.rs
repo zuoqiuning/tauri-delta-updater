@@ -119,3 +119,55 @@ pub fn manifest_version_binding(signature: &str) -> Option<String> {
         .next()
         .map(|v| v.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{manifest_version_binding, verify_manifest_signature};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    /// 发布端（minisign 0.7.9）产出的签名必须是 pre-hash 格式。
+    ///
+    /// 验签端当前为了兼容历史发布开启 `allow_legacy`；一旦确认所有签名都是
+    /// pre-hash，就可以安全关闭，缩小攻击面。这个测试守住该前提。
+    #[test]
+    fn minisign_079_signatures_are_prehashed() {
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let pk_text = kp.pk.to_box().unwrap().to_string();
+        let public_key = minisign_verify::PublicKey::decode(&pk_text).unwrap();
+
+        let content = b"{\"version\":\"0.2.0\"}";
+        let signed =
+            minisign::sign(None, &kp.sk, std::io::Cursor::new(content), None, None).unwrap();
+        let signature = minisign_verify::Signature::decode(&signed.to_string()).unwrap();
+
+        assert!(
+            public_key.verify(content, &signature, false).is_ok(),
+            "minisign 0.7.9 的签名必须能在 allow_legacy=false 下验证通过"
+        );
+    }
+
+    /// 版本绑定从 trusted comment 读取；没有绑定或格式不符时返回 None。
+    #[test]
+    fn version_binding_is_parsed_from_trusted_comment() {
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let pk_b64 = STANDARD.encode(kp.pk.to_box().unwrap().to_string().as_bytes());
+        let content = b"{}";
+
+        let bound = minisign::sign(
+            None,
+            &kp.sk,
+            std::io::Cursor::new(content),
+            Some("tdu:v=1.2.3;app=demo"),
+            None,
+        )
+        .unwrap()
+        .to_string();
+        assert_eq!(manifest_version_binding(&bound).as_deref(), Some("1.2.3"));
+        assert!(verify_manifest_signature(content, &bound, &pk_b64).is_ok());
+
+        let unbound = minisign::sign(None, &kp.sk, std::io::Cursor::new(content), None, None)
+            .unwrap()
+            .to_string();
+        assert!(manifest_version_binding(&unbound).is_none());
+    }
+}
