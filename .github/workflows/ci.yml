@@ -136,6 +136,32 @@ jobs:
              /^note: run with / { show = 0; print "" }' test.log \
           | head -n 60 | sed 's/^/::error::/' || true
 
+  # README 拆分后，相对链接很容易在移动章节时腐烂；这里在 CI 阶段直接检查。
+  docs-links:
+    name: Docs relative links
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check relative links
+      run: |
+        python3 - <<'PY'
+        from pathlib import Path
+        import re
+
+        files = [Path("README.md"), *sorted(Path("docs").glob("*.md"))]
+        missing = []
+        for file in files:
+            text = file.read_text(encoding="utf-8")
+            for raw in re.findall(r"\]\((?!http|#)([^)]+)\)", text):
+                target = raw.split("#")[0]
+                if target and not (file.parent / target).exists():
+                    missing.append(f"{file} -> {target}")
+        if missing:
+            raise SystemExit("broken relative links:\n" + "\n".join(missing))
+        print(f"docs links OK ({len(files)} files)")
+        PY
+
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
