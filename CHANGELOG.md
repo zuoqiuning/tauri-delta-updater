@@ -21,6 +21,8 @@
 - 从官方 updater 迁移时，`windows.installMode` 与
   `dangerousInsecureTransportProtocol` 不再静默失效：启动警告会指出对应的
   `install_mode` / `allow_insecure_transport`（HTTPS 部署不产生噪音）。
+- 新增只读命令 `config_warnings`（TS：`configWarnings()`）：配置警告写入日志
+  的同时保留在状态里，诊断页可随时读取，不依赖可能错过的启动事件。
 - Unix 替换在 `cp` 中途失败时无条件用备份还原，半截目标不再被当旧版本启动。
 - Windows 整包已 `committed` 后不再被误判为未完成替换；确认成功后清理备份与 journal。
 - 全量下载/安装与增量路径共用 `UpdateLock`，并复用 `min_os` / 灰度门槛；

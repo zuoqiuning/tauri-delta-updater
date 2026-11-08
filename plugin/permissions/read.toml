@@ -3,11 +3,12 @@
 [[set]]
 identifier = "read"
 description = """
-Minimal read-only access: check for updates, read diagnostics and query the
-pending across-restart record. No download, install or process exit.
+Minimal read-only access: check for updates, read diagnostics/config warnings
+and query the pending across-restart record. No download, install or process exit.
 """
 permissions = [
     "allow-check",
     "allow-diagnose",
+    "allow-config-warnings",
     "allow-pending",
 ]

@@ -169,6 +169,15 @@ pub(crate) async fn diagnose(state: State<'_, UpdaterState>) -> Result<Diagnosis
     Ok(state.updater()?.diagnose().await)
 }
 
+/// 启动时发现的配置问题（未知字段、官方字段迁移提示）。
+///
+/// 与 `delta-updater://diagnosis` 事件内容一致，但可随时查询：
+/// 启动事件可能早于前端监听，诊断页应使用本命令。
+#[tauri::command]
+pub(crate) fn config_warnings(state: State<'_, UpdaterState>) -> Vec<String> {
+    state.config_warnings()
+}
+
 /// 查询跨重启待安装记录（`prepare` 落盘、尚未启动替换）。
 #[tauri::command]
 pub(crate) async fn pending(
@@ -223,6 +232,7 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
             download_full,
             install_full,
             diagnose,
+            config_warnings,
             cancel,
             reset_safety,
             pending,
@@ -278,6 +288,7 @@ pub fn init_from_config<R: Runtime>() -> TauriPlugin<R> {
             download_full,
             install_full,
             diagnose,
+            config_warnings,
             cancel,
             reset_safety,
             pending,

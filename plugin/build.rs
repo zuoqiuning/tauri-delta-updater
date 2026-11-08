@@ -6,6 +6,7 @@ const COMMANDS: &[&str] = &[
     "download_full",
     "install_full",
     "diagnose",
+    "config_warnings",
     "cancel",
     "reset_safety",
     "pending",

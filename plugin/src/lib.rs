@@ -108,15 +108,21 @@ struct UpdaterState {
     cancel: Mutex<Option<CancelToken>>,
     /// `prepare` 生成、等待 `launch` 的产物。
     pending: Mutex<Option<StagedPending>>,
+    /// 启动时发现的配置问题（未知字段、官方字段迁移提示）。
+    ///
+    /// 同一条信息还会写入日志并发事件；但启动事件可能早于前端监听，
+    /// 因此保留在状态里供 `config_warnings` 命令随时读取。
+    config_warnings: Vec<String>,
 }
 
 impl UpdaterState {
-    fn ready(updater: Arc<DeltaUpdater>) -> Self {
+    fn ready(updater: Arc<DeltaUpdater>, config_warnings: Vec<String>) -> Self {
         Self {
             updater: Some(updater),
             unavailable: None,
             cancel: Mutex::new(None),
             pending: Mutex::new(None),
+            config_warnings,
         }
     }
 
@@ -126,7 +132,13 @@ impl UpdaterState {
             unavailable: Some(reason),
             cancel: Mutex::new(None),
             pending: Mutex::new(None),
+            config_warnings: Vec::new(),
         }
+    }
+
+    /// 启动时发现的配置问题；空表示没有明显缺口。
+    fn config_warnings(&self) -> Vec<String> {
+        self.config_warnings.clone()
     }
 
     /// 取更新器；不可用时返回带稳定错误码的 DTO。
@@ -209,7 +221,7 @@ fn register<R: Runtime>(app: &AppHandle<R>, config: Result<(UpdateConfig, Vec<St
                 let _ = handle.emit("delta-updater://diagnosis", warnings);
             });
 
-            UpdaterState::ready(updater)
+            UpdaterState::ready(updater, config_warnings)
         }
         Err(reason) => {
             let _ = app.emit("delta-updater://unavailable", reason.clone());

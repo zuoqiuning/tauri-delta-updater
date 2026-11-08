@@ -223,8 +223,8 @@ exits the process once the swap is ready. Errors arrive as
 
 The npm package exports `check`, `install`, `prepare`, `launch`, `downloadFull`,
 `installFull`, `pending`, `discardPending`, `installPending`, `diagnose`,
-`cancel`, `resetSafety`, `requiresExit`, plus `UpdateEvent` / `UpdateResult` /
-`ErrorDto` types.
+`configWarnings`, `cancel`, `resetSafety`, `requiresExit`, plus `UpdateEvent` /
+`UpdateResult` / `ErrorDto` types.
 
 > [!WARNING]
 > **Single-instance apps: test the exit path once per platform.** The plugin

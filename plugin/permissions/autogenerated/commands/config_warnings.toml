@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-config-warnings"
+description = "Enables the config_warnings command without any pre-configured scope."
+commands.allow = ["config_warnings"]
+
+[[permission]]
+identifier = "deny-config-warnings"
+description = "Denies the config_warnings command without any pre-configured scope."
+commands.deny = ["config_warnings"]

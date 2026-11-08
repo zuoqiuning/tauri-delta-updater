@@ -224,6 +224,13 @@ export declare function installFull(onEvent?: (event: UpdateEvent) => void): Pro
 export declare function downloadFull(onEvent?: (event: UpdateEvent) => void): Promise<FullDownloadDto>;
 /** 环境诊断：可写性、平台适用性、安全模式、回滚原因与日志路径。 */
 export declare function diagnose(): Promise<Diagnosis>;
+/**
+ * 启动时发现的配置问题（未知字段、官方字段迁移提示）；空数组表示没有明显缺口。
+ *
+ * 与 `delta-updater://diagnosis` 事件内容一致，但可随时查询：
+ * 启动事件可能早于前端监听，诊断页应使用本函数。
+ */
+export declare function configWarnings(): Promise<string[]>;
 /** 取消正在进行的更新；返回 `false` 表示当前没有可取消的会话。 */
 export declare function cancel(): Promise<boolean>;
 /**

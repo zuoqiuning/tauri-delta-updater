@@ -12,6 +12,7 @@
 - `allow-download-full`
 - `allow-install-full`
 - `allow-diagnose`
+- `allow-config-warnings`
 - `allow-cancel`
 - `allow-reset-safety`
 - `allow-pending`
@@ -75,6 +76,32 @@ Enables the check command without any pre-configured scope.
 <td>
 
 Denies the check command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:allow-config-warnings`
+
+</td>
+<td>
+
+Enables the config_warnings command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:deny-config-warnings`
+
+</td>
+<td>
+
+Denies the config_warnings command without any pre-configured scope.
 
 </td>
 </tr>
@@ -362,8 +389,8 @@ the highest-privilege set; grant it only to windows that really need it.
 </td>
 <td>
 
-Minimal read-only access: check for updates, read diagnostics and query the
-pending across-restart record. No download, install or process exit.
+Minimal read-only access: check for updates, read diagnostics/config warnings
+and query the pending across-restart record. No download, install or process exit.
 
 
 </td>

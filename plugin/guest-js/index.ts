@@ -246,6 +246,16 @@ export function diagnose(): Promise<Diagnosis> {
   return invoke('plugin:delta-updater|diagnose');
 }
 
+/**
+ * 启动时发现的配置问题（未知字段、官方字段迁移提示）；空数组表示没有明显缺口。
+ *
+ * 与 `delta-updater://diagnosis` 事件内容一致，但可随时查询：
+ * 启动事件可能早于前端监听，诊断页应使用本函数。
+ */
+export function configWarnings(): Promise<string[]> {
+  return invoke('plugin:delta-updater|config_warnings');
+}
+
 /** 取消正在进行的更新；返回 `false` 表示当前没有可取消的会话。 */
 export function cancel(): Promise<boolean> {
   return invoke('plugin:delta-updater|cancel');
