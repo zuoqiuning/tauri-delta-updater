@@ -175,10 +175,22 @@ pub async fn cleanup_previous_updates_except(work_dir: &Path, exe_path: &Path, k
         let _ = fs::remove_file(work_dir.join(name)).await;
     }
 
-    // 旧备份：只删与当前目标 exe 同名的那一个
-    if let Some(name) = exe_path.file_name().and_then(|n| n.to_str()) {
-        let _ = fs::remove_file(exe_dir.join(format!("{name}.bak"))).await;
-        let _ = fs::remove_file(exe_dir.join(format!("{name}.old"))).await;
+    // 旧备份：只删与当前目标 exe 同名的那一个。
+    //
+    // 但启动状态停在 `staged` / `booting` 时，替换脚本可能仍在等待本进程退出，
+    // `.bak` 是它唯一的回滚源；此时删掉会让失败路径无法还原旧版本。
+    let replacement_in_flight = matches!(
+        crate::core::startup::read(work_dir),
+        Some(
+            crate::core::startup::StartupState::Staged
+                | crate::core::startup::StartupState::Booting
+        )
+    );
+    if !replacement_in_flight {
+        if let Some(name) = exe_path.file_name().and_then(|n| n.to_str()) {
+            let _ = fs::remove_file(exe_dir.join(format!("{name}.bak"))).await;
+            let _ = fs::remove_file(exe_dir.join(format!("{name}.old"))).await;
+        }
     }
 
     // 注意：不要删除 exe 旁边的 tdx_update_dir 指针。
@@ -191,6 +203,28 @@ pub async fn cleanup_previous_updates_except(work_dir: &Path, exe_path: &Path, k
 mod tests {
     use super::rotate_logs;
     use crate::core::artifacts;
+
+    /// 替换脚本仍在等待时（staged/booting），不得删除唯一回滚源 `.bak`。
+    #[tokio::test]
+    async fn keeps_backup_while_replacement_is_in_flight() {
+        use crate::core::startup::{write, StartupState};
+
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"new").unwrap();
+        let backup = dir.path().join("app.exe.bak");
+        std::fs::write(&backup, b"old").unwrap();
+
+        for state in [StartupState::Staged, StartupState::Booting] {
+            write(dir.path(), state).unwrap();
+            super::cleanup_previous_updates_except(dir.path(), &exe, &[]).await;
+            assert!(backup.is_file(), "{state:?} 期间不得删除备份");
+        }
+
+        write(dir.path(), StartupState::Committed).unwrap();
+        super::cleanup_previous_updates_except(dir.path(), &exe, &[]).await;
+        assert!(!backup.exists(), "替换完成后陈旧备份应被清理");
+    }
 
     /// 超过上限的日志/事件轮转为 `.1`；小文件保持原位。
     #[test]

@@ -1,0 +1,5 @@
+[toolchain]
+# 本地与 CI 使用同一稳定工具链；MSRV（rust-version）由 CI 的 1.88 job 单独验证。
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

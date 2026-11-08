@@ -29,9 +29,12 @@ impl DeltaUpdater {
         // 拉取并验签清单
         let manifest = self.fetch_verified_manifest().await?;
 
+        // 版本/系统/灰度门槛与 check() 共用同一判定，避免两处漂移。
+        let gates = self.evaluate_gates(&manifest)?;
+
         // 版本单调性：签名合法 ≠ 比当前新。重放旧清单时必须在这里止步，
         // 否则会经全量回退把用户降级到旧版本。
-        if !manifest.is_newer_than(&self.config.current_version)? {
+        if !gates.is_newer {
             crate::core::events::check(
                 &manifest.version,
                 false,
@@ -51,7 +54,7 @@ impl DeltaUpdater {
 
         // 系统版本门槛：低于清单要求时在**任何下载之前**终止，
         // 继续下载只会得到装不上、或替换后无法启动的版本。
-        if let Some((required, current)) = self.unsupported_os(&manifest) {
+        if let Some((required, current)) = gates.unsupported_os {
             crate::core::events::check(
                 &manifest.version,
                 true,
@@ -63,8 +66,8 @@ impl DeltaUpdater {
 
         // 灰度：未命中的安装不进入任何下载/合并路径。
         // 同一版本的桶位稳定，下一次检查会得到同样结果，直到发布端放量。
-        if self.deferred_by_rollout(&manifest)? {
-            let percentage = self.rollout_percentage(&manifest).unwrap_or(0);
+        if gates.deferred_by_rollout {
+            let percentage = gates.rollout_percentage.unwrap_or(0);
             crate::core::events::check(
                 &manifest.version,
                 true,

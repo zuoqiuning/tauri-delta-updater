@@ -588,6 +588,7 @@ release. Omit it to clear the floor on the next publish.
 
 ## Documentation
 
+- [Architecture](docs/ARCHITECTURE.md) — module boundaries, invariants and failure-recovery matrix.
 - [Usage guide](docs/USAGE.md) — client integration, frontend result handling, cancellable sessions.
 - [Publishing guide](docs/PUBLISHING.md) — `generate` / `cargo delta release` / `doctor`, manifest compatibility and the 5-minute check.
 - [Integration, troubleshooting and upgrading](docs/TROUBLESHOOTING.md) — symptoms, error codes and migration notes.

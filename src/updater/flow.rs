@@ -34,23 +34,17 @@ impl DeltaUpdater {
         let manifest = self.fetch_verified_manifest().await?;
         let needs_repair = self.needs_bundle_repair();
 
-        let is_newer = manifest.is_newer_than(&self.config.current_version)?;
+        // 版本/系统/灰度门槛统一由 evaluate_gates 判定：与 update() 共用同一顺序，
+        // 避免“检查说可更新、执行却拒绝”的漂移。
+        let gates = self.evaluate_gates(&manifest)?;
+        let is_newer = gates.is_newer;
+        let rollout_percentage = gates.rollout_percentage;
+        let deferred_by_rollout = gates.deferred_by_rollout;
+        let unsupported_os = gates.unsupported_os;
         // 灰度判定必须在任何补丁/整包清单请求之前：未命中的安装
         // 不应为一个自己拿不到的版本消耗流量。
-        let rollout_percentage = if is_newer {
-            self.rollout_percentage(&manifest)
-        } else {
-            None
-        };
-        let deferred_by_rollout = is_newer && self.deferred_by_rollout(&manifest)?;
         // 系统版本门槛：不满足时连全量地址都不返回，避免宿主绕过检查
         // 下载一个装不上的安装包。
-        let unsupported_os = if is_newer {
-            self.unsupported_os(&manifest)
-        } else {
-            None
-        };
-
         // 灰度未命中或系统版本不足时连全量地址都不返回。
         let full_download_url = if deferred_by_rollout || unsupported_os.is_some() {
             None

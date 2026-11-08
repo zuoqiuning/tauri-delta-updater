@@ -69,7 +69,9 @@ npm pack --dry-run --json   # 必须包含 dist-js/index.js、index.d.ts、packa
 **任何一项失败，禁止发布。**
 
 版本一致性由 CI 的 `versions` job 检查四处：核心 crate、插件 crate、
-`plugin/package.json`、`CHANGELOG.md` 顶部条目。
+`plugin/package.json`、`CHANGELOG.md` 第一个数字版本条目（`## [Unreleased]`
+不参与比较）。**发布前必须把 `Unreleased` 下的条目移到新版本小节**，
+否则发布说明会缺失这批变更。
 
 > 插件的 `cargo publish --dry-run` 校验时会从注册表解析核心 crate（不是本地
 > path 依赖）。核心未发布前它**必然失败**；预发布阶段只用 `cargo package --list`

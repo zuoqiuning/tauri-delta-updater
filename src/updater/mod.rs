@@ -42,6 +42,15 @@ pub use staged::{
     FullDownload, FullDownloadOutcome, Staged, StagedBundle, StagedFullInstaller, StagedRepair,
 };
 
+/// 版本/系统/灰度门槛的统一结果（见 [`DeltaUpdater::evaluate_gates`]）。
+#[derive(Debug, Default)]
+pub(super) struct UpdateGates {
+    pub(super) is_newer: bool,
+    pub(super) rollout_percentage: Option<u8>,
+    pub(super) deferred_by_rollout: bool,
+    pub(super) unsupported_os: Option<(String, String)>,
+}
+
 /// 增量更新器。
 #[derive(Debug)]
 pub struct DeltaUpdater {
@@ -299,6 +308,33 @@ impl DeltaUpdater {
         let below =
             crate::platform::os_version::compare(&current, required)? == std::cmp::Ordering::Less;
         below.then(|| (required.to_string(), current))
+    }
+
+    /// 版本、系统与灰度门槛的统一判定。
+    ///
+    /// `check()` 与 `update()` 必须使用同一顺序与同一份结果，否则会出现
+    /// “检查说可更新、执行时却拒绝”或相反。任何新增门槛都应加在这里，
+    /// 不要在两处各写一遍。
+    pub(super) fn evaluate_gates(
+        &self,
+        manifest: &crate::models::UpdateManifest,
+    ) -> Result<UpdateGates> {
+        let is_newer = manifest.is_newer_than(&self.config.current_version)?;
+        if !is_newer {
+            return Ok(UpdateGates {
+                is_newer: false,
+                ..UpdateGates::default()
+            });
+        }
+        let unsupported_os = self.unsupported_os(manifest);
+        let rollout_percentage = self.rollout_percentage(manifest);
+        let deferred_by_rollout = self.deferred_by_rollout(manifest)?;
+        Ok(UpdateGates {
+            is_newer: true,
+            rollout_percentage,
+            deferred_by_rollout,
+            unsupported_os,
+        })
     }
 
     /// 配置里的脚本等待时长，生成替换脚本时写入。

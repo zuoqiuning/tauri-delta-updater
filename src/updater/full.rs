@@ -89,8 +89,12 @@ impl DeltaUpdater {
         emit(&mut on_event, UpdateEvent::Checking);
         let manifest = self.fetch_verified_manifest().await?;
 
+        // 与增量路径共用同一套版本/系统/灰度门槛，全量安装包同样不能被
+        // 装到不兼容系统或灰度未命中的版本上。
+        let gates = self.evaluate_gates(&manifest)?;
+
         // 防降级：清单合法不代表比当前版本新，绝不能把旧安装包交给安装器。
-        if !manifest.is_newer_than(&self.config.current_version)? {
+        if !gates.is_newer {
             let version = manifest.version.clone();
             emit(
                 &mut on_event,
@@ -101,14 +105,12 @@ impl DeltaUpdater {
             return Ok(FullDownloadOutcome::UpToDate { version });
         }
 
-        // 与增量路径同一套门槛：全量安装包同样不能被装到
-        // 不兼容的系统版本或灰度未命中的安装上。
-        if let Some((required, current)) = self.unsupported_os(&manifest) {
+        if let Some((required, current)) = gates.unsupported_os {
             return Ok(FullDownloadOutcome::UnsupportedOs { required, current });
         }
-        if self.deferred_by_rollout(&manifest)? {
+        if gates.deferred_by_rollout {
             let version = manifest.version.clone();
-            let percentage = self.rollout_percentage(&manifest).unwrap_or(0);
+            let percentage = gates.rollout_percentage.unwrap_or(0);
             emit(
                 &mut on_event,
                 UpdateEvent::Deferred {

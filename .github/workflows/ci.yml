@@ -150,7 +150,9 @@ jobs:
       uses: Swatinem/rust-cache@v2
 
     - name: Check on minimum supported Rust
-      run: cargo check --all-features --locked
+      # 显式 `+1.88`：仓库的 rust-toolchain.toml 固定 stable，
+      # 只靠默认工具链会让这个 job 悄悄跑在 stable 上。
+      run: cargo +1.88 check --all-features --locked
 
   # 核心 crate 与插件 crate 必须同版本发布，否则 `cargo delta init` 写出的依赖会指向
   # 一个不存在的插件版本。这里在 CI 阶段就把漂移暴露出来。

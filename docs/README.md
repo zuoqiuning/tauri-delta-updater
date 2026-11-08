@@ -2,6 +2,7 @@
 
 | 路径 | 用途 |
 |---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 模块边界、主流程、不可破坏的不变量与失败恢复矩阵 |
 | [USAGE.md](USAGE.md) | 客户端接入、前端结果处理、可取消会话与库 API 分层 |
 | [PUBLISHING.md](PUBLISHING.md) | `generate` / `cargo delta release` / `doctor` 参数与发布流程 |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 接入对比、症状排障、错误码与版本迁移 |
