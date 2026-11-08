@@ -844,18 +844,18 @@ fn is_safe_bundle_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{is_http_url, is_safe_bundle_path, is_sha256_hex, unreachable_start_versions};
-    use tauri_delta_updater::{PatchInfo, PatchScope};
+    use tauri_delta_updater::PatchInfo;
 
     fn patch(from: &str, to: &str) -> PatchInfo {
-        PatchInfo {
-            from_version: from.into(),
-            to_version: to.into(),
-            patch_url: format!("https://cdn.example.com/{from}_to_{to}.patch"),
-            patch_hash: "a".repeat(64),
-            target_hash: "b".repeat(64),
-            patch_size: None,
-            scope: Some(PatchScope::MainExecutableOnly),
-        }
+        serde_json::from_value(serde_json::json!({
+            "from_version": from,
+            "to_version": to,
+            "patch_url": format!("https://cdn.example.com/{from}_to_{to}.patch"),
+            "patch_hash": "a".repeat(64),
+            "target_hash": "b".repeat(64),
+            "scope": "main_executable_only"
+        }))
+        .expect("测试补丁必须可反序列化")
     }
 
     /// 链前缀可达；孤立补丁与超过跳数上限的起点必须被指出。

@@ -258,14 +258,28 @@ const VERSION_BINDING_PREFIX: &str = "tdu:v=";
 ///
 /// `signature` 接受 base64 编码或 minisign 原始 `.sig` 文本。
 pub fn manifest_version_binding(signature: &str) -> Option<String> {
-    let text = decode_minisign_text(signature, "签名").ok()?;
-    let block = split_signature_blocks(&text).into_iter().next()?;
-    let sig = Signature::decode(&block).ok()?;
-    sig.trusted_comment()
-        .strip_prefix(VERSION_BINDING_PREFIX)?
-        .split(';')
-        .next()
-        .map(|v| v.to_string())
+    manifest_version_bindings(signature).into_iter().next()
+}
+
+/// 提取**每个**签名块的版本绑定（没有绑定的块被跳过）。
+///
+/// 多签时每个块都出自发布者之手；只要有一块的绑定与清单版本不一致，
+/// 就说明发布端把某个版本的签名贴错了清单，必须拒绝。
+pub fn manifest_version_bindings(signature: &str) -> Vec<String> {
+    let Ok(text) = decode_minisign_text(signature, "签名") else {
+        return Vec::new();
+    };
+    split_signature_blocks(&text)
+        .into_iter()
+        .filter_map(|block| {
+            let sig = Signature::decode(&block).ok()?;
+            sig.trusted_comment()
+                .strip_prefix(VERSION_BINDING_PREFIX)?
+                .split(';')
+                .next()
+                .map(|v| v.to_string())
+        })
+        .collect()
 }
 
 #[cfg(test)]

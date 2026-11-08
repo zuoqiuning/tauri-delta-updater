@@ -61,6 +61,7 @@ impl StagedFullInstaller {
 /// 全量下载的结果。
 #[derive(Debug)]
 #[non_exhaustive]
+#[must_use = "Downloaded 表示安装包已就绪，忽略结果会留下无用的下载文件"]
 pub enum FullDownloadOutcome {
     /// 安装包已下载并通过签名校验，可以直接交给安装执行器。
     Downloaded {

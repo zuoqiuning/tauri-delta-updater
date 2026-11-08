@@ -5,6 +5,43 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 修复
+
+- `cargo delta init --check` 可无参数运行；缺少 capability 文件时生成合法的
+  `identifier` / `windows`；`--check` 会拒绝过期插件依赖版本。
+- Unix 替换在 `cp` 中途失败时无条件用备份还原，半截目标不再被当旧版本启动。
+- Windows 整包已 `committed` 后不再被误判为未完成替换；确认成功后清理备份与 journal。
+- 全量下载/安装与增量路径共用 `UpdateLock`，并复用 `min_os` / 灰度门槛；
+  修复未完成时返回 `repair_required`；`CheckOutcome::full_download()` 不再绕过
+  `check()` 隐藏的全量地址。
+- `signature_url` 真正用于主端点；`cargo delta doctor` 复用同一条 `.sig` 推导并
+  默认镜像客户端的严格验签策略（新增 `--trust-policy` / `--allow-legacy`）。
+- 全量安装包验签遵守 `allow_legacy_signatures`；多签时逐块校验 `tdu:v=` 版本绑定。
+- 大文件验签、完整性校验与 WinVerifyTrust 改到 `spawn_blocking`。
+- 脚本占位符守卫从 `debug_assert` 改为运行时错误；未知配置字段会在启动日志中提示。
+- 全量 `.exe` 未显式配置 `installer_kind` 时按内容识别 Inno/NSIS，降低漏配导致弹向导的风险。
+- pending 路径改用 canonicalize，阻止 `work_dir/../evil` 逃逸；`os_version` 缺失段补零。
+- 日志/事件超过 2 MB 时轮转保留 `.1`；测试与 CI 清理噪声。
+
+### 变更（公开 API）
+
+- `CheckOutcome`、`PatchInfo`、`Rollout`、`BundleFile`、`BundlePatch`、
+  `BundleManifest` 标记 `#[non_exhaustive]`：改用 serde / builder 构造，下游
+  `match` 保留通配分支。
+- `CheckOutcome` 新增结构化 `unsupported_os: Option<OsRequirement>`。
+- `CheckOutcome` / `UpdateOutcome` / `UpdateResult` / `FullDownloadOutcome`
+  标记 `#[must_use]`：忽略结果会触发编译警告。
+- `FullDownloadOutcome` 新增 `Deferred` / `UnsupportedOs`；`FullDownloadDto`
+  与前端类型同步。
+- 新增公共入口：`default_signature_url`、`manifest_version_bindings`、
+  `verify_file_signature_multi_with_legacy`、`OsRequirement`。
+- 插件新增 `delta-updater:read` / `delta-updater:update` / `delta-updater:full`
+  最小权限集（`default` 行为不变）。
+- 文档拆分：README 保留快速接入，新增 `docs/USAGE.md`、`docs/PUBLISHING.md`、
+  `docs/TROUBLESHOOTING.md`。
+
 ## [0.3.0] - 2026-11-08
 
 ### 兼容性

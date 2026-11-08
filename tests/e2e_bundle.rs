@@ -49,12 +49,12 @@ async fn test_end_to_end_bundle_update() {
     .unwrap();
     server.set("/bundle.patch", std::fs::read(&patch_path).unwrap());
 
-    let bundle_manifest = BundleManifest {
-        version: "0.2.0".into(),
-        platform: platform.to_string(),
-        bundles: vec![bundle.clone()],
-        extra: Default::default(),
-    };
+    let bundle_manifest: BundleManifest = serde_json::from_value(serde_json::json!({
+        "version": "0.2.0",
+        "platform": platform,
+        "bundles": [bundle.clone()],
+    }))
+    .expect("整包清单必须可反序列化");
     let bytes = serde_json::to_vec_pretty(&bundle_manifest).unwrap();
     let sig = sign_bound(&sk, &bytes, "tdu:v=0.2.0");
     server.set("/latest.bundle.json", bytes);
@@ -288,12 +288,12 @@ async fn test_end_to_end_macos_app_bundle() {
     .unwrap();
     server.set("/bundle.patch", std::fs::read(&patch_path).unwrap());
 
-    let bundle_manifest = BundleManifest {
-        version: "0.2.0".into(),
-        platform: platform.to_string(),
-        bundles: vec![bundle.clone()],
-        extra: Default::default(),
-    };
+    let bundle_manifest: BundleManifest = serde_json::from_value(serde_json::json!({
+        "version": "0.2.0",
+        "platform": platform,
+        "bundles": [bundle.clone()],
+    }))
+    .expect("整包清单必须可反序列化");
     let bytes = serde_json::to_vec_pretty(&bundle_manifest).unwrap();
     let sig = sign_bound(&sk, &bytes, "tdu:v=0.2.0");
     server.set("/latest.bundle.json", bytes);

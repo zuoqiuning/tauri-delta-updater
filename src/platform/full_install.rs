@@ -31,10 +31,10 @@ pub enum InstallerKind {
     AppImage,
     /// Inno Setup 打包的 Windows 安装器（`.exe`）。
     ///
-    /// Inno 与 NSIS 的产物后缀相同，**无法从文件名区分**：用 Inno Setup
-    /// 打包的宿主必须通过 [`crate::UpdateConfig::installer_kind`] 显式声明，
-    /// 否则会被按 NSIS 参数调用（Inno 不识别 `/P /UPDATE /R`，会弹出完整 UI
-    /// 或直接失败）。
+    /// Inno 与 NSIS 的产物后缀相同，无法只靠文件名区分。未显式声明
+    /// [`crate::UpdateConfig::installer_kind`] 时，引擎会扫描安装包中的
+    /// Inno/NSIS 标识字符串做尽力而为的识别；自定义 loader 或标记被剥离时
+    /// 仍应显式配置，否则可能被按 NSIS 参数调用（Inno 不识别 `/P /UPDATE /R`）。
     Inno,
     /// 无法识别的类型（不会被执行）。
     Other,
@@ -174,11 +174,15 @@ pub fn install_with_mode_and_kind(
 
 /// 解析最终使用的安装器类型，并校验配置项与文件后缀的一致性。
 ///
-/// 只拦明显矛盾（`.msi` 配 Inno、`.tar.gz` 配 Nsis 等）；`.exe` 同时属于
-/// NSIS 与 Inno，无法做唯一性校验，这也是必须显式配置的原因。
+/// 只拦明显矛盾（`.msi` 配 Inno、`.tar.gz` 配 Nsis 等）。`.exe` 同时属于
+/// NSIS 与 Inno：未显式配置时读取安装包标识做尽力而为的识别，
+/// 识别不出来再按 NSIS 处理。
 fn resolve_kind(installer: &Path, kind: Option<InstallerKind>) -> Result<InstallerKind> {
     let inferred = installer_kind(installer);
     let Some(kind) = kind else {
+        if inferred == InstallerKind::Nsis {
+            return Ok(detect_exe_kind(installer));
+        }
         return Ok(inferred);
     };
     let compatible = match kind {
@@ -195,6 +199,74 @@ fn resolve_kind(installer: &Path, kind: Option<InstallerKind>) -> Result<Install
         )));
     }
     Ok(kind)
+}
+
+/// 从 `.exe` 的内容识别 NSIS / Inno Setup（显式配置始终优先）。
+///
+/// 只扫描首尾各 8 MB：Inno 的 loader/版本信息在文件头部，setup data 头在
+/// 尾部 overlay；避免为了识别类型把几百 MB 安装包整个读一遍。
+fn detect_exe_kind(installer: &Path) -> InstallerKind {
+    /// 识别标记同时接受 ASCII 与 UTF-16LE（Windows 版本信息常用宽字符）。
+    const INNO_MARKERS: &[&str] = &["Inno Setup Setup Data", "Inno Setup Ldr"];
+    const NSIS_MARKER: &str = "Nullsoft";
+    const SCAN_WINDOW: u64 = 8 * 1024 * 1024;
+
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(meta) = std::fs::metadata(installer) else {
+        return InstallerKind::Nsis;
+    };
+    let Ok(mut file) = std::fs::File::open(installer) else {
+        return InstallerKind::Nsis;
+    };
+    let size = meta.len();
+
+    let found = |data: &[u8]| -> (bool, bool) {
+        let contains = |needle: &str| {
+            let ascii = needle.as_bytes();
+            let utf16: Vec<u8> = needle
+                .encode_utf16()
+                .flat_map(|unit| [unit as u8, (unit >> 8) as u8])
+                .collect();
+            data.windows(ascii.len()).any(|window| window == ascii)
+                || data.windows(utf16.len()).any(|window| window == utf16)
+        };
+        (
+            INNO_MARKERS.iter().any(|marker| contains(marker)),
+            contains(NSIS_MARKER),
+        )
+    };
+
+    let scan = |file: &mut std::fs::File, offset: u64, len: u64| -> (bool, bool) {
+        if len == 0 || file.seek(SeekFrom::Start(offset)).is_err() {
+            return (false, false);
+        }
+        let mut buffer = vec![0u8; len as usize];
+        if file.read_exact(&mut buffer).is_err() {
+            return (false, false);
+        }
+        found(&buffer)
+    };
+
+    let head_len = size.min(SCAN_WINDOW);
+    let (inno, nsis) = scan(&mut file, 0, head_len);
+    if inno {
+        return InstallerKind::Inno;
+    }
+    if nsis {
+        return InstallerKind::Nsis;
+    }
+    if size > SCAN_WINDOW {
+        let tail_len = SCAN_WINDOW.min(size);
+        let (inno_tail, nsis_tail) = scan(&mut file, size - tail_len, tail_len);
+        if inno_tail {
+            return InstallerKind::Inno;
+        }
+        if nsis_tail {
+            return InstallerKind::Nsis;
+        }
+    }
+    InstallerKind::Nsis
 }
 
 #[cfg(target_os = "windows")]
@@ -540,6 +612,36 @@ mod tests {
             InstallerKind::Nsis
         );
         assert_eq!(resolve_kind(&exe, None).unwrap(), InstallerKind::Nsis);
+    }
+
+    /// `.exe` 未显式配置时按内容识别 Inno，避免漏配 `installer_kind` 时弹向导。
+    #[test]
+    fn detects_inno_setup_from_exe_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("setup.exe");
+        std::fs::write(&exe, b"MZ ... Inno Setup Setup Data (6.2.0) ...").unwrap();
+        assert_eq!(resolve_kind(&exe, None).unwrap(), InstallerKind::Inno);
+    }
+
+    /// NSIS 标识不会被误判为 Inno。
+    #[test]
+    fn detects_nsis_from_exe_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("setup.exe");
+        std::fs::write(&exe, b"MZ ... Nullsoft Install System ...").unwrap();
+        assert_eq!(resolve_kind(&exe, None).unwrap(), InstallerKind::Nsis);
+    }
+
+    /// 显式类型始终优先：用户比字符串扫描更了解自己的安装器。
+    #[test]
+    fn explicit_kind_wins_over_content_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("setup.exe");
+        std::fs::write(&exe, b"MZ ... Inno Setup Ldr ...").unwrap();
+        assert_eq!(
+            resolve_kind(&exe, Some(InstallerKind::Nsis)).unwrap(),
+            InstallerKind::Nsis
+        );
     }
 
     /// 配置项与后缀明显矛盾时必须早失败，而不是把错误安装器丢给 ShellExecute。

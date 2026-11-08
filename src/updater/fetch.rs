@@ -43,13 +43,14 @@ impl DeltaUpdater {
         let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes)
             .map_err(|e| DeltaError::ManifestInvalid(format!("整包清单格式错误: {e}")))?;
 
-        if let Some(bound) = crate::core::verify::manifest_version_binding(&signature) {
-            if bound != manifest.version {
-                return Err(DeltaError::SignatureInvalid(format!(
-                    "整包清单签名的版本绑定（{bound}）与清单声明版本（{}）不一致，疑似发布端配置错误",
-                    manifest.version
-                )));
-            }
+        if let Some(mismatch) = crate::core::verify::manifest_version_bindings(&signature)
+            .into_iter()
+            .find(|bound| bound != &manifest.version)
+        {
+            return Err(DeltaError::SignatureInvalid(format!(
+                "整包清单签名的版本绑定（{mismatch}）与清单声明版本（{}）不一致，疑似发布端配置错误",
+                manifest.version
+            )));
         }
 
         Ok(manifest)
@@ -107,13 +108,15 @@ impl DeltaUpdater {
         // 注意：绑定值与 manifest.version 都来自同一份签名材料，
         // 因此它**不能**替代客户端的版本单调性判断（见 is_newer_than）。
         // 这里只用于发现发布端把一个版本号写进另一版本清单的错误。
-        if let Some(bound) = crate::core::verify::manifest_version_binding(&signature) {
-            if bound != manifest.version {
-                return Err(DeltaError::SignatureInvalid(format!(
-                    "清单签名的版本绑定（{bound}）与清单声明版本（{}）不一致，疑似发布端配置错误",
-                    manifest.version
-                )));
-            }
+        // 多签时逐块检查：任何一块绑定不符都拒绝。
+        if let Some(mismatch) = crate::core::verify::manifest_version_bindings(&signature)
+            .into_iter()
+            .find(|bound| bound != &manifest.version)
+        {
+            return Err(DeltaError::SignatureInvalid(format!(
+                "清单签名的版本绑定（{mismatch}）与清单声明版本（{}）不一致，疑似发布端配置错误",
+                manifest.version
+            )));
         }
 
         Ok(manifest)

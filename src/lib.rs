@@ -273,9 +273,9 @@ pub use core::safety::{
 };
 pub use core::startup::StartupState;
 pub use core::verify::{
-    manifest_version_binding, verify_file_signature, verify_file_signature_multi,
-    verify_file_signature_multi_with_legacy, verify_manifest_signature,
-    verify_manifest_signature_file, verify_manifest_signature_multi,
+    manifest_version_binding, manifest_version_bindings, verify_file_signature,
+    verify_file_signature_multi, verify_file_signature_multi_with_legacy,
+    verify_manifest_signature, verify_manifest_signature_file, verify_manifest_signature_multi,
     verify_manifest_signature_with, TrustPolicy,
 };
 pub use platform::full_install::{InstallMode, InstallerKind};
@@ -288,7 +288,7 @@ pub use platform::PlatformUpdater;
 pub use platform::ScriptTimings;
 pub use updater::{
     default_signature_url, simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy,
-    FallbackReason, FullDownload, FullDownloadOutcome, PendingArtifact, PendingUpdate, ScriptEvent,
-    SimulationReport, Staged, StagedBundle, StagedFullInstaller, StagedRepair, UpdateCheck,
-    UpdateConfig, UpdateOutcome, UpdateResult,
+    FallbackReason, FullDownload, FullDownloadOutcome, OsRequirement, PendingArtifact,
+    PendingUpdate, ScriptEvent, SimulationReport, Staged, StagedBundle, StagedFullInstaller,
+    StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
 };

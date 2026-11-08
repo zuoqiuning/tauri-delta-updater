@@ -196,6 +196,7 @@ pub struct PlatformInfo {
 
 /// 渐进发布（灰度）配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Rollout {
     /// 放量比例（0–100）。0 暂停发布，100 全量；中间值按安装 ID 分桶。
     pub percentage: u8,
@@ -203,6 +204,7 @@ pub struct Rollout {
 
 /// 单个增量补丁的描述。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PatchInfo {
     /// 补丁的起始版本号（客户端当前版本）。
     pub from_version: String,

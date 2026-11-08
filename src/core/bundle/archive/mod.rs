@@ -24,6 +24,7 @@ pub enum BundleFileKind {
 
 /// 整包里的一个文件条目。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BundleFile {
     /// 相对路径，统一用 `/` 分隔（例如 `resources/app.asar`）。
     pub path: String,

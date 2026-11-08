@@ -116,7 +116,7 @@ async fn test_custom_signature_url_is_used() {
     config.signature_url = server.url("/signatures/latest.sig");
     let updater = DeltaUpdater::new(config).unwrap();
 
-    updater
+    let _ = updater
         .check()
         .await
         .expect("必须从显式配置的签名地址拉取并验签");
@@ -181,6 +181,53 @@ async fn test_multi_key_all_of_is_enforced() {
     );
 }
 
+/// 多签时每一块的版本绑定都必须与清单一致：第二块贴错版本也必须拒绝。
+#[tokio::test]
+async fn test_multi_signature_version_bindings_are_all_checked() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app.exe");
+    let work_dir = dir.path().join("work");
+    std::fs::write(&exe, b"app").unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+
+    let (sk_a, pk_a) = signing_keypair();
+    let (sk_b, pk_b) = signing_keypair();
+    let server = MockServer::start(HashMap::new());
+    let platform = tauri_delta_updater::current_platform();
+    let (manifest_bytes, _) = build_manifest(
+        &sk_a,
+        &server.base_url,
+        "0.2.0",
+        platform,
+        "patch-hash",
+        "target-hash",
+        None,
+    );
+    // 第一块绑定正确，第二块误贴了 0.1.0 的绑定。
+    let dual = format!(
+        "{}\n{}",
+        sign_bound(&sk_a, &manifest_bytes, "tdu:v=0.2.0"),
+        sign_bound(&sk_b, &manifest_bytes, "tdu:v=0.1.0")
+    );
+    server.set("/latest.json", manifest_bytes);
+    server.set("/latest.json.sig", dual.into_bytes());
+
+    let updater = DeltaUpdater::new(
+        UpdateConfig::new(server.url("/latest.json"), pk_a)
+            .current_version("0.1.0")
+            .executable_path(&exe)
+            .work_dir(&work_dir)
+            .additional_public_keys(vec![pk_b]),
+    )
+    .unwrap();
+    let err = updater.check().await.unwrap_err();
+    assert!(
+        matches!(err, DeltaError::SignatureInvalid(_)),
+        "任一签名块的版本绑定不一致都必须拒绝，实际: {err:?}"
+    );
+    assert!(err.to_string().contains("0.1.0"), "{err}");
+}
+
 /// 最低系统版本：低于清单要求时，在任何下载之前就被拒绝。
 #[tokio::test]
 async fn test_min_os_blocks_update_before_download() {
@@ -231,6 +278,12 @@ async fn test_min_os_blocks_update_before_download() {
         ),
         "check() 必须说明环境不支持"
     );
+    let os = check
+        .unsupported_os
+        .as_ref()
+        .expect("check() 必须返回结构化的系统版本门槛");
+    assert_eq!(os.required, "999999.0");
+    assert!(!os.current.is_empty(), "结构化字段必须包含本机版本");
 
     match updater.update().await.unwrap() {
         UpdateOutcome::UnsupportedOs { required, current } => {

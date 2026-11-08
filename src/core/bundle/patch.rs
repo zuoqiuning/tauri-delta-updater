@@ -11,6 +11,7 @@ use std::path::Path;
 /// 客户端先按 `base_files` 校验本地安装目录，再构建旧归档并应用补丁；
 /// 重建出的新归档必须与 `target_hash` 一致，随后按 `target_files` 提取暂存。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BundlePatch {
     /// 起始版本（客户端当前版本）。
     pub from_version: String,
@@ -36,6 +37,7 @@ pub struct BundlePatch {
 /// 与 `latest.json` 并列发布并独立签名。客户端先用主清单确认版本，
 /// 再用本清单里的文件清单与哈希完成整包增量。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BundleManifest {
     /// 目标版本。
     pub version: String,

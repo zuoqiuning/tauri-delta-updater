@@ -91,6 +91,14 @@ export type FullDownloadDto = {
 } | {
     kind: 'up_to_date';
     version: string;
+} | {
+    kind: 'deferred';
+    version: string;
+    percentage: number;
+} | {
+    kind: 'unsupported_os';
+    required: string;
+    current: string;
 };
 /** 跨重启待安装记录（`pending()` 返回值）；路径留在 Rust 侧。 */
 export interface PendingUpdate {
@@ -147,6 +155,11 @@ export interface CheckOutcome {
     patch_size: number | null;
     needs_repair: boolean;
     full_download_url: string | null;
+    /** 本机系统版本低于清单要求时的结构化原因；否则为 `null`。 */
+    unsupported_os: {
+        required: string;
+        current: string;
+    } | null;
     manifest: UpdateManifest;
     fallback_reason: FallbackReason | null;
 }
@@ -171,6 +184,8 @@ export interface Diagnosis {
     needs_repair: boolean;
     startup_state: StartupState | null;
     last_rollback: string | null;
+    /** 历史回滚链（`tdx_events.jsonl` 中的 `delta.rollback.triggered`，最多 20 条）。 */
+    rollback_history: ScriptEvent[];
     authenticode: boolean | null;
     authenticode_check_skipped: boolean | null;
     log_path: string;

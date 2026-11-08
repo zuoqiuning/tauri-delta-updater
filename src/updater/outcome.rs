@@ -36,10 +36,22 @@ impl std::fmt::Display for FallbackReason {
     }
 }
 
+/// 清单声明的最低系统版本与本机探测到的版本。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct OsRequirement {
+    /// 清单要求的最低版本。
+    pub required: String,
+    /// 本机探测到的版本。
+    pub current: String,
+}
+
 /// 检查更新的结果。
 ///
 /// 只拉取并验签清单，不会下载补丁。
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
+#[must_use = "检查结果包含是否有更新、是否需要退出进程等关键信息，忽略会静默跳过更新"]
 pub struct CheckOutcome {
     /// 清单里的目标版本号。
     pub version: String,
@@ -76,6 +88,11 @@ pub struct CheckOutcome {
     pub needs_repair: bool,
     /// 全量安装包地址，用于回退到 `tauri-plugin-updater`。
     pub full_download_url: Option<String>,
+    /// 本机系统版本低于清单要求时的结构化原因；否则为 `None`。
+    ///
+    /// 与 `fallback_reason` 的 `EnvironmentUnsupported` 相比，这里保留
+    /// 具体版本号，UI 可以直接展示“需要 X，当前 Y”，不必重新读取清单。
+    pub unsupported_os: Option<OsRequirement>,
     /// 已验签的清单，便于展示更多信息。
     pub manifest: Box<UpdateManifest>,
     /// 增量不可用的原因。
@@ -130,6 +147,7 @@ impl CheckOutcome {
 /// 一次更新的结果。
 #[derive(Debug)]
 #[non_exhaustive]
+#[must_use = "Updated / Repair 变体表示替换脚本已启动，宿主必须退出进程"]
 pub enum UpdateOutcome {
     /// 已通过增量补丁生成新版本。
     ///
@@ -262,6 +280,7 @@ pub enum UpdateOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
+#[must_use = "Updated / RepairRequired 表示必须退出进程，忽略会让更新被回滚"]
 pub enum UpdateResult {
     /// 已通过增量补丁更新，**替换脚本已启动**。
     ///
@@ -392,6 +411,7 @@ mod tests {
             patch_size,
             needs_repair: false,
             full_download_url: Some("https://cdn.example.com/app.exe".into()),
+            unsupported_os: None,
             manifest: Box::new(manifest),
             fallback_reason: None,
         }

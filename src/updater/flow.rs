@@ -3,8 +3,8 @@
 use super::bundle_flow::BundleResolution;
 use super::diagnosis::read_rollback_reason;
 use super::{
-    emit, is_cancelled, CheckOutcome, DeltaUpdater, FallbackReason, StagedRepair, UpdateOutcome,
-    UpdateResult,
+    emit, is_cancelled, CheckOutcome, DeltaUpdater, FallbackReason, OsRequirement, StagedRepair,
+    UpdateOutcome, UpdateResult,
 };
 use crate::core::lock::UpdateLock;
 use crate::core::safety::{record_failed_attempt, should_abort};
@@ -158,6 +158,8 @@ impl DeltaUpdater {
             download_size: patch_size,
             patch_size,
             full_download_url,
+            unsupported_os: unsupported_os
+                .map(|(required, current)| OsRequirement { required, current }),
             fallback_reason,
             manifest: Box::new(manifest),
         })

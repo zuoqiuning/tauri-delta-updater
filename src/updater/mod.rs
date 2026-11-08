@@ -33,7 +33,9 @@ mod staged;
 
 pub use config::{default_signature_url, FallbackPolicy, UpdateConfig};
 pub use diagnosis::{Diagnosis, ScriptEvent};
-pub use outcome::{CheckOutcome, FallbackReason, UpdateCheck, UpdateOutcome, UpdateResult};
+pub use outcome::{
+    CheckOutcome, FallbackReason, OsRequirement, UpdateCheck, UpdateOutcome, UpdateResult,
+};
 pub use pending::{PendingArtifact, PendingUpdate};
 pub use simulate::{simulate_update, SimulationReport};
 pub use staged::{

@@ -118,6 +118,8 @@ export interface CheckOutcome {
   patch_size: number | null;
   needs_repair: boolean;
   full_download_url: string | null;
+  /** 本机系统版本低于清单要求时的结构化原因；否则为 `null`。 */
+  unsupported_os: { required: string; current: string } | null;
   manifest: UpdateManifest;
   fallback_reason: FallbackReason | null;
 }

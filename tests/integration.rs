@@ -163,14 +163,16 @@ async fn test_large_file_performance() {
 fn test_find_patch_is_platform_scoped() {
     let mut manifest = manifest_with_version("0.2.0");
 
-    let patch = |from: &str, url: &str| tauri_delta_updater::PatchInfo {
-        from_version: from.to_string(),
-        to_version: "0.2.0".to_string(),
-        patch_url: url.to_string(),
-        patch_hash: "a".repeat(64),
-        target_hash: "b".repeat(64),
-        patch_size: Some(1024),
-        scope: None,
+    let patch = |from: &str, url: &str| {
+        serde_json::from_value(serde_json::json!({
+            "from_version": from,
+            "to_version": "0.2.0",
+            "patch_url": url,
+            "patch_hash": "a".repeat(64),
+            "target_hash": "b".repeat(64),
+            "patch_size": 1024
+        }))
+        .expect("测试补丁必须可反序列化")
     };
 
     manifest.patches.insert(
@@ -210,15 +212,15 @@ fn test_find_patch_ignores_stale_target_version() {
 
     manifest.patches.insert(
         "windows-x86_64".to_string(),
-        vec![tauri_delta_updater::PatchInfo {
-            from_version: "0.1.0".to_string(),
-            to_version: "0.1.9".to_string(), // 过期：与清单版本不一致
-            patch_url: "https://cdn/stale.patch".to_string(),
-            patch_hash: "a".repeat(64),
-            target_hash: "b".repeat(64),
-            patch_size: Some(512),
-            scope: None,
-        }],
+        vec![serde_json::from_value(serde_json::json!({
+            "from_version": "0.1.0",
+            "to_version": "0.1.9", // 过期：与清单版本不一致
+            "patch_url": "https://cdn/stale.patch",
+            "patch_hash": "a".repeat(64),
+            "target_hash": "b".repeat(64),
+            "patch_size": 512
+        }))
+        .expect("测试补丁必须可反序列化")],
     );
 
     assert!(
