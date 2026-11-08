@@ -1,6 +1,10 @@
-[read]
+# 最小只读权限集：检查更新、读取诊断快照、查询跨重启待安装记录。
+# 不下载、不安装、不退出进程。
+[[set]]
+identifier = "read"
 description = """
-最小只读权限：检查更新、读取诊断快照、查询跨重启待安装记录。不下载、不安装、不退出进程。
+Minimal read-only access: check for updates, read diagnostics and query the
+pending across-restart record. No download, install or process exit.
 """
 permissions = [
     "allow-check",

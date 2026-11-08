@@ -282,10 +282,7 @@ mod tests {
                 .split(',')
                 .map(str::trim)
                 .filter(|name| {
-                    !name.is_empty()
-                        && name
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                 })
                 .map(str::to_string)
                 .collect();

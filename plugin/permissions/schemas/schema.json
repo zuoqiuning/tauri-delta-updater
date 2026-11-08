@@ -443,6 +443,24 @@
           "type": "string",
           "const": "default",
           "markdownDescription": "默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-discard-pending`\n- `allow-install-pending`"
+        },
+        {
+          "description": "Full-installer fallback: download and execute the platform installer. This is\nthe highest-privilege set; grant it only to windows that really need it.\n\n#### This permission set includes:\n\n- `allow-download-full`\n- `allow-install-full`",
+          "type": "string",
+          "const": "full",
+          "markdownDescription": "Full-installer fallback: download and execute the platform installer. This is\nthe highest-privilege set; grant it only to windows that really need it.\n\n#### This permission set includes:\n\n- `allow-download-full`\n- `allow-install-full`"
+        },
+        {
+          "description": "Minimal read-only access: check for updates, read diagnostics and query the\npending across-restart record. No download, install or process exit.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-diagnose`\n- `allow-pending`",
+          "type": "string",
+          "const": "read",
+          "markdownDescription": "Minimal read-only access: check for updates, read diagnostics and query the\npending across-restart record. No download, install or process exit.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-diagnose`\n- `allow-pending`"
+        },
+        {
+          "description": "Delta update access: install/prepare/launch the replacement script, cancel a\nsession, leave safe mode, discard or install the pending record. Does not\ninclude the full-installer permissions.\n\n#### This permission set includes:\n\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-discard-pending`\n- `allow-install-pending`",
+          "type": "string",
+          "const": "update",
+          "markdownDescription": "Delta update access: install/prepare/launch the replacement script, cancel a\nsession, leave safe mode, discard or install the pending record. Does not\ninclude the full-installer permissions.\n\n#### This permission set includes:\n\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-discard-pending`\n- `allow-install-pending`"
         }
       ]
     }

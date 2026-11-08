@@ -1,7 +1,9 @@
-[full]
+# 全量回退权限集：可以下载并执行平台安装器，权限最高。
+[[set]]
+identifier = "full"
 description = """
-全量回退权限：下载全量安装包并执行平台安装器。权限最高，
-只在确实需要 install_full / download_full 的窗口启用。
+Full-installer fallback: download and execute the platform installer. This is
+the highest-privilege set; grant it only to windows that really need it.
 """
 permissions = [
     "allow-download-full",

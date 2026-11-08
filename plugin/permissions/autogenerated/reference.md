@@ -338,4 +338,50 @@ Denies the reset_safety command without any pre-configured scope.
 
 </td>
 </tr>
+
+<tr>
+<td>
+
+`delta-updater:full`
+
+</td>
+<td>
+
+Full-installer fallback: download and execute the platform installer. This is
+the highest-privilege set; grant it only to windows that really need it.
+
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:read`
+
+</td>
+<td>
+
+Minimal read-only access: check for updates, read diagnostics and query the
+pending across-restart record. No download, install or process exit.
+
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-updater:update`
+
+</td>
+<td>
+
+Delta update access: install/prepare/launch the replacement script, cancel a
+session, leave safe mode, discard or install the pending record. Does not
+include the full-installer permissions.
+
+
+</td>
+</tr>
 </table>

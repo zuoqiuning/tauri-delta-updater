@@ -191,7 +191,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        # macOS 的 tauri 编译路径与 Linux/Windows 不同，不能只靠 core 的 job 覆盖。
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -269,8 +270,13 @@ jobs:
       run: git diff --exit-code -- plugin/dist-js
 
   release-build:
-    name: Release build
-    runs-on: windows-latest
+    name: Release build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # debug 构建通过不代表 release 优化/链接路径通过。
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v4

@@ -1108,6 +1108,10 @@ async fn prepare_staged(work_dir: &std::path::Path) -> tauri_delta_updater::Stag
             .current_version("0.1.0")
             .executable_path(&old_exe)
             .work_dir(work_dir)
+            // launch 测试会真的启动后台脚本：缩短等待，避免测试目录删除后
+            // 脚本还要在后台空等默认的 60 秒并刷出噪声日志。
+            .wait_timeout_secs(2)
+            .confirm_timeout_secs(2)
             .auto_launch(false),
     )
     .unwrap();
