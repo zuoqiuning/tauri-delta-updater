@@ -233,6 +233,40 @@ fn test_appimage_script_skips_exe_link_check() {
     );
 }
 
+/// 复制中途失败时目标可能已经存在半截内容；回滚必须用备份覆盖它，
+/// 而不是因为“目标存在”就把半截文件当旧版本启动。
+#[tokio::test]
+async fn test_unix_script_restores_backup_after_partial_copy() {
+    let dir = tempdir_path();
+    let current_exe = dir.join("tdx-app");
+    std::fs::write(&current_exe, b"OLD").unwrap();
+    let staged = dir.join("tdx-app-new");
+
+    let artifact = make_verified(&dir, &current_exe, b"NEW", &staged).await;
+    let script = generate_script_with_dead_pid(&current_exe, &artifact, &dir);
+    let content = std::fs::read_to_string(&script).unwrap();
+
+    // 注入“复制写到一半后失败”，复现磁盘满 / I/O 错误留下的半截目标文件。
+    let injected = content.replace(
+        "if ! cp \"$STAGED\" \"$TARGET_EXE\"; then",
+        "if ! (printf 'HALF' > \"$TARGET_EXE\"; false); then",
+    );
+    assert_ne!(injected, content, "测试必须成功注入复制失败");
+    std::fs::write(&script, injected).unwrap();
+
+    PlatformUpdater::launch_updater(&script).unwrap();
+
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            std::fs::read(&current_exe)
+                .map(|c| c == b"OLD")
+                .unwrap_or(false)
+        }),
+        "半截目标必须被备份覆盖还原: {}",
+        current_exe.display()
+    );
+}
+
 /// 生成一个临时目录。
 fn tempdir_path() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};

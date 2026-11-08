@@ -96,6 +96,10 @@ fn init_apply_writes_all_files() {
         serde_json::from_str(&read(&root, "capabilities/default.json")).unwrap();
     let permissions = capability["permissions"].as_array().unwrap();
     assert!(permissions.iter().any(|v| v == "delta-updater:default"));
+    assert_eq!(
+        capability["identifier"], "default",
+        "已有 capability 缺 identifier 时必须补齐，否则 tauri build 失败"
+    );
 
     let cargo = read(&root, "Cargo.toml");
     assert!(cargo.contains("tauri-plugin-delta-updater"));
@@ -199,19 +203,12 @@ fn init_registry_writes_current_version() {
     assert_eq!(code, 0, "--check 应通过: {stdout}\n{stderr}");
 }
 
-/// `--check` 供 CI 做接入守卫：缺失时非零，配置完成后零并打印注册片段。
+/// `--check` 供 CI 做接入守卫：README 的写法不带 endpoint/pubkey，
+/// 缺失时非零，配置完成后零并打印注册片段。
 #[test]
 fn init_check_is_a_ci_guard() {
     let (_dir, root) = project();
-    let args = [
-        "init",
-        "--endpoint",
-        "https://cdn.example.com/latest.json",
-        "--pubkey",
-        "PK",
-        "--check",
-    ];
-    let (code, _stdout, stderr) = run(&root, &args);
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
     assert_ne!(code, 0, "未配置时 --check 必须失败");
     assert!(stderr.contains("缺少"), "错误必须列出缺失项: {stderr}");
     assert!(stderr.contains("delta-updater"));
@@ -229,7 +226,8 @@ fn init_check_is_a_ci_guard() {
     );
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
 
-    let (code, stdout, stderr) = run(&root, &args);
+    // 无参数 --check：这是 README / CI 中的真实用法，必须能运行。
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
     assert_eq!(code, 0, "--check 应通过: {stdout}\n{stderr}");
     assert!(stdout.contains("接入配置完整"));
     assert!(stdout.contains("单栈"), "未保留官方插件时必须提示单栈");
@@ -237,6 +235,40 @@ fn init_check_is_a_ci_guard() {
         stdout.contains(".plugin(tauri_plugin_delta_updater::init_from_config())"),
         "必须输出可直接粘贴的注册片段"
     );
+}
+
+/// 项目没有 capability 文件时，生成的文件必须是 Tauri 2 可反序列化的：
+/// 缺 `identifier`/`windows` 会让 `tauri build` 直接失败。
+#[test]
+fn init_writes_valid_capability_when_missing() {
+    let (_dir, root) = project();
+    std::fs::remove_file(root.join("src-tauri/capabilities/default.json")).unwrap();
+
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let capability: serde_json::Value =
+        serde_json::from_str(&read(&root, "capabilities/default.json")).unwrap();
+    assert_eq!(capability["identifier"], "default");
+    assert_eq!(
+        capability["windows"][0], "main",
+        "新建 capability 必须声明作用窗口"
+    );
+    let permissions = capability["permissions"].as_array().unwrap();
+    assert!(permissions.iter().any(|v| v == "delta-updater:default"));
+
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_eq!(code, 0, "生成后 --check 应通过: {stdout}\n{stderr}");
 }
 
 /// migrate 复制官方配置；--remove-official 同时移除官方配置与权限。

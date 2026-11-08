@@ -99,16 +99,22 @@ impl Project {
         }
 
         let (_, capability) = read_json_or(&self.capability_path, json!({}))?;
+        // Tauri 2 的 capability 必须有非空 identifier；缺它时 `tauri build`
+        // 会在反序列化阶段失败，而不是权限不生效。
         let capability_ok = capability
-            .get("permissions")
-            .and_then(Value::as_array)
-            .is_some_and(|permissions| {
-                permissions
-                    .iter()
-                    .any(|v| v.as_str() == Some("delta-updater:default"))
-            });
+            .get("identifier")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.trim().is_empty())
+            && capability
+                .get("permissions")
+                .and_then(Value::as_array)
+                .is_some_and(|permissions| {
+                    permissions
+                        .iter()
+                        .any(|v| v.as_str() == Some("delta-updater:default"))
+                });
         if !capability_ok {
-            missing.push("capabilities/default.json 的 delta-updater:default");
+            missing.push("capabilities/default.json（identifier + delta-updater:default）");
         }
 
         let cargo = fs::read_to_string(&self.cargo_toml)
@@ -225,10 +231,17 @@ impl Project {
         add_delta: bool,
         remove_official: bool,
     ) -> Result<Change, String> {
-        let (before, mut root) = read_json_or(&self.capability_path, json!({ "permissions": [] }))?;
-        let permissions = root
+        let (before, mut root) = read_json_or(&self.capability_path, default_capability())?;
+        let object = root
             .as_object_mut()
-            .ok_or_else(|| "capability 根节点必须是对象".to_string())?
+            .ok_or_else(|| "capability 根节点必须是对象".to_string())?;
+        // 已有文件也补齐 identifier：它是 Tauri 2 Capability 的必填字段，
+        // 缺字段时 `tauri build` 直接失败；`windows` 只在新建文件时给出默认值，
+        // 避免覆盖用户已有的 platform/webview 作用域配置。
+        object
+            .entry("identifier")
+            .or_insert_with(|| json!("default"));
+        let permissions = object
             .entry("permissions")
             .or_insert_with(|| json!([]))
             .as_array_mut()
@@ -262,6 +275,19 @@ impl Project {
             after,
         })
     }
+}
+
+/// 新建 capability 文件时的合法默认值。
+///
+/// Tauri 2 的 Capability 要求非空 `identifier`，`windows` 决定作用窗口；
+/// 只写 `permissions` 会生成一个 `tauri build` 无法反序列化的文件。
+fn default_capability() -> Value {
+    json!({
+        "$schema": "../gen/schemas/desktop-schema.json",
+        "identifier": "default",
+        "windows": ["main"],
+        "permissions": []
+    })
 }
 
 fn read_json_or(path: &Path, default: Value) -> Result<(String, Value), String> {

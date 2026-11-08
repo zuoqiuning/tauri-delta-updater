@@ -42,12 +42,12 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// 为当前项目写入 delta-updater 配置、capability 与依赖。
     Init {
-        /// 清单地址（`latest.json`）。
-        #[arg(long)]
-        endpoint: String,
-        /// 固化在应用里的公钥（base64 或 `.pub` 内容）。
-        #[arg(long)]
-        pubkey: String,
+        /// 清单地址（`latest.json`）。`--check` 时从项目现有配置读取，无需提供。
+        #[arg(long, required_unless_present = "check")]
+        endpoint: Option<String>,
+        /// 固化在应用里的公钥（base64 或 `.pub` 内容）。`--check` 时无需提供。
+        #[arg(long, required_unless_present = "check")]
+        pubkey: Option<String>,
         /// 可选整包清单地址（`latest.bundle.json`）。
         #[arg(long)]
         bundle_endpoint: Option<String>,

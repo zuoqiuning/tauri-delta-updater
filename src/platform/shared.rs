@@ -188,6 +188,15 @@ pub fn confirm_startup_success_in(work_dir: &Path) -> Result<()> {
     // 新版本已经启动成功：上一次回滚的旧原因不再代表当前状态。
     let _ = std::fs::remove_file(work_dir.join(artifacts::ROLLBACK_FLAG));
 
+    // Windows 整包：确认成功后备份已完成使命。脚本通常会在看到标志后自行删除，
+    // 但若进程恰好在此之前崩溃，残留备份会被下一次启动误判为“替换未完成”
+    // 并回滚健康版本；这里主动清理，与 macOS 的 cleanup_bundle_backup 对称。
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::fs::remove_dir_all(work_dir.join(artifacts::BUNDLE_BACKUP_DIR));
+        let _ = std::fs::remove_file(work_dir.join(artifacts::BUNDLE_JOURNAL_FILE));
+    }
+
     // 全量安装包已完成使命（Windows 安装器退出 / macOS-Linux 已替换），
     // 这里删除，避免用户缓存目录长期占用几十到几百 MB。
     crate::core::disk::cleanup_full_installers_sync(work_dir);

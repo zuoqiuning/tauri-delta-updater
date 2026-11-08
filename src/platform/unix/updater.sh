@@ -72,7 +72,10 @@ restart_old() {
         log 'event=delta.rollback.triggered reason=update_failed'
         write_rollback 'update_failed'
     fi
-    if [ ! -f "$TARGET_EXE" ] && [ -f "$BACKUP" ]; then
+    # 替换可能只写了一半（磁盘满、I/O 错误）：只要备份还在就必须无条件还原，
+    # 不能因为目标文件“存在”就把半截内容当成旧版本启动。
+    if [ -f "$BACKUP" ]; then
+        rm -f "$TARGET_EXE"
         mv "$BACKUP" "$TARGET_EXE" 2>/dev/null
     fi
     if [ -f "$TARGET_EXE" ]; then

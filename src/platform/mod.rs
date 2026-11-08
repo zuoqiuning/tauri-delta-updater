@@ -231,6 +231,14 @@ impl PlatformUpdater {
 
     /// 是否存在上次中断、尚未还原的整包替换现场。
     pub fn bundle_repair_needed(current_exe: &Path, work_dir: &Path) -> bool {
+        // 启动状态已 committed：替换已经完成并确认健康。此时残留的备份/journal
+        // 只可能是“写成功标志”与“删除备份”之间崩溃留下的，
+        // 据此回滚会把一个健康的新版本降回旧版本。
+        if crate::core::startup::read(work_dir)
+            == Some(crate::core::startup::StartupState::Committed)
+        {
+            return false;
+        }
         #[cfg(target_os = "windows")]
         {
             let _ = current_exe;

@@ -67,6 +67,10 @@ fn run(cli: Cli) -> Result<(), String> {
                     missing.join("\n  - ")
                 ));
             }
+            // 非 --check 时 clap 已通过 required_unless_present 保证两者存在；
+            // 这里仍给出明确错误，避免未来参数约束调整后出现 unwrap 崩溃。
+            let endpoint = endpoint.ok_or("--endpoint 必填（--check 除外）")?;
+            let pubkey = pubkey.ok_or("--pubkey 必填（--check 除外）")?;
             project.init_changes(
                 endpoint.trim(),
                 pubkey.trim(),

@@ -185,6 +185,75 @@ async fn test_update_prefers_repair_without_network() {
     assert!(updater.diagnose().await.needs_repair);
 }
 
+/// Windows：成功标志已写、备份尚未删除时崩溃，下一次启动不得据此回滚健康版本。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn test_committed_startup_is_not_treated_as_partial_update() {
+    use tauri_delta_updater::core::artifacts;
+
+    let dir = tempdir().unwrap();
+    let work_dir = dir.path().to_path_buf();
+    let exe = work_dir.join("app.exe");
+    std::fs::write(&exe, b"healthy new version").unwrap();
+
+    let backup = work_dir.join(artifacts::BUNDLE_BACKUP_DIR);
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::write(backup.join("app.exe"), b"old version").unwrap();
+    std::fs::write(
+        work_dir.join(artifacts::BUNDLE_JOURNAL_FILE),
+        "add new.txt\n",
+    )
+    .unwrap();
+
+    // 模拟“新版本已确认启动，但脚本还没来得及删备份就被终止”。
+    tauri_delta_updater::core::startup::write(
+        &work_dir,
+        tauri_delta_updater::StartupState::Committed,
+    )
+    .unwrap();
+
+    assert!(
+        !tauri_delta_updater::PlatformUpdater::bundle_repair_needed(&exe, &work_dir),
+        "已 committed 的替换不得再次被判为未完成"
+    );
+
+    let updater = DeltaUpdater::new(
+        UpdateConfig::new("http://127.0.0.1:1/latest.json", "PK")
+            .current_version("0.1.0")
+            .executable_path(&exe)
+            .work_dir(&work_dir)
+            .auto_launch(false),
+    )
+    .unwrap();
+    assert!(!updater.diagnose().await.needs_repair);
+}
+
+/// Windows：启动确认成功后必须清理整包备份，避免下一次启动把残留当作未完成替换。
+#[cfg(target_os = "windows")]
+#[test]
+fn test_confirm_cleans_bundle_backup() {
+    use tauri_delta_updater::core::artifacts;
+
+    let dir = tempdir().unwrap();
+    let work_dir = dir.path();
+    let backup = work_dir.join(artifacts::BUNDLE_BACKUP_DIR);
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::write(backup.join("app.exe"), b"old").unwrap();
+    std::fs::write(work_dir.join(artifacts::BUNDLE_JOURNAL_FILE), "add x\n").unwrap();
+
+    tauri_delta_updater::PlatformUpdater::confirm_startup_success_in(work_dir).unwrap();
+
+    assert!(!backup.exists(), "确认成功后备份目录必须被清理");
+    assert!(
+        !work_dir.join(artifacts::BUNDLE_JOURNAL_FILE).exists(),
+        "确认成功后 journal 必须被清理"
+    );
+    assert_eq!(
+        tauri_delta_updater::core::startup::read(work_dir),
+        Some(tauri_delta_updater::StartupState::Committed)
+    );
+}
+
 /// macOS：`.app` 内主程序走整包时，安装根目录是整个 `.app`，
 /// 暂存目录以 `Contents/...` 为相对路径，脚本是目录切换版本。
 #[cfg(target_os = "macos")]
