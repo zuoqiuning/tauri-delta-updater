@@ -47,6 +47,26 @@ fn existing_ancestor(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// 日志/事件文件超过上限时轮转一次（保留 `.1`）。
+///
+/// 桌面应用可能运行多年，`tdx_update.log` 与 `tdx_events.jsonl` 会无限追加。
+/// 在构造更新器时（每次启动）检查一次，成本只是两次 `metadata`。
+pub fn rotate_logs(work_dir: &Path) {
+    /// 单个文件的上限：足够保留最近若干次更新的完整排障信息。
+    const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+    for name in [artifacts::LOG_FILE, artifacts::EVENTS_FILE] {
+        let path = work_dir.join(name);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() <= MAX_LOG_BYTES {
+            continue;
+        }
+        // rename 会覆盖旧的 `.1`，即只保留上一代，不会无限堆积。
+        let _ = std::fs::rename(&path, work_dir.join(format!("{name}.1")));
+    }
+}
+
 /// 删除工作目录里遗留的全量安装包（同步版本）。
 ///
 /// 新版本确认启动成功后调用：此时安装包已经完成使命——Windows 安装器早已退出、
@@ -64,7 +84,6 @@ pub fn cleanup_full_installers_sync(work_dir: &Path) {
 }
 
 /// 清理上一次更新遗留的临时文件。
-///
 /// 只删除更新流程自身产生的、可精确命名的产物，不会触碰用户数据。
 ///
 /// 注意：**不能删除失败计数**。它记录的是连续失败次数，
@@ -166,4 +185,39 @@ pub async fn cleanup_previous_updates_except(work_dir: &Path, exe_path: &Path, k
     // 上一轮更新可能刚刚启动新版本、还在等它写启动标志；
     // 删掉指针会让新版本把标志写到错误目录，导致旧脚本误判回滚。
     // 指针由 confirm_startup_success 在读取后删除。
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rotate_logs;
+    use crate::core::artifacts;
+
+    /// 超过上限的日志/事件轮转为 `.1`；小文件保持原位。
+    #[test]
+    fn rotates_oversized_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(artifacts::LOG_FILE), b"small").unwrap();
+        std::fs::write(
+            dir.path().join(artifacts::EVENTS_FILE),
+            vec![b'x'; 3 * 1024 * 1024],
+        )
+        .unwrap();
+
+        rotate_logs(dir.path());
+
+        assert!(
+            dir.path().join(artifacts::LOG_FILE).is_file(),
+            "未超限的日志不得轮转"
+        );
+        assert!(
+            dir.path()
+                .join(format!("{}.1", artifacts::EVENTS_FILE))
+                .is_file(),
+            "超限事件流必须保留上一代"
+        );
+        assert!(
+            !dir.path().join(artifacts::EVENTS_FILE).exists(),
+            "轮转后旧路径不得残留"
+        );
+    }
 }

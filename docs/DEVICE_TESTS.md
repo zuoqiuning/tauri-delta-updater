@@ -1,7 +1,7 @@
 # 真机验证清单（发布前）
 
 CI 覆盖静态断言与合成脚本；以下路径必须在真实机器上跑一次，结果写入对应版本的
-`docs/release-<version>.md`。未执行的项必须标注为"未验证"，不能用 CI 绿替代。
+`docs/releases/v<version>.md`。未执行的项必须标注为"未验证"，不能用 CI 绿替代。
 
 ## macOS
 
@@ -31,9 +31,19 @@ spctl -a -vv /Applications/MyApp.app
 
 ## Linux
 
-- [ ] `.deb` 安装到 `/usr/bin` 后更新：确认 `pkexec` / `sudo -n` 行为，失败时回滚。
+- [ ] `.deb` 安装到 `/usr/bin` 后走**单文件增量**（实验性）：确认 `pkexec` / `sudo -n`
+      行为，失败时回滚；同时确认 `dpkg -l` 仍报告旧版本（包管理器元数据不更新）。
+- [ ] 全量安装包为 `.deb` / `.rpm` 时必须被拒绝（`full_install_failed`），提示走包管理器。
 - [ ] AppImage：直接执行 `.AppImage` → 更新 → 确认本体被替换、`$APPIMAGE` 路径正确。
 - [ ] 普通用户对只读目录更新：应中止并保留旧版本，不产生半成品。
+
+## 失败恢复（手工，需要真实超时窗口）
+
+- [ ] 默认 60 秒启动确认超时：发布一个启动后 70 秒才调用确认（或故意不确认）的新版本，
+      确认脚本在超时后写 `startup_timeout`、还原 `.bak` 并重启旧版本；
+      `diagnose().startup_state` 为 `rolled_back`，`last_rollback` 为 `startup_timeout`。
+- [ ] 健康检查失败立即回滚：`confirm_startup_success_with(|| Err(...))` 后
+      `last_rollback` 为 `health_check_failed`，不需要等满 60 秒。
 
 ## 安装器语义对照（跨安装器不可类比）
 

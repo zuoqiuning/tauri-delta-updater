@@ -4,6 +4,14 @@
   "description": "Typed frontend bindings for tauri-plugin-delta-updater: delta updates, full-installer fallback, stage events and diagnostics.",
   "license": "MIT",
   "author": "丘屿知宁 (zuoqiuning)",
+  "homepage": "https://github.com/zuoqiuning/tauri-delta-updater#readme",
+  "keywords": [
+    "tauri",
+    "updater",
+    "delta",
+    "incremental",
+    "plugin"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/zuoqiuning/tauri-delta-updater"

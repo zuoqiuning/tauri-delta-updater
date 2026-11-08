@@ -241,7 +241,7 @@ impl DeltaUpdater {
             return false;
         }
         // 脚本与产物必须位于工作目录内，避免记录被改写后启动任意路径。
-        if !record.script_path.starts_with(self.work_dir()) {
+        if !is_within(self.work_dir(), &record.script_path) {
             return false;
         }
         if !record.script_path.is_file() {
@@ -252,7 +252,7 @@ impl DeltaUpdater {
                 staged_exe,
                 target_hash,
             } => {
-                if !staged_exe.starts_with(self.work_dir()) || !staged_exe.is_file() {
+                if !is_within(self.work_dir(), staged_exe) || !staged_exe.is_file() {
                     return false;
                 }
                 match calculate_hash(staged_exe).await {
@@ -261,7 +261,7 @@ impl DeltaUpdater {
                 }
             }
             PendingArtifact::Bundle { staging_dir, files } => {
-                if !staging_dir.starts_with(self.work_dir()) || !staging_dir.is_dir() {
+                if !is_within(self.work_dir(), staging_dir) || !staging_dir.is_dir() {
                     return false;
                 }
                 files.iter().all(|file| {
@@ -272,6 +272,17 @@ impl DeltaUpdater {
             }
         }
     }
+}
+
+/// 路径是否真的位于 `base` 之内。
+///
+/// `Path::starts_with` 只做组件前缀比较：`work_dir/../evil` 会通过检查。
+/// 两侧都 canonicalize 后再比较；解析失败（路径不存在/无权限）视为不可信。
+fn is_within(base: &Path, candidate: &Path) -> bool {
+    let (Ok(base), Ok(candidate)) = (base.canonicalize(), candidate.canonicalize()) else {
+        return false;
+    };
+    candidate.starts_with(base)
 }
 
 /// 语义化版本比较；无法解析的版本一律判定为“不更新”。
@@ -391,6 +402,37 @@ mod tests {
 
         let updater = test_updater(dir.path(), "0.2.0");
         assert!(updater.pending_update().await.unwrap().is_none());
+    }
+
+    /// `work_dir/../evil` 在字面前缀上属于工作目录；canonicalize 后必须拒绝。
+    #[tokio::test]
+    async fn rejects_dot_dot_escape_from_work_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let evil = root.path().join("evil.ps1");
+        std::fs::write(&evil, b"exit 0").unwrap();
+
+        let record = PendingUpdate {
+            version: "0.3.0".into(),
+            script_path: work.join("..").join("evil.ps1"),
+            artifact: PendingArtifact::Exe {
+                staged_exe: work.join("..").join("evil.ps1"),
+                target_hash: String::new(),
+            },
+            created_at: 0,
+        };
+        std::fs::write(
+            work.join(artifacts::PENDING_FILE),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+
+        let updater = test_updater(&work, "0.2.0");
+        assert!(
+            updater.pending_update().await.unwrap().is_none(),
+            "`..` 逃逸必须被 canonicalize 检查拦住"
+        );
     }
 
     /// 没有记录时不得启动任何东西。

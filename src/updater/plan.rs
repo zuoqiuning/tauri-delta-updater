@@ -7,6 +7,34 @@ use crate::models::{PatchInfo, UpdateManifest};
 use crate::platform::target::normalize_version;
 use std::collections::{HashMap, VecDeque};
 
+/// 组合“为什么不能走增量”的统一原因。
+///
+/// `check()` 与 `update()` 必须使用同一份逻辑：两边各写一遍分支，
+/// 迟早会出现“检查说能增量、更新却回退全量”的不一致。
+///
+/// - 环境不适合原地替换时，环境原因优先于“整包不支持”；
+/// - 有单文件补丁时不算回退（`None`）；
+/// - 否则整包不支持解释整包原因，未配置整包解释“没有匹配补丁”。
+pub(super) fn fallback_reason(
+    bundle_unsupported: Option<&'static str>,
+    environment: Option<&'static str>,
+    has_single_patch: bool,
+    from: &str,
+    to: &str,
+) -> Option<super::FallbackReason> {
+    if let Some(detail) = environment {
+        return Some(super::FallbackReason::EnvironmentUnsupported(detail));
+    }
+    match (bundle_unsupported, has_single_patch) {
+        (Some(detail), false) => Some(super::FallbackReason::EnvironmentUnsupported(detail)),
+        (_, true) => None,
+        (None, false) => Some(super::FallbackReason::NoMatchingPatch {
+            from: from.to_string(),
+            to: to.to_string(),
+        }),
+    }
+}
+
 /// 链式补丁最多串几跳。
 ///
 /// 每多一跳就多一次下载、合并与哈希校验：收益递减，失败面线性增长。
@@ -137,10 +165,36 @@ pub(crate) fn within_budget(chain: &[&PatchInfo], installer_size: Option<u64>) -
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_chain, plan_single, within_budget, MAX_CHAIN_HOPS};
+    use super::{fallback_reason, plan_chain, plan_single, within_budget, MAX_CHAIN_HOPS};
     use crate::models::{
         PatchInfo, PatchScope, PlatformInfo, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
     };
+    use crate::updater::FallbackReason;
+
+    /// 回退原因的组合必须与 check/update 共用同一语义。
+    #[test]
+    fn fallback_reason_prefers_environment_and_single_patch() {
+        assert_eq!(
+            fallback_reason(Some("bundle"), Some("env"), false, "1.0", "2.0"),
+            Some(FallbackReason::EnvironmentUnsupported("env"))
+        );
+        assert_eq!(
+            fallback_reason(Some("bundle"), None, true, "1.0", "2.0"),
+            None,
+            "单文件补丁可用时不算回退"
+        );
+        assert_eq!(
+            fallback_reason(Some("bundle"), None, false, "1.0", "2.0"),
+            Some(FallbackReason::EnvironmentUnsupported("bundle"))
+        );
+        assert_eq!(
+            fallback_reason(None, None, false, "1.0", "2.0"),
+            Some(FallbackReason::NoMatchingPatch {
+                from: "1.0".into(),
+                to: "2.0".into(),
+            })
+        );
+    }
 
     fn patch(from: &str, to: &str, size: Option<u64>) -> PatchInfo {
         PatchInfo {

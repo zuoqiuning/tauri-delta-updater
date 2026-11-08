@@ -61,6 +61,28 @@ async fn test_custom_headers_are_sent() {
     );
 }
 
+/// 移动端与未知平台没有替换脚本：必须在构造阶段拒绝，而不是下载后才失败。
+#[test]
+fn test_updater_rejects_mobile_or_unknown_platform() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app");
+    std::fs::write(&exe, b"app").unwrap();
+    for platform in ["android-aarch64", "ios-aarch64", "unknown-unknown"] {
+        let err = DeltaUpdater::new(
+            UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
+                .current_version("1.0.0")
+                .platform(platform)
+                .executable_path(&exe)
+                .work_dir(dir.path()),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("不支持的平台"),
+            "{platform} 必须在构造阶段被拒绝: {err}"
+        );
+    }
+}
+
 /// 显式配置的签名地址必须被真正使用，而不是始终按清单地址推导。
 #[tokio::test]
 async fn test_custom_signature_url_is_used() {

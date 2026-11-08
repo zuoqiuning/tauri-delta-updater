@@ -1,0 +1,14 @@
+[update]
+description = """
+增量更新权限：安装/准备/启动替换、取消会话、退出安全模式、丢弃或执行待安装记录。
+不含全量安装器执行权限。
+"""
+permissions = [
+    "allow-install",
+    "allow-prepare",
+    "allow-launch",
+    "allow-cancel",
+    "allow-reset-safety",
+    "allow-discard-pending",
+    "allow-install-pending",
+]

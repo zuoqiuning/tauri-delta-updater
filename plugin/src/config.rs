@@ -76,9 +76,44 @@ pub(crate) struct FileConfig {
     /// 可选：回滚后是否弹出系统提示，默认 `true`。
     #[serde(default)]
     pub(crate) rollback_notice: Option<bool>,
+    /// 未识别的字段：保留但不生效，启动时写日志提示，避免拼写错误静默失效。
+    #[serde(flatten)]
+    pub(crate) extra: HashMap<String, serde_json::Value>,
 }
 
+/// 官方 `tauri-plugin-updater` 的字段：本插件有意忽略，不应报警告。
+const OFFICIAL_KEYS: &[&str] = &[
+    "windows",
+    "linux",
+    "darwin",
+    "dmg",
+    "nsis",
+    "appimage",
+    "installerArgs",
+    "dangerousInsecureTransportProtocol",
+];
+
 impl FileConfig {
+    /// 未知字段的启动警告（已排除官方 updater 的合法字段）。
+    ///
+    /// 排序保证日志稳定，便于测试与 diff。
+    pub(crate) fn unknown_field_warnings(&self) -> Vec<String> {
+        let mut keys: Vec<&str> = self
+            .extra
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !OFFICIAL_KEYS.contains(key))
+            .collect();
+        keys.sort_unstable();
+        keys.into_iter()
+            .map(|key| {
+                format!(
+                    "plugins.delta-updater 含未知字段 {key:?}：该配置不会生效（检查拼写，字段表见 README）"
+                )
+            })
+            .collect()
+    }
+
     /// 转成库层配置。
     pub(crate) fn into_update_config(self, current_version: &str) -> Result<UpdateConfig, String> {
         let mut endpoints = self.endpoints.into_iter();
@@ -280,9 +315,12 @@ fn expand_with_platform(
 }
 
 /// 从应用配置读取并构造更新器配置。
+///
+/// 同时返回未知字段的警告：由启动流程写入日志并发事件，
+/// 避免 `bundle_endpont` 这类拼写错误静默失效。
 pub(crate) fn read_file_config<R: Runtime>(
     app: &AppHandle<R>,
-) -> Result<UpdateConfig, Box<dyn std::error::Error>> {
+) -> Result<(UpdateConfig, Vec<String>), Box<dyn std::error::Error>> {
     let plugins = &app.config().plugins.0;
     let raw = plugins
         .get("delta-updater")
@@ -294,11 +332,12 @@ pub(crate) fn read_file_config<R: Runtime>(
         })?;
     let file: FileConfig = serde_json::from_value(raw.clone())
         .map_err(|e| std::io::Error::other(format!("plugins.delta-updater 配置非法: {e}")))?;
+    let warnings = file.unknown_field_warnings();
     let version = app.package_info().version.to_string();
     let config = file
         .into_update_config(&version)
         .map_err(std::io::Error::other)?;
-    Ok(config)
+    Ok((config, warnings))
 }
 
 #[cfg(test)]

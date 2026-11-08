@@ -89,6 +89,16 @@ impl DeltaUpdater {
                 ));
             }
         }
+
+        // 移动端与未知目标没有替换脚本：在构造阶段就拒绝，
+        // 而不是让宿主走完检查/下载后才在生成脚本时失败。
+        let platform_os = config.platform.split_once('-').map(|(os, _)| os);
+        if !matches!(platform_os, Some("windows" | "darwin" | "linux")) {
+            return Err(DeltaError::Config(format!(
+                "不支持的平台 {:?}：本引擎只支持 Windows、macOS 与 Linux 桌面端",
+                config.platform
+            )));
+        }
         if config
             .fallback_manifest_urls
             .iter()
@@ -170,6 +180,8 @@ impl DeltaUpdater {
         // 构造阶段就验证可写性：系统级安装目录只读时，
         // 等到下载完成才失败会让用户白等一次，并累计进安全模式。
         ensure_writable(&work_dir)?;
+        // 长期运行的应用会无限追加日志：每次启动检查一次大小并轮转。
+        crate::core::disk::rotate_logs(&work_dir);
 
         // 替换脚本产生的备份必须与目标 exe 同目录，因此 exe 必须在某个目录下
         if executable_path.parent().is_none() {

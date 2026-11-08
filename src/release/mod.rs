@@ -209,6 +209,8 @@ struct ReleaseReport {
     patches: Vec<PatchRecord>,
     /// 整包补丁数量（未启用 `--new-app-dir` 时为 0）。
     bundle_patches: usize,
+    /// 整包补丁文件名（相对补丁目录）。
+    bundle_patch_files: Vec<String>,
     skipped: Vec<SkipRecord>,
 }
 
@@ -630,6 +632,14 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
             installer_size,
             patches: patch_records,
             bundle_patches: bundle_count,
+            bundle_patch_files: bundle_patch_paths
+                .iter()
+                .map(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                })
+                .collect(),
             skipped: std::mem::take(&mut skipped),
         };
         let json =

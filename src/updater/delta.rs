@@ -150,12 +150,18 @@ impl DeltaUpdater {
         ) else {
             // 整包不支持且单文件也没补丁时，报整包原因更准确：
             // 用户会知道"这台机器本来就不支持整包"，而不是"发布端漏了补丁"。
-            let reason = bundle_unsupported
-                .map(FallbackReason::EnvironmentUnsupported)
-                .unwrap_or(FallbackReason::NoMatchingPatch {
-                    from: self.config.current_version.clone(),
-                    to: manifest.version.clone(),
-                });
+            // 与 check() 共用同一份原因组合逻辑，避免两处判断漂移。
+            let reason = super::plan::fallback_reason(
+                bundle_unsupported,
+                None,
+                false,
+                &self.config.current_version,
+                &manifest.version,
+            )
+            .unwrap_or(FallbackReason::NoMatchingPatch {
+                from: self.config.current_version.clone(),
+                to: manifest.version.clone(),
+            });
             return Ok(fallback_to_full(full_download_url, reason, &mut on_event));
         };
 

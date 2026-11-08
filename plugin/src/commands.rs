@@ -215,7 +215,7 @@ pub(crate) async fn install_pending<R: Runtime>(
 pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
     Builder::new("delta-updater")
         .setup(move |app, _api| {
-            register(app, Ok(config));
+            register(app, Ok((config, Vec::new())));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -119,25 +119,21 @@ impl DeltaUpdater {
             };
             match &bundle {
                 BundleResolution::Ready { .. } => None,
-                BundleResolution::Unsupported(detail) => {
-                    if let Some(detail) = environment {
-                        Some(FallbackReason::EnvironmentUnsupported(detail))
-                    } else if single_chain.is_some() {
-                        None
-                    } else {
-                        Some(FallbackReason::EnvironmentUnsupported(detail))
-                    }
-                }
+                BundleResolution::Unsupported(detail) => super::plan::fallback_reason(
+                    Some(detail),
+                    environment,
+                    single_chain.is_some(),
+                    &self.config.current_version,
+                    &manifest.version,
+                ),
                 BundleResolution::NoPatch => Some(no_matching()),
-                BundleResolution::NotConfigured => {
-                    if let Some(detail) = environment {
-                        Some(FallbackReason::EnvironmentUnsupported(detail))
-                    } else if single_chain.is_some() {
-                        None
-                    } else {
-                        Some(no_matching())
-                    }
-                }
+                BundleResolution::NotConfigured => super::plan::fallback_reason(
+                    None,
+                    environment,
+                    single_chain.is_some(),
+                    &self.config.current_version,
+                    &manifest.version,
+                ),
             }
         };
         let has_patch = is_newer && !deferred_by_rollout && fallback_reason.is_none();

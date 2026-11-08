@@ -233,7 +233,7 @@ launch_app() {
         )
         .replace("__DEMOTE__", demote_block)
         .replace("__ELEVATION__", elevation_block);
-    crate::platform::shared::assert_rendered(&script);
+    crate::platform::shared::assert_rendered(&script)?;
 
     std::fs::write(&script_path, script.as_bytes()).map_err(DeltaError::Io)?;
     Ok(script_path)

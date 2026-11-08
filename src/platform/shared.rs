@@ -15,12 +15,43 @@ pub fn file_name(path: &Path) -> Result<String> {
         .ok_or_else(|| DeltaError::PatchApplyFailed(format!("无效的文件名: {}", path.display())))
 }
 
-/// 调试构建下的模板守卫：所有 `__PLACEHOLDER__` 必须被替换。
+/// 模板守卫：所有 `__PLACEHOLDER__` 必须被替换。
 ///
-/// 漏替换不会让脚本生成失败，只会在真机执行时才暴露；
-/// 每次渲染后扫一遍，CI 的测试运行会立即失败。
-pub(crate) fn assert_rendered(script: &str) {
-    debug_assert!(!script.contains("__"), "脚本模板存在未替换的占位符");
+/// 漏替换不会让脚本生成失败，只会在真机执行时才暴露。
+/// 返回错误而不是 `debug_assert`：release 构建也必须拒绝写出一个
+/// 无法执行的脚本。
+pub(crate) fn assert_rendered(script: &str) -> Result<()> {
+    if !script.contains("__") {
+        return Ok(());
+    }
+    // 把漏替换的占位符列出来，排障时不必打开模板逐行搜索。
+    // 只认 `__UPPER_CASE__` 形状：用户路径里可能合法地包含 `__`，
+    // 不能因为出现双下划线就拒绝生成脚本。
+    let mut leftovers: Vec<&str> = Vec::new();
+    let mut cursor = 0;
+    while let Some(start) = script[cursor..].find("__").map(|pos| cursor + pos) {
+        let Some(close) = script[start + 2..].find("__") else {
+            break;
+        };
+        let end = start + 2 + close + 2;
+        let inner = &script[start + 2..end - 2];
+        if !inner.is_empty()
+            && inner
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            && !leftovers.contains(&&script[start..end])
+        {
+            leftovers.push(&script[start..end]);
+        }
+        cursor = end;
+    }
+    if leftovers.is_empty() {
+        return Ok(());
+    }
+    Err(DeltaError::Config(format!(
+        "脚本模板存在未替换的占位符: {}",
+        leftovers.join(", ")
+    )))
 }
 
 /// 转义要写入 shell 脚本的单引号字符串。
@@ -221,6 +252,14 @@ mod tests {
     use super::has_replacement_evidence;
     use crate::core::artifacts;
     use tempfile::tempdir;
+
+    /// 占位符守卫必须报出漏替换，但不能误伤含 `__` 的合法路径。
+    #[test]
+    fn assert_rendered_detects_placeholders_without_false_positives() {
+        assert!(super::assert_rendered("target='C:/my__app/app.exe'").is_ok());
+        let err = super::assert_rendered("echo __TARGET__").unwrap_err();
+        assert!(err.to_string().contains("__TARGET__"), "{err}");
+    }
 
     /// 跨代际升级的证据必须被识别：旧脚本不留新指针。
     #[test]

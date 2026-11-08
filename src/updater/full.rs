@@ -130,6 +130,16 @@ impl DeltaUpdater {
                 ))
             })?;
 
+        // 服务端不给 Content-Length（chunked）时下载器无法预检磁盘；
+        // 清单里的 size 受签名保护，用它兜底，避免把磁盘写满后才发现。
+        if let Some(size) = manifest
+            .platforms
+            .get(&self.config.platform)
+            .and_then(|info| info.size)
+        {
+            crate::core::disk::check_disk_space(&self.work_dir, size)?;
+        }
+
         let path = full_installer_path(
             &self.work_dir,
             &full.url,

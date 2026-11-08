@@ -1,0 +1,9 @@
+[read]
+description = """
+最小只读权限：检查更新、读取诊断快照、查询跨重启待安装记录。不下载、不安装、不退出进程。
+"""
+permissions = [
+    "allow-check",
+    "allow-diagnose",
+    "allow-pending",
+]

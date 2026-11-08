@@ -25,11 +25,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # tag 校验需要完整历史/标签，默认浅克隆看不到已有 tag。
+          fetch-depth: 0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      # 发布必须对应一个可审计的 tag：否则"某版本从哪次提交构建"无法追溯。
+      - name: Verify git tag matches version
+        run: |
+          TAG="v${{ inputs.version }}"
+          if ! git tag --points-at HEAD | grep -qx "$TAG"; then
+            echo "::error::当前提交没有 tag $TAG；发布前必须先打 tag（实际: $(git tag --points-at HEAD | tr '\n' ' ')）"
+            exit 1
+          fi
+          echo "tag 校验通过: $TAG"
 
       # 发布走的是本工作流而不是 ci.yml，四处版本一致性必须在这里也校验一遍，
       # 否则 package.json / CHANGELOG 的漂移只会在发布当天暴露。
@@ -215,8 +228,13 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::warning::未配置 NPM_TOKEN，跳过 npm 发布；npm 包不会上线"
-            echo "### npm publish skipped: NPM_TOKEN not configured" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::未配置 NPM_TOKEN：npm 绑定不会发布，前端安装将拿不到类型；请配置 token 后单独重跑本 job"
+            exit 1
+          fi
+          VERSION=$(node -p "require('./package.json').version")
+          # 幂等：crate 已发布而 npm 重试时，已存在的版本不能再 publish。
+          if npm view "tauri-plugin-delta-updater@$VERSION" version > /dev/null 2>&1; then
+            echo "npm 已发布 $VERSION，跳过"
             exit 0
           fi
           npm publish --access public

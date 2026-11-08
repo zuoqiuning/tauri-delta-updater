@@ -174,7 +174,7 @@ fn generate_with_options(
         )
         .replace("__NOTICE_ENABLED__", if notice { "1" } else { "0" })
         .replace("__VERIFY__", &verify);
-    crate::platform::shared::assert_rendered(&script);
+    crate::platform::shared::assert_rendered(&script)?;
 
     std::fs::write(&script_path, script.as_bytes()).map_err(DeltaError::Io)?;
     #[cfg(unix)]
@@ -237,7 +237,7 @@ pub fn generate_repair(
         )
         .replace("__OLD_PID__", &old_pid.to_string())
         .replace("__WAIT_TIMEOUT__", &timings.wait_secs.to_string());
-    crate::platform::shared::assert_rendered(&script);
+    crate::platform::shared::assert_rendered(&script)?;
 
     std::fs::write(&script_path, script.as_bytes()).map_err(DeltaError::Io)?;
     Ok(script_path)

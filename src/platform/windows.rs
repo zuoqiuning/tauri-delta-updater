@@ -168,7 +168,7 @@ fn generate_updater_for_pid_with_options(
             "__NOTICE_ENABLED__",
             if notice { "$true" } else { "$false" },
         );
-    crate::platform::shared::assert_rendered(&script);
+    crate::platform::shared::assert_rendered(&script)?;
 
     // UTF-8 BOM：Windows PowerShell 5.1 靠它识别 UTF-8
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -389,7 +389,7 @@ fn generate_bundle_updater_for_pid_with_options(
             "__NOTICE_ENABLED__",
             if notice { "$true" } else { "$false" },
         );
-    crate::platform::shared::assert_rendered(&script);
+    crate::platform::shared::assert_rendered(&script)?;
 
     // UTF-8 BOM：Windows PowerShell 5.1 靠它识别 UTF-8
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -464,7 +464,7 @@ pub fn generate_bundle_repair_for_pid_with(
         .replace("__WAIT_TIMEOUT__", &timings.wait_secs.to_string())
         .replace("__WORK_DIR__", &ps_literal(&work_dir.display().to_string()))
         .replace("__SELF__", &ps_literal(&script_path.display().to_string()));
-    crate::platform::shared::assert_rendered(&script);
+    crate::platform::shared::assert_rendered(&script)?;
 
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(script.as_bytes());

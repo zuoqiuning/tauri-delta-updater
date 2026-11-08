@@ -35,6 +35,12 @@ readme = "README.md"
 # GitHub Release 用的发布说明、内部设计/验证记录都不属于 crate 内容
 exclude = ["docs"]
 
+# docs.rs 默认只构建默认 feature，`release` / CLI 相关 API 会消失；
+# 全量构建让发布端 API 也能在文档站检索到。
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 # 默认不启用发布工具：库使用者不该为 clap / minisign / walkdir 付出编译成本。
 # 构建 `generate` 需要 `--features generator`。

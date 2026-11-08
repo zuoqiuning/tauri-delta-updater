@@ -155,56 +155,67 @@ impl UpdaterState {
 /// 注册流程：构造更新器、确认上次启动、托管状态。
 ///
 /// 任何构造失败都降级为"更新功能不可用"，不影响应用本身启动。
-fn register<R: Runtime>(app: &AppHandle<R>, config: Result<UpdateConfig, String>) {
-    let state =
-        match config.and_then(|config| DeltaUpdater::new(config).map_err(|err| err.to_string())) {
-            Ok(updater) => {
-                let updater = Arc::new(updater);
+fn register<R: Runtime>(app: &AppHandle<R>, config: Result<(UpdateConfig, Vec<String>), String>) {
+    let state = match config.and_then(|(config, warnings)| {
+        DeltaUpdater::new(config)
+            .map(|updater| (updater, warnings))
+            .map_err(|err| err.to_string())
+    }) {
+        Ok((updater, config_warnings)) => {
+            let updater = Arc::new(updater);
 
-                // 本次启动是否来自一次替换：必须在窗口和前端起来之前确认，
-                // 否则替换脚本会在 confirm_timeout 后误判失败并回滚。
-                let confirmed = updater
-                    .confirm_startup_success_if_pending()
-                    .unwrap_or(false);
-                let _ = app.emit("delta-updater://startup", confirmed);
+            // 配置拼写错误不会让更新器构造失败（未知字段被忽略），
+            // 因此必须在这里显式告诉开发者"这个字段没生效"。
+            if !config_warnings.is_empty() {
+                let refs: Vec<&str> = config_warnings.iter().map(String::as_str).collect();
+                append_log(updater.work_dir(), &refs);
+                let _ = app.emit("delta-updater://diagnosis", &config_warnings);
+            }
 
-                // 跨重启待安装：配置开启时在本次启动尽早执行，并退出进程。
-                // 记录经过版本单调性与产物哈希校验；不联网。
-                if updater.install_on_next_launch() {
-                    let auto = Arc::clone(&updater);
-                    tauri::async_runtime::spawn(async move {
-                        match auto.install_pending().await {
-                            Ok(true) => std::process::exit(0),
-                            Ok(false) => {}
-                            Err(err) => {
-                                let message = format!("[startup] 自动安装待更新失败: {err}");
-                                append_log(auto.work_dir(), &[message.as_str()]);
-                            }
-                        }
-                    });
-                }
+            // 本次启动是否来自一次替换：必须在窗口和前端起来之前确认，
+            // 否则替换脚本会在 confirm_timeout 后误判失败并回滚。
+            let confirmed = updater
+                .confirm_startup_success_if_pending()
+                .unwrap_or(false);
+            let _ = app.emit("delta-updater://startup", confirmed);
 
-                // 启动 doctor：配置缺口在第一次启动就打到日志/事件，
-                // 而不是等用户触发更新才发现回退。
-                let doctor = Arc::clone(&updater);
-                let handle = app.clone();
+            // 跨重启待安装：配置开启时在本次启动尽早执行，并退出进程。
+            // 记录经过版本单调性与产物哈希校验；不联网。
+            if updater.install_on_next_launch() {
+                let auto = Arc::clone(&updater);
                 tauri::async_runtime::spawn(async move {
-                    let diagnosis = doctor.diagnose().await;
-                    let warnings = diagnosis.warnings();
-                    if warnings.is_empty() {
-                        return;
+                    match auto.install_pending().await {
+                        Ok(true) => std::process::exit(0),
+                        Ok(false) => {}
+                        Err(err) => {
+                            let message = format!("[startup] 自动安装待更新失败: {err}");
+                            append_log(auto.work_dir(), &[message.as_str()]);
+                        }
                     }
-                    append_log(doctor.work_dir(), &warnings);
-                    let _ = handle.emit("delta-updater://diagnosis", warnings);
                 });
+            }
 
-                UpdaterState::ready(updater)
-            }
-            Err(reason) => {
-                let _ = app.emit("delta-updater://unavailable", reason.clone());
-                UpdaterState::unavailable(reason)
-            }
-        };
+            // 启动 doctor：配置缺口在第一次启动就打到日志/事件，
+            // 而不是等用户触发更新才发现回退。
+            let doctor = Arc::clone(&updater);
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let diagnosis = doctor.diagnose().await;
+                let warnings = diagnosis.warnings();
+                if warnings.is_empty() {
+                    return;
+                }
+                append_log(doctor.work_dir(), &warnings);
+                let _ = handle.emit("delta-updater://diagnosis", warnings);
+            });
+
+            UpdaterState::ready(updater)
+        }
+        Err(reason) => {
+            let _ = app.emit("delta-updater://unavailable", reason.clone());
+            UpdaterState::unavailable(reason)
+        }
+    };
 
     if let Some(reason) = &state.unavailable {
         eprintln!("[tauri-delta-updater] 更新器不可用: {reason}");
@@ -246,6 +257,64 @@ mod tests {
         let dto = ErrorDto::from(DeltaError::SignatureInvalid("bad".into()));
         assert_eq!(dto.code, "signature_invalid");
         assert!(dto.security, "签名失败必须能被前端识别为安全阻断");
+    }
+
+    /// 三处命令列表必须同步：`build.rs` 的 COMMANDS、`generate_handler!`、
+    /// `permissions/default.toml`。新增命令漏掉任何一处都会让权限静默失效。
+    #[test]
+    fn command_lists_are_in_sync() {
+        fn until_bracket<'a>(text: &'a str, marker: &str) -> &'a str {
+            let start = text.find(marker).expect("标记必须存在") + marker.len();
+            let end = text[start..].find(']').expect("列表必须闭合") + start;
+            &text[start..end]
+        }
+
+        let mut build: Vec<String> =
+            until_bracket(include_str!("../build.rs"), "const COMMANDS: &[&str] = &[")
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect();
+        // `generate_handler![...]` 里是裸标识符，不是字符串。
+        let mut handler: Vec<String> =
+            until_bracket(include_str!("commands.rs"), "generate_handler![")
+                .split(',')
+                .map(str::trim)
+                .filter(|name| {
+                    !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+                .map(str::to_string)
+                .collect();
+        let mut default: Vec<String> = until_bracket(
+            include_str!("../permissions/default.toml"),
+            "permissions = [",
+        )
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(|permission| {
+            permission
+                .trim_start_matches("allow-")
+                // 权限标识用 kebab-case，命令/函数名用 snake_case。
+                .replace('-', "_")
+        })
+        .collect();
+
+        build.sort_unstable();
+        handler.sort_unstable();
+        default.sort_unstable();
+        assert_eq!(
+            build, handler,
+            "build.rs 与 generate_handler! 命令列表不一致"
+        );
+        assert_eq!(
+            build, default,
+            "permissions/default.toml 与命令列表不一致（新增命令必须补权限）"
+        );
     }
 
     /// `guest-js` 的 `Diagnosis` 必须覆盖 Rust 序列化出的每个字段。
@@ -423,7 +492,25 @@ mod tests {
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         assert!(file.bundle_endpoint.is_none());
+        assert!(
+            file.unknown_field_warnings().is_empty(),
+            "官方 updater 的合法字段不得产生未知字段警告"
+        );
         assert!(file.into_update_config("1.0.0").is_ok());
+    }
+
+    /// 拼写错误的字段必须被报告：静默忽略会让"配了却没有整包回退"无从排查。
+    #[test]
+    fn file_config_reports_unknown_fields() {
+        let value = serde_json::json!({
+            "endpoints": ["https://cdn.example.com/latest.json"],
+            "pubkey": "RWQ...",
+            "bundle_endpont": "https://cdn.example.com/latest.bundle.json"
+        });
+        let file: FileConfig = serde_json::from_value(value).unwrap();
+        let warnings = file.unknown_field_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("bundle_endpont"), "{warnings:?}");
     }
 
     /// endpoints 为空时必须明确报错，而不是静默退化成"永远没有更新"。
@@ -450,6 +537,7 @@ mod tests {
             allow_insecure_transport: None,
             install_on_next_launch: None,
             rollback_notice: None,
+            extra: Default::default(),
         };
         let err = file.into_update_config("1.0.0").unwrap_err();
         assert!(err.contains("endpoints"), "错误必须说明字段: {err}");

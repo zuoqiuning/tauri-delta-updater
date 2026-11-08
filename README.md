@@ -127,6 +127,12 @@ development; real projects should depend on `"0.3"` from crates.io.
 }
 ```
 
+`delta-updater:default` grants every command. For least-privilege setups, compose
+the granular sets instead: `delta-updater:read` (`check` / `diagnose` / `pending`),
+`delta-updater:update` (`install` / `prepare` / `launch` / `cancel` / `reset_safety` /
+`discard_pending` / `install_pending`), and `delta-updater:full`
+(`download_full` / `install_full` — the permission that can launch an installer).
+
 `src-tauri/tauri.conf.json` — same shape as the official updater plugin:
 
 ```json
@@ -359,6 +365,8 @@ Platform support:
 | macOS | **Stable** (whole-app) | **Whole-app bundles** (requires `bundle_endpoint`; production validation needs an Apple Developer signing + notarization setup): the complete `.app` is swapped as a directory (old bundle renamed to `.<App>.app.tdx-backup`, staged tree moved in), so every signed file and symlink stays byte-identical and the signature/notarization remains valid; the reconstructed bundle is `codesign --verify --deep --strict`'d before any file is touched. The app directory must be writable; otherwise the old version keeps running. **Single-file patches** inside a `.app` automatically fall back instead of silently ad-hoc re-signing (bare binaries are experimental) |
 | Linux | **Stable** | Bare binaries and **AppImages** (the `.AppImage` file itself is patched in place, `chmod +x`, then relaunched; only a read-only install directory falls back). A bare binary installed by `.deb` / `.rpm` can technically be replaced in place with elevation (`sudo -n` or `pkexec`, then privileges are dropped back via `runuser` / `su`), but the package manager metadata (`dpkg -l`) will report the old version — prefer the package manager for those installs. **Full installers** ending in `.deb` / `.rpm` are refused (`full_install_failed`) |
 
+**Mobile (Android / iOS) is out of scope**: there are no replacement scripts for those targets, so `DeltaUpdater::new` rejects an unsupported platform during construction instead of failing after a download.
+
 > [!IMPORTANT]
 > **macOS whole-app updates need a real signed build.** CI executes the directory-swap script
 > against synthetic bundles, which verifies file hashes, rollback and relaunch but cannot prove
@@ -521,7 +529,7 @@ The engine is verified under adversarial conditions:
 - **Real script execution** — the generated PowerShell / `sh` scripts are actually executed: special-character install directories, PID/path matching, crash recovery, backup cleanup, startup flag.
 - **Delta really ran** — the end-to-end mock server records every requested path; delta-hit tests assert the full-installer URL was **never** requested. A delta updater that always silently falls back can no longer stay green.
 - **Downgrade replay** — a validly-signed *older* manifest must return `UpToDate` and must not request the old installer.
-- **Failure recovery** — every failure after the old process exits funnels through one handler that restores the backup and relaunches the old version. The 60-second startup-timeout branch needs a real timeout window and is covered by the manual procedure in the design document.
+- **Failure recovery** — every failure after the old process exits funnels through one handler that restores the backup and relaunches the old version. The 60-second startup-timeout branch needs a real timeout window and is covered by the manual procedure in [Device tests](docs/DEVICE_TESTS.md) (“Failure recovery”).
 - **Resume safety** — a server that ignores `Range` headers no longer produces a corrupted patch; the download restarts cleanly.
 - **Lock contention** — `UpdateInProgress` is matched, not string-parsed (Unix; Windows byte-range locks are per-process and cannot be reproduced in-process).
 - **Safe mode** — after the threshold, `check()` returns `DeltaError::SafeMode` without any network request; the 6-hour cooldown resets automatically.

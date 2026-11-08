@@ -35,10 +35,9 @@
   **边界**：该配置只被引擎 `install_full` 消费；官方 `tauri-plugin-updater`
   不支持 Inno，只会传 NSIS 参数。Inno 没有 `/R` 等价参数，静默安装后的重启
   必须由 `.iss` 的 `[Run]` 承担，且不能加 `skipifsilent`（其语义是“静默不执行”）。
-- **一条命令发布**：`cargo delta release`，与 `generate` 全部参数等价；基线用
-  可重复的 `--from`（目录或单个可执行文件）。发布逻辑抽到库的 `release` 模块
-  （`ReleaseOptions` / `run_release` / `run_release_blocking`），两个 CLI
-  共用同一实现。
+- **一条命令发布**：`cargo delta release`，与 `generate` 共用同一实现
+  （参数命名不同：基线用可重复的 `--from`，目录或单个可执行文件）。发布逻辑
+  抽到库的 `release` 模块（`ReleaseOptions` / `run_release` / `run_release_blocking`）。
 - **发布源体检**：`cargo delta doctor <latest.json>`，校验清单签名与
   `tdu:v=` 版本绑定、安装包可下载性与体积、补丁 SHA-256、补丁链可达性，
   以及整包清单（`--bundle-url`）的补丁哈希与路径安全。`--deep` 额外下载

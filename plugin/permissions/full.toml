@@ -1,0 +1,9 @@
+[full]
+description = """
+全量回退权限：下载全量安装包并执行平台安装器。权限最高，
+只在确实需要 install_full / download_full 的窗口启用。
+"""
+permissions = [
+    "allow-download-full",
+    "allow-install-full",
+]

@@ -30,8 +30,13 @@ pub fn current_os_version() -> Option<String> {
 /// 按 `.` 分段比较，每段只取前导数字（`5.15.0-91-generic` 视为 `5.15.0`），
 /// 缺失段按 0 处理。任何一段无法解析时返回 `None`。
 pub(crate) fn compare(current: &str, required: &str) -> Option<Ordering> {
-    let current = components(current)?;
-    let required = components(required)?;
+    let mut current = components(current)?;
+    let mut required = components(required)?;
+    // 缺段按 0 处理：`13.0` 与 `13.0.0` 必须相等，
+    // 否则 Vec 的字典序会把较短的一方判为更低，误拒合法更新。
+    let len = current.len().max(required.len());
+    current.resize(len, 0);
+    required.resize(len, 0);
     Some(current.cmp(&required))
 }
 
@@ -96,6 +101,15 @@ mod tests {
         assert_eq!(compare("10.0.22000", "10.0.19045"), Some(Ordering::Greater));
         assert_eq!(compare("10.0.10240", "10.0.19045"), Some(Ordering::Less));
         assert_eq!(compare("13.4", "13.0"), Some(Ordering::Greater));
+        assert_eq!(compare("13.0.1", "13.0"), Some(Ordering::Greater));
+    }
+
+    /// 缺失段必须按 0 补齐：`13.0` 与 `13.0.0` 是同一版本。
+    #[test]
+    fn pads_missing_components_with_zero() {
+        assert_eq!(compare("13.0", "13.0.0"), Some(Ordering::Equal));
+        assert_eq!(compare("13.0.0", "13.0"), Some(Ordering::Equal));
+        assert_eq!(compare("13.0", "13.0.1"), Some(Ordering::Less));
         assert_eq!(compare("13.0.1", "13.0"), Some(Ordering::Greater));
     }
 

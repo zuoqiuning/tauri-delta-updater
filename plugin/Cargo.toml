@@ -8,6 +8,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 links = "tauri-plugin-delta-updater"
+keywords = ["tauri", "updater", "delta", "plugin", "incremental"]
+categories = ["development-tools", "gui"]
 # 前端类型包只随 npm 发布，不塞进 crate tarball。
 exclude = ["guest-js", "dist-js", "node_modules", "package.json", "package-lock.json", "tsconfig.json"]
 
