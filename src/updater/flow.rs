@@ -253,10 +253,7 @@ impl DeltaUpdater {
     /// 再调用宿主自己的退出逻辑（如 `app.exit(0)`）。
     pub async fn install_and_exit(&self) -> Result<UpdateResult> {
         let result = self.install().await?;
-        if matches!(
-            result,
-            UpdateResult::Updated { .. } | UpdateResult::RepairRequired { .. }
-        ) {
+        if result.requires_exit() {
             std::process::exit(0);
         }
         Ok(result)

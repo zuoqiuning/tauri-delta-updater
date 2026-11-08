@@ -83,6 +83,35 @@ fn test_updater_rejects_mobile_or_unknown_platform() {
     }
 }
 
+/// 签名地址与整包清单也必须遵守明文 HTTP 策略，不能只检查 manifest_url。
+#[test]
+fn test_insecure_transport_covers_all_endpoints() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app");
+    std::fs::write(&exe, b"app").unwrap();
+    let config = || {
+        UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
+            .current_version("1.0.0")
+            .executable_path(&exe)
+            .work_dir(dir.path())
+    };
+
+    let mut custom_signature = config();
+    custom_signature.signature_url = "http://mirror.example.com/latest.json.sig".into();
+    let err = DeltaUpdater::new(custom_signature).unwrap_err();
+    assert!(err.to_string().contains("明文 HTTP"), "{err}");
+
+    let mut bundle = config();
+    bundle.bundle_manifest_url = Some("http://mirror.example.com/latest.bundle.json".into());
+    let err = DeltaUpdater::new(bundle).unwrap_err();
+    assert!(err.to_string().contains("明文 HTTP"), "{err}");
+
+    let mut allowed = config();
+    allowed.signature_url = "http://mirror.example.com/latest.json.sig".into();
+    allowed.allow_insecure_transport = true;
+    assert!(DeltaUpdater::new(allowed).is_ok(), "显式允许后应可用");
+}
+
 /// 显式配置的签名地址必须被真正使用，而不是始终按清单地址推导。
 #[tokio::test]
 async fn test_custom_signature_url_is_used() {

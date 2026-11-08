@@ -273,8 +273,8 @@ pub use core::safety::{
 };
 pub use core::startup::StartupState;
 pub use core::verify::{
-    manifest_version_binding, manifest_version_bindings, verify_file_signature,
-    verify_file_signature_multi, verify_file_signature_multi_with_legacy,
+    manifest_version_binding, manifest_version_bindings, validate_public_key,
+    verify_file_signature, verify_file_signature_multi, verify_file_signature_multi_with_legacy,
     verify_manifest_signature, verify_manifest_signature_file, verify_manifest_signature_multi,
     verify_manifest_signature_with, TrustPolicy,
 };

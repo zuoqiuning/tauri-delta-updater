@@ -325,7 +325,8 @@ match updater.install().await? {
 
 The library derives the platform, a user-writable work directory, and the HTTP
 client; "no delta available" is a normal outcome, not an error you assemble
-yourself.
+yourself. `UpdateResult::requires_exit()` is the single exit predicate: it is
+`true` for `Updated` / `RepairRequired` and `false` for `Ready`.
 
 Before integrating anything, see what a patch would actually save you — no
 network or signing key needed:

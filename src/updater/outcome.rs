@@ -346,6 +346,17 @@ pub enum UpdateResult {
 /// UI 检查结果的语义别名。
 pub type UpdateCheck = CheckOutcome;
 
+impl UpdateResult {
+    /// 替换或修复脚本是否已经启动，宿主**必须让当前进程退出**。
+    ///
+    /// 这是 `install()` / `install_full()` 路径的退出判据：
+    /// `Updated` 与 `RepairRequired` 为 `true`；`prepare()` 的 `Ready` 为 `false`。
+    /// 把它放在库里，接入方不必再记忆哪些变体需要退出。
+    pub fn requires_exit(&self) -> bool {
+        matches!(self, Self::Updated { .. } | Self::RepairRequired { .. })
+    }
+}
+
 impl From<UpdateOutcome> for UpdateResult {
     fn from(outcome: UpdateOutcome) -> Self {
         match outcome {
@@ -415,6 +426,27 @@ mod tests {
             manifest: Box::new(manifest),
             fallback_reason: None,
         }
+    }
+
+    /// 退出判据必须只覆盖“脚本已启动”的结果。
+    #[test]
+    fn requires_exit_only_for_launched_results() {
+        use super::UpdateResult;
+
+        assert!(UpdateResult::Updated {
+            version: "1".into()
+        }
+        .requires_exit());
+        assert!(UpdateResult::RepairRequired { reason: "x".into() }.requires_exit());
+        assert!(!UpdateResult::Ready {
+            version: "1".into()
+        }
+        .requires_exit());
+        assert!(!UpdateResult::UpToDate {
+            version: "1".into()
+        }
+        .requires_exit());
+        assert!(!UpdateResult::SafeMode.requires_exit());
     }
 
     /// 占比来自清单签名覆盖的安装包体积，而不是客户端猜测。

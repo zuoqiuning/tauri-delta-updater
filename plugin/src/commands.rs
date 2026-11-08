@@ -42,10 +42,7 @@ pub(crate) async fn install<R: Runtime>(
 
     let result = result.map_err(ErrorDto::from)?;
 
-    if matches!(
-        result,
-        UpdateResult::Updated { .. } | UpdateResult::RepairRequired { .. }
-    ) {
+    if result.requires_exit() {
         exit_soon(&app);
     }
 
@@ -160,7 +157,7 @@ pub(crate) async fn install_full<R: Runtime>(
     set_cancel(&state, None);
 
     let result = result.map_err(ErrorDto::from)?;
-    if matches!(result, UpdateResult::Updated { .. }) {
+    if result.requires_exit() {
         exit_soon(&app);
     }
     Ok(result)

@@ -32,6 +32,15 @@ fn parse_public_key(input: &str) -> Result<PublicKey> {
     PublicKey::decode(&text).map_err(|e| DeltaError::SignatureInvalid(format!("公钥无效: {e}")))
 }
 
+/// 校验公钥格式，不执行任何验签。
+///
+/// 接受 base64（Tauri 配置的写法）或原始 `.pub` 文件内容。
+/// `cargo delta init --check` 用它把复制粘贴截断在接入阶段暴露，
+/// 而不是等到首次更新检查才报“签名无效”。
+pub fn validate_public_key(input: &str) -> Result<()> {
+    parse_public_key(input).map(|_| ())
+}
+
 /// 把签名文本拆成独立的 minisign 签名块。
 ///
 /// 一个 `.sig` 文件可以包含多个签名（每个都以 `untrusted comment:` 开头），
@@ -285,8 +294,8 @@ pub fn manifest_version_bindings(signature: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        manifest_version_binding, verify_manifest_signature, verify_manifest_signature_multi,
-        TrustPolicy,
+        manifest_version_binding, validate_public_key, verify_manifest_signature,
+        verify_manifest_signature_multi, TrustPolicy,
     };
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -294,6 +303,19 @@ mod tests {
         let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         let pk_b64 = STANDARD.encode(kp.pk.to_box().unwrap().to_string().as_bytes());
         (kp.sk, pk_b64)
+    }
+
+    /// 公钥守卫必须同时接受 base64 与原始 `.pub` 文本，并拦下占位符/截断。
+    #[test]
+    fn validate_public_key_accepts_both_encodings() {
+        let (_sk, pk_b64) = keypair();
+        let raw = String::from_utf8(STANDARD.decode(&pk_b64).unwrap()).unwrap();
+        assert!(validate_public_key(&pk_b64).is_ok());
+        assert!(validate_public_key(&raw).is_ok());
+
+        assert!(validate_public_key("PK").is_err());
+        assert!(validate_public_key("BASE64_PUBLIC_KEY").is_err());
+        assert!(validate_public_key("   ").is_err());
     }
 
     fn sign_with(keys: &[&minisign::SecretKey], content: &[u8]) -> String {

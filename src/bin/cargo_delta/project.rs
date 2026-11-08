@@ -44,7 +44,9 @@ impl Project {
         };
 
         let config_path = tauri_dir.join("tauri.conf.json");
-        let capability_path = tauri_dir.join("capabilities/default.json");
+        // Tauri 2 允许自定义 capability 文件名（main.json / desktop.json 等）。
+        // 优先 default.json；否则复用唯一的已有文件；多个时优先 identifier=default。
+        let capability_path = pick_capability(&tauri_dir.join("capabilities"));
         let cargo_toml = tauri_dir.join("Cargo.toml");
         if !cargo_toml.is_file() {
             return Err(format!(
@@ -96,6 +98,38 @@ impl Project {
             });
         if !config_ok {
             missing.push("plugins.delta-updater（endpoints + pubkey）".to_string());
+        } else if let Some(delta) = root
+            .pointer("/plugins/delta-updater")
+            .and_then(Value::as_object)
+        {
+            // 配置存在不代表可用：错误的 scheme、明文 HTTP 或占位符拼错
+            // 都会在应用启动/首次检查时才暴露，CI 守卫应在这里拦下。
+            let allow_insecure = delta
+                .get("allow_insecure_transport")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if let Some(endpoints) = delta.get("endpoints").and_then(Value::as_array) {
+                for (index, endpoint) in endpoints.iter().enumerate() {
+                    match endpoint.as_str() {
+                        Some(url) => {
+                            if let Some(issue) = endpoint_issue(url, allow_insecure) {
+                                missing.push(format!("endpoints[{index}]: {issue}"));
+                            }
+                        }
+                        None => missing.push(format!("endpoints[{index}] 不是字符串")),
+                    }
+                }
+            }
+            if let Some(bundle) = delta.get("bundle_endpoint").and_then(Value::as_str) {
+                if let Some(issue) = endpoint_issue(bundle, allow_insecure) {
+                    missing.push(format!("bundle_endpoint: {issue}"));
+                }
+            }
+            if let Some(pubkey) = delta.get("pubkey").and_then(Value::as_str) {
+                if let Some(issue) = pubkey_issue(pubkey) {
+                    missing.push(format!("pubkey: {issue}"));
+                }
+            }
         }
 
         let (_, capability) = read_json_or(&self.capability_path, json!({}))?;
@@ -132,6 +166,12 @@ impl Project {
         }
 
         Ok(missing)
+    }
+
+    /// 选中的 capability 文件不是 `default.json` 时返回文件名，供 CLI 提示。
+    pub(crate) fn non_default_capability(&self) -> Option<String> {
+        let name = self.capability_path.file_name()?.to_str()?;
+        (name != "default.json").then(|| name.to_string())
     }
 
     /// 是否保留了官方 updater（双栈模式：本引擎增量 + 官方全量回退）。
@@ -296,6 +336,92 @@ fn default_capability() -> Value {
         "windows": ["main"],
         "permissions": []
     })
+}
+
+/// 选择要写入的 capability 文件。
+///
+/// 优先级：`default.json` → 唯一已有 JSON → identifier 为 `default` 的 JSON →
+/// 新建 `default.json`。多 capability 项目写入其中一个时，调用方会打印提示，
+/// 由用户确认该文件覆盖目标窗口。
+fn pick_capability(dir: &Path) -> PathBuf {
+    let default = dir.join("default.json");
+    if default.is_file() {
+        return default;
+    }
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        })
+        .collect();
+    candidates.sort();
+    if candidates.len() == 1 {
+        return candidates.remove(0);
+    }
+    for path in &candidates {
+        let identified_default = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| {
+                value
+                    .get("identifier")
+                    .and_then(Value::as_str)
+                    .map(|id| id == "default")
+            })
+            .unwrap_or(false);
+        if identified_default {
+            return path.clone();
+        }
+    }
+    candidates.into_iter().next().unwrap_or(default)
+}
+
+/// 检查端点 URL 是否明显不可用；返回给用户看的具体问题。
+///
+/// 只做静态检查（scheme 与明文 HTTP 策略），不发请求：
+/// `--check` 必须是可在离线 CI 中运行的守卫。
+fn endpoint_issue(url: &str, allow_insecure: bool) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Some("地址为空".to_string());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return None;
+    }
+    if trimmed.contains("{{") {
+        // 运行时由插件按平台/渠道展开，静态阶段无法评估明文策略。
+        return None;
+    }
+    if lower.starts_with("http://") {
+        if allow_insecure {
+            return None;
+        }
+        let loopback = reqwest::Url::parse(trimmed)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_string));
+        return match loopback.as_deref() {
+            Some("localhost" | "127.0.0.1" | "::1" | "[::1]") => None,
+            _ => Some(format!(
+                "明文 HTTP 且非回环地址（{trimmed}）；改用 HTTPS 或显式设置 allow_insecure_transport"
+            )),
+        };
+    }
+    Some(format!("不是 http(s) 地址: {trimmed}"))
+}
+
+/// 公钥格式是否可用；返回给用户看的具体问题。
+fn pubkey_issue(input: &str) -> Option<String> {
+    tauri_delta_updater::validate_public_key(input)
+        .err()
+        .map(|err| err.to_string())
 }
 
 fn read_json_or(path: &Path, default: Value) -> Result<(String, Value), String> {
@@ -485,7 +611,78 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dependency_is_stale, ensure_dependency, has_dependency, minor_requirement};
+    use super::{
+        dependency_is_stale, endpoint_issue, ensure_dependency, has_dependency, minor_requirement,
+        pick_capability, pubkey_issue,
+    };
+
+    /// 端点静态校验必须在离线 CI 中拦下错 scheme 与非回环明文 HTTP。
+    #[test]
+    fn endpoint_issue_catches_unusable_addresses() {
+        assert!(endpoint_issue("https://cdn.example.com/latest.json", false).is_none());
+        assert!(endpoint_issue("http://127.0.0.1:8080/latest.json", false).is_none());
+        assert!(endpoint_issue("http://localhost/latest.json", false).is_none());
+        assert!(
+            endpoint_issue("http://cdn.example.com/latest.json", true).is_none(),
+            "显式允许明文传输时必须放行"
+        );
+
+        let issue = endpoint_issue("http://cdn.example.com/latest.json", false)
+            .expect("非回环明文 HTTP 必须报错");
+        assert!(issue.contains("allow_insecure_transport"), "{issue}");
+        assert!(endpoint_issue("ftp://cdn.example.com/latest.json", false).is_some());
+        assert!(endpoint_issue("  ", false).is_some());
+        assert!(
+            endpoint_issue("http://{{host}}/latest.json", false).is_none(),
+            "含运行时占位符时交给插件展开，静态阶段不误判"
+        );
+    }
+
+    /// 公钥占位符与截断必须在接入阶段暴露。
+    #[test]
+    fn pubkey_issue_rejects_placeholders() {
+        assert!(pubkey_issue("PK").is_some());
+        assert!(pubkey_issue("BASE64_PUBLIC_KEY").is_some());
+        assert!(pubkey_issue("   ").is_some());
+    }
+
+    /// 多 capability 项目必须复用已有文件，而不是另建 `default.json`。
+    #[test]
+    fn pick_capability_prefers_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            pick_capability(dir.path()),
+            dir.path().join("default.json"),
+            "没有任何文件时新建 default.json"
+        );
+
+        std::fs::write(dir.path().join("main.json"), r#"{"identifier":"main"}"#).unwrap();
+        assert_eq!(
+            pick_capability(dir.path()),
+            dir.path().join("main.json"),
+            "唯一已有文件必须被复用"
+        );
+
+        std::fs::write(
+            dir.path().join("default.json"),
+            r#"{"identifier":"default"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pick_capability(dir.path()),
+            dir.path().join("default.json"),
+            "default.json 优先"
+        );
+    }
+
+    /// 没有 default.json 时按 identifier 选择，避免写到无关的 capability。
+    #[test]
+    fn pick_capability_matches_identifier() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.json"), r#"{"identifier":"other"}"#).unwrap();
+        std::fs::write(dir.path().join("b.json"), r#"{"identifier":"default"}"#).unwrap();
+        assert_eq!(pick_capability(dir.path()), dir.path().join("b.json"));
+    }
 
     /// 依赖版本落后必须在 --check 中暴露；当前/更新版本与 path/git 依赖不得误报。
     #[test]

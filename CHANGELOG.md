@@ -11,6 +11,11 @@
 
 - `cargo delta init --check` 可无参数运行；缺少 capability 文件时生成合法的
   `identifier` / `windows`；`--check` 会拒绝过期插件依赖版本。
+- `cargo delta init --check` 静态校验端点与公钥：非 `http(s)`、未显式允许的
+  非回环明文 HTTP、占位符或截断的公钥直接失败，不再等到应用首次检查才暴露；
+  多 capability 项目复用已有文件并提示实际写入目标。
+- 明文 HTTP 检查覆盖 `signature_url` 与 `bundle_endpoint`，避免清单走 HTTPS、
+  签名走 HTTP 的降级窗口。
 - Unix 替换在 `cp` 中途失败时无条件用备份还原，半截目标不再被当旧版本启动。
 - Windows 整包已 `committed` 后不再被误判为未完成替换；确认成功后清理备份与 journal。
 - 全量下载/安装与增量路径共用 `UpdateLock`，并复用 `min_os` / 灰度门槛；
@@ -36,7 +41,9 @@
 - `FullDownloadOutcome` 新增 `Deferred` / `UnsupportedOs`；`FullDownloadDto`
   与前端类型同步。
 - 新增公共入口：`default_signature_url`、`manifest_version_bindings`、
-  `verify_file_signature_multi_with_legacy`、`OsRequirement`。
+  `verify_file_signature_multi_with_legacy`、`OsRequirement`、`validate_public_key`。
+- 新增 `UpdateResult::requires_exit()`：`Updated` / `RepairRequired` 为 `true`，
+  宿主不必再自行维护需要退出的变体列表。
 - 插件新增 `delta-updater:read` / `delta-updater:update` / `delta-updater:full`
   最小权限集（`default` 行为不变）。
 - 文档拆分：README 保留快速接入，新增 `docs/USAGE.md`、`docs/PUBLISHING.md`、

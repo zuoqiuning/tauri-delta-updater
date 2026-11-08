@@ -52,6 +52,11 @@ fn run(cli: Cli) -> Result<(), String> {
             check,
         } => {
             let project = Project::discover(cli.project.as_deref())?;
+            if let Some(name) = project.non_default_capability() {
+                println!(
+                    "[WARN] 未找到 capabilities/default.json，改用 {name}；确认其 windows 覆盖主窗口。"
+                );
+            }
             if check {
                 if apply {
                     return Err("--check 不能与 --apply 同时使用".into());
@@ -75,7 +80,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     return Ok(());
                 }
                 return Err(format!(
-                    "接入配置不完整，缺少：\n  - {}\n\n修复：cargo delta init --endpoint <URL> --pubkey <KEY> --apply",
+                    "接入配置未通过检查，发现以下问题：\n  - {}\n\n修复：cargo delta init --endpoint <URL> --pubkey <KEY> --apply --force",
                     missing.join("\n  - ")
                 ));
             }

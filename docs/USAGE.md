@@ -107,6 +107,9 @@ hand it straight to the UI and the UI can switch on `kind`:
 
 For `updated`, the backend exits the process so the swap script can run — emit an
 event before exiting instead of trying to return a value.
+`UpdateResult::requires_exit()` is the library-level predicate for this
+(`true` for `updated` / `repair_required`, `false` for `ready`), so you do not
+need to duplicate the variant list.
 
 <details>
 <summary>Complete Tauri wiring (setup + command)</summary>

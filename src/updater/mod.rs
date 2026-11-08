@@ -121,15 +121,12 @@ impl DeltaUpdater {
         }
         // 明文 HTTP 只允许回环地址；非回环端点默认仅警告，
         // 宿主可显式关闭（allow_insecure_transport(false)）直接拒绝。
+        // 签名地址与整包清单同样参与检查：它们也承载受信任内容。
         if !config.allow_insecure_transport {
-            for url in
-                std::iter::once(&config.manifest_url).chain(config.fallback_manifest_urls.iter())
-            {
-                if config::endpoint_is_insecure(url) {
-                    return Err(DeltaError::Config(format!(
-                        "端点使用明文 HTTP 且未允许：{url}（改用 HTTPS 或设置 allow_insecure_transport）"
-                    )));
-                }
+            if let Some(url) = config.insecure_endpoint() {
+                return Err(DeltaError::Config(format!(
+                    "端点使用明文 HTTP 且未允许：{url}（改用 HTTPS 或设置 allow_insecure_transport）"
+                )));
             }
         }
 

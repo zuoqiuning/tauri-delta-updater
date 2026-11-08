@@ -47,6 +47,11 @@ fn read(root: &Path, relative: &str) -> String {
     std::fs::read_to_string(root.join("src-tauri").join(relative)).unwrap()
 }
 
+/// 合法公钥：`--check` 会校验格式，占位符 "PK" 已不可用。
+fn pubkey() -> String {
+    common::signing_keypair().1
+}
+
 /// 默认 dry-run：输出 diff，但不改任何文件。
 #[test]
 fn init_is_dry_run_by_default() {
@@ -168,7 +173,7 @@ fn init_registry_writes_current_version() {
             "--endpoint",
             "https://cdn.example.com/latest.json",
             "--pubkey",
-            "PK",
+            &pubkey(),
             "--registry",
             "--apply",
         ],
@@ -210,7 +215,14 @@ fn init_check_is_a_ci_guard() {
     let (_dir, root) = project();
     let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
     assert_ne!(code, 0, "未配置时 --check 必须失败");
-    assert!(stderr.contains("缺少"), "错误必须列出缺失项: {stderr}");
+    assert!(
+        stderr.contains("未通过检查"),
+        "错误必须说明检查失败: {stderr}"
+    );
+    assert!(
+        stderr.contains("--force"),
+        "修复命令必须能覆盖已有配置: {stderr}"
+    );
     assert!(stderr.contains("delta-updater"));
 
     let (code, stdout, stderr) = run(
@@ -220,7 +232,7 @@ fn init_check_is_a_ci_guard() {
             "--endpoint",
             "https://cdn.example.com/latest.json",
             "--pubkey",
-            "PK",
+            &pubkey(),
             "--apply",
         ],
     );
@@ -291,7 +303,7 @@ fn init_writes_valid_capability_when_missing() {
             "--endpoint",
             "https://cdn.example.com/latest.json",
             "--pubkey",
-            "PK",
+            &pubkey(),
             "--apply",
         ],
     );
@@ -311,13 +323,137 @@ fn init_writes_valid_capability_when_missing() {
     assert_eq!(code, 0, "生成后 --check 应通过: {stdout}\n{stderr}");
 }
 
+/// 明文 HTTP 的非回环端点必须让 `--check` 失败；显式允许后才通过。
+/// 客户端运行时同样拒绝，CI 守卫必须提前在接入阶段拦下。
+#[test]
+fn init_check_rejects_insecure_endpoint() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "http://cdn.example.com/latest.json",
+            "--pubkey",
+            &pubkey(),
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0, "明文 HTTP 端点必须让 --check 失败");
+    assert!(
+        stderr.contains("allow_insecure_transport"),
+        "错误必须说明如何显式放行: {stderr}"
+    );
+
+    // 显式开启后必须放行：本地测试服务器是合法场景。
+    let path = root.join("src-tauri/tauri.conf.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config["plugins"]["delta-updater"]["allow_insecure_transport"] = serde_json::json!(true);
+    std::fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
+
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_eq!(code, 0, "--check 应通过: {stdout}\n{stderr}");
+}
+
+/// 非 http(s) 的 scheme 只会在运行时炸；`--check` 必须静态拦下。
+#[test]
+fn init_check_rejects_unknown_scheme() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "ftp://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0, "非 http(s) 端点必须让 --check 失败");
+    assert!(stderr.contains("不是 http(s) 地址"), "{stderr}");
+}
+
+/// 公钥复制粘贴截断是最常见的接入错误；`--check` 必须在离线阶段指出。
+#[test]
+fn init_check_rejects_invalid_pubkey() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "BASE64_PUBLIC_KEY",
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0, "无效公钥必须让 --check 失败");
+    assert!(stderr.contains("公钥"), "{stderr}");
+}
+
+/// 项目没有 `default.json` 但有自定义 capability 时，init 必须写入已有文件，
+/// 而不是凭空新建一个不生效的 default.json。
+#[test]
+fn init_reuses_custom_capability_file() {
+    let (_dir, root) = project();
+    std::fs::remove_file(root.join("src-tauri/capabilities/default.json")).unwrap();
+    std::fs::write(
+        root.join("src-tauri/capabilities/main.json"),
+        r#"{"identifier":"main","windows":["main"],"permissions":["core:default"]}"#,
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            &pubkey(),
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("改用 main.json"),
+        "必须提示改用了哪个 capability: {stdout}"
+    );
+    assert!(
+        read(&root, "capabilities/main.json").contains("delta-updater:default"),
+        "权限必须写进已有 capability"
+    );
+    assert!(
+        !root.join("src-tauri/capabilities/default.json").exists(),
+        "不得新建 default.json"
+    );
+
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_eq!(code, 0, "--check 应通过: {stdout}\n{stderr}");
+}
+
 /// migrate 复制官方配置；--remove-official 同时移除官方配置与权限。
 #[test]
 fn migrate_copies_and_can_remove_official() {
     let (_dir, root) = project();
+    let pk = pubkey();
     std::fs::write(
         root.join("src-tauri/tauri.conf.json"),
-        r#"{"productName":"Demo","plugins":{"updater":{"endpoints":["https://cdn.example.com/latest.json"],"pubkey":"PK"}}}"#,
+        format!(
+            r#"{{"productName":"Demo","plugins":{{"updater":{{"endpoints":["https://cdn.example.com/latest.json"],"pubkey":"{pk}"}}}}}}"#
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -333,21 +469,13 @@ fn migrate_copies_and_can_remove_official() {
         config["plugins"]["delta-updater"]["endpoints"][0],
         "https://cdn.example.com/latest.json"
     );
-    assert_eq!(config["plugins"]["delta-updater"]["pubkey"], "PK");
+    assert_eq!(config["plugins"]["delta-updater"]["pubkey"], pk);
     assert!(
         config["plugins"]["updater"].is_object(),
         "默认保留官方插件作为全量回退"
     );
 
-    let check_args = [
-        "init",
-        "--endpoint",
-        "https://cdn.example.com/latest.json",
-        "--pubkey",
-        "PK",
-        "--check",
-    ];
-    let (code, stdout, stderr) = run(&root, &check_args);
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
     assert!(stdout.contains("双栈"), "保留官方插件时必须提示双栈");
 

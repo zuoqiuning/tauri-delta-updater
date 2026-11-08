@@ -365,11 +365,21 @@ impl UpdateConfig {
         self
     }
 
-    /// 主清单或任一备用端点使用明文 HTTP（且非回环）。
+    /// 主清单、签名地址、备用端点或整包清单中第一个明文 HTTP 地址。
+    ///
+    /// 签名与整包清单同样承载信任材料：只检查 manifest_url 会留下
+    /// “清单走 HTTPS、签名走 HTTP”的降级窗口。
+    pub(crate) fn insecure_endpoint(&self) -> Option<&str> {
+        std::iter::once(self.manifest_url.as_str())
+            .chain(std::iter::once(self.signature_url.as_str()))
+            .chain(self.fallback_manifest_urls.iter().map(String::as_str))
+            .chain(self.bundle_manifest_url.iter().map(String::as_str))
+            .find(|url| endpoint_is_insecure(url))
+    }
+
+    /// 任一更新端点使用明文 HTTP（且非回环）。
     pub(crate) fn uses_insecure_transport(&self) -> bool {
-        std::iter::once(&self.manifest_url)
-            .chain(self.fallback_manifest_urls.iter())
-            .any(|url| endpoint_is_insecure(url))
+        self.insecure_endpoint().is_some()
     }
 
     /// 完整的受信任公钥集合（主公钥 + 额外公钥）。
