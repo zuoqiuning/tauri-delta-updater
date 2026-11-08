@@ -119,7 +119,12 @@ development; real projects should depend on `"0.3"` from crates.io.
 `src-tauri/capabilities/default.json`:
 
 ```json
-{ "permissions": ["delta-updater:default"] }
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "windows": ["main"],
+  "permissions": ["delta-updater:default"]
+}
 ```
 
 `src-tauri/tauri.conf.json` — same shape as the official updater plugin:
@@ -352,7 +357,7 @@ Platform support:
 |---|---|---|
 | Windows | **Stable** | Single-file exe is the sweet spot; the replacement script runs on PowerShell, handles elevation, special-character install paths, and relaunches through `explorer.exe` with **only the target path** (explorer ignores extra arguments) so the app does not inherit the admin token. Signed builds keep their Authenticode guarantee: a patched artifact that loses it is rejected before any file is touched |
 | macOS | **Stable** (whole-app) | **Whole-app bundles** (requires `bundle_endpoint`; production validation needs an Apple Developer signing + notarization setup): the complete `.app` is swapped as a directory (old bundle renamed to `.<App>.app.tdx-backup`, staged tree moved in), so every signed file and symlink stays byte-identical and the signature/notarization remains valid; the reconstructed bundle is `codesign --verify --deep --strict`'d before any file is touched. The app directory must be writable; otherwise the old version keeps running. **Single-file patches** inside a `.app` automatically fall back instead of silently ad-hoc re-signing (bare binaries are experimental) |
-| Linux | **Stable** | Bare binaries and **AppImages** (the `.AppImage` file itself is patched in place, `chmod +x`, then relaunched; only a read-only install directory falls back). `.deb` installs elevate via passwordless `sudo` or `pkexec`, then **drop privileges back** via `runuser` (falling back to `su`) and return file ownership to the original user |
+| Linux | **Stable** | Bare binaries and **AppImages** (the `.AppImage` file itself is patched in place, `chmod +x`, then relaunched; only a read-only install directory falls back). A bare binary installed by `.deb` / `.rpm` can technically be replaced in place with elevation (`sudo -n` or `pkexec`, then privileges are dropped back via `runuser` / `su`), but the package manager metadata (`dpkg -l`) will report the old version — prefer the package manager for those installs. **Full installers** ending in `.deb` / `.rpm` are refused (`full_install_failed`) |
 
 > [!IMPORTANT]
 > **macOS whole-app updates need a real signed build.** CI executes the directory-swap script
@@ -393,7 +398,7 @@ Platform support:
 - **Download-cost visibility** — `generate` stamps `platforms[].size` into the signed manifest, so `CheckOutcome::patch_size_ratio()` returns `patch_size / installer_size` before any download. **Lower is better**: `0.1` means the patch is 10% of the installer; values near `1.0` mean the delta saves little and the full installer may be faster. Manifests without `size` return `None` instead of a guessed number.
 - **Local verification harness** — `simulate_update(old, new, work_dir)` runs generate → apply → dual-hash verification with no network or signing key, so you can see the real patch ratio before integrating.
 - **Environment diagnosis** — `DeltaUpdater::diagnose()` reports work-directory/install-directory writability, platform eligibility, safe-mode state, the exact log path, `last_rollback` (why the last replacement script rolled back, e.g. `update_failed` / `startup_timeout`), `events_path` for the structured stream below, and `user_message()` for a ready-to-display one-line summary. Linux builds also report whether a privilege-drop tool (`runuser` / `su`) was found; Windows builds report `authenticode` (whether the running exe is trusted) and `authenticode_check_skipped` (true when the check could not reach a conclusion, e.g. offline with no cached chain).
-- **Multi-hop delta chains** — when no direct patch exists, `update()` applies up to 3 verified hops (0.1 → 0.2 → 0.3), checking each intermediate result against its signed `target_hash` before it becomes the next hop's input. The planner prefers a direct patch, then the cheapest viable chain, then the full installer; a chain whose total size exceeds 80% of the installer falls back to full. The generator keeps only chainable history (`MAX_DELTA_CHAIN_HOPS`) so manifests don't grow forever.
+- **Multi-hop delta chains** — when no direct patch exists, `update()` applies up to 3 verified hops (0.1 → 0.2 → 0.3), checking each intermediate result against its signed `target_hash` before it becomes the next hop's input. The planner prefers a direct patch, then the shortest viable chain (fewest hops), then the full installer; a chain whose total signed `patch_size` exceeds 80% of the installer falls back to full. The generator keeps only chainable history (`MAX_DELTA_CHAIN_HOPS`) so manifests don't grow forever.
 - **Key rotation without breaking old clients** — `additional_public_keys` / `additional_pubkeys` extend the trusted set; `trust_policy: "any"` accepts a signature from any of them, `"all"` requires every key to sign (dual-sign window). `.sig` files may contain multiple minisign blocks, and `generate --secondary-private-key` signs both the manifest and the installer with both keys.
 - **Minimum OS gate** — `generate --min-os 10.0.19045` writes a signed `platforms[].min_os`. The client refuses the update **before any download** when the detected OS is older (`UpdateOutcome::UnsupportedOs`), and hides both the patch and the full-installer URL from `check()`. Detection is Windows `RtlGetVersion`, macOS `sw_vers`, Linux kernel release; if it cannot be determined, the update proceeds (unknown ≠ unsupported). This is a **best-effort compatibility guard, not a security boundary**; on Linux it compares the kernel release, not the distro version.
 - **Localized release notes and custom metadata** — `generate --notes-i18n zh-CN=... --notes-i18n en=...` writes signed `notes_i18n`; `manifest.notes_for(locale)` resolves exact → language prefix → `notes`. Unknown top-level manifest fields are preserved in `UpdateManifest::extra`, and `generate --existing` carries them across releases, so hosts can read custom release metadata without forking the format.
@@ -631,6 +636,12 @@ match updater.install().await? {
         let _ = version;
         std::process::exit(0);
     }
+    UpdateResult::RepairRequired { reason } => {
+        // a previous whole-app swap died halfway; the repair script is already
+        // running — exit so it can restore the backup and relaunch the old version
+        let _ = reason;
+        std::process::exit(0);
+    }
     UpdateResult::UpToDate { .. } => { /* nothing to do */ }
     UpdateResult::Deferred { percentage, .. } => {
         // A newer version exists, but this install is outside the rollout.
@@ -638,10 +649,16 @@ match updater.install().await? {
         let _ = percentage;
     }
     UpdateResult::RequiresFullDownload { url, reason } => {
-        // hand off to tauri-plugin-updater; `reason` explains why
+        // hand off to install_full() or the official updater; `reason` explains why
         let _ = (url, reason);
     }
+    UpdateResult::UnsupportedOs { required, current } => {
+        // nothing was downloaded: the running OS is below the manifest's min_os
+        let _ = (required, current);
+    }
     UpdateResult::SafeMode => { /* prompt for a manual install */ }
+    // `UpdateResult` is non_exhaustive: new outcomes won't break your build.
+    _ => {}
 }
 ```
 
@@ -787,6 +804,12 @@ if !info.has_patch {
     }
 }
 ```
+
+`full_download()` returns `None` whenever `check()` intentionally hid the
+installer URL — the manifest is not newer, this install missed the rollout, or
+the running OS is below `min_os` — so it cannot be used to bypass those gates.
+`install_full()` applies the same gates and returns `Deferred` /
+`UnsupportedOs` without downloading.
 
 The fallback can also stay inside this engine: `install_full()` downloads,
 verifies and runs the installer (NSIS/MSI, `.app.tar.gz`, AppImage). If you keep
@@ -1174,14 +1197,14 @@ Key arguments:
 | `--new-app-dir` | Current app directory (exe + sidecars + resources); enables whole-app bundle patches. |
 | `--old-app-dir` | Previous app directory (repeatable). The directory name must contain the version; for macOS `.app` bundles the version may live in the parent directory (`v0.1.1/MyApp.app`). |
 | `--report` | Write a JSON release report (patch sizes, ratios, skipped baselines). |
-| `--sha256sums` | Write `SHA256SUMS` (hash + filename) for the manifest, signature, public key, installer and every generated patch. Use it to verify the CDN has all artifacts. |
+| `--sha256sums` | Write `SHA256SUMS` (hash + filename) for the manifest, signature, public key, installer and every generated patch (single-file `*.patch` and whole-app `*.bundle.patch`). Use it to verify the CDN has all artifacts. |
 | `--channel` | Release channel (default `stable`). Other names write `latest-<channel>.json` / `latest-<channel>.bundle.json`. |
 | `--rollout` | Signed rollout percentage, 0–100 (default 100). Values below 100 write `platforms[].rollout`; `0` pauses the release. |
 | `--min-version` | Signed minimum version. Clients below it bypass `rollout` and must update. Omitting it clears the previous floor. |
 | `--min-os` | Signed minimum OS version for this platform (Windows `10.0.19045`, macOS `13.0`, Linux kernel `5.15`). Clients that can detect an older OS refuse the update before downloading. Omit to clear it. |
 | `--notes-i18n` | Localized release notes (repeatable), format `LOCALE=TEXT` (e.g. `zh-CN=修复了...`). Written to the signed `notes_i18n`; `--notes` remains the fallback. |
 | `--fail-on-empty` | Exit non-zero when no patch was produced (CI guard). |
-| `--dry-run` | Plan and verify without writing files. |
+| `--dry-run` | Plan only: print inputs and the patch plan without generating patches or writing files. A real run is what applies and verifies every patch. |
 
 The generator only produces patches for old executables matching the target
 architecture/OS; every patch is **applied and hash-verified** before it is

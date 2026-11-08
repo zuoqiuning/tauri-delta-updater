@@ -285,11 +285,22 @@ impl DeltaUpdater {
 
         // 脚本执行前最后一次确认产物仍是校验时的那份字节，
         // 封住"校验完成 → 脚本执行"之间的 TOCTOU 窗口。
-        artifact.verify_integrity()?;
+        // 大文件哈希放 blocking 线程，避免占住 tokio worker。
+        let artifact_for_verify = artifact.clone();
+        tokio::task::spawn_blocking(move || artifact_for_verify.verify_integrity())
+            .await
+            .map_err(|e| DeltaError::WorkerFailed(format!("完整性校验线程失败: {e}")))??;
 
         // Authenticode 退化检查：原版本已签名而产物未签名时阻断。
         // 内容哈希正确不等于能启动——受管环境会拒绝未签名程序。
-        PlatformUpdater::verify_patched_binary(&self.executable_path, artifact.path())?;
+        // WinVerifyTrust 是同步系统调用，同样放 blocking 线程。
+        let original = self.executable_path.clone();
+        let staged = artifact.path().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            PlatformUpdater::verify_patched_binary(&original, &staged)
+        })
+        .await
+        .map_err(|e| DeltaError::WorkerFailed(format!("Authenticode 校验线程失败: {e}")))??;
 
         // 生成替换脚本（只接受已验证产物；脚本放用户可写的工作目录）
         let script = PlatformUpdater::generate_updater_with_notice(

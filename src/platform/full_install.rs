@@ -2,7 +2,9 @@
 //!
 //! 增量路径替换的是"已安装的主程序/整包目录"，全量路径必须交给**安装器**：
 //!
-//! - Windows：NSIS `.exe`（静默 `/S`）或 MSI（`msiexec /qn`），需要提权；
+//! - Windows：NSIS `.exe`（`/P /UPDATE /R`，Tauri 约定的静默更新参数）、
+//!   MSI（`/passive /promptrestart AUTOLAUNCHAPP=True`）或 Inno Setup
+//!   （`/SILENT` / `/VERYSILENT`），需要提权；
 //! - macOS：`.app.tar.gz`，解包后走与整包增量相同的目录切换脚本；
 //! - Linux：AppImage 文件直接替换（复用单文件替换脚本，带备份与回滚）。
 //!
@@ -19,7 +21,7 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum InstallerKind {
-    /// Windows NSIS 安装器（`.exe`，静默参数 `/S`）。
+    /// Windows NSIS 安装器（`.exe`，静默更新参数 `/P /UPDATE /R`）。
     Nsis,
     /// Windows MSI 安装包。
     Msi,

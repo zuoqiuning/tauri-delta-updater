@@ -404,6 +404,28 @@ fn doctor_keeps_query_parameters_in_signature_url() {
     assert!(stdout.contains("清单签名有效"), "{stdout}");
 }
 
+/// 全局参数被无关子命令接受但静默忽略，会让用户误以为它生效。
+#[test]
+fn release_and_doctor_reject_irrelevant_global_flags() {
+    let (_dir, root) = project();
+    let (code, _stdout, stderr) = run(
+        &root,
+        &[
+            "doctor",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--apply",
+        ],
+    );
+    assert_ne!(code, 0, "doctor 不接受 --apply");
+    assert!(stderr.contains("--apply"), "{stderr}");
+
+    let (code, _stdout, stderr) = run(&root, &["doctor", "--project", ".", "--pubkey", "PK"]);
+    assert_ne!(code, 0, "doctor 不接受 --project");
+    assert!(stderr.contains("--project"), "{stderr}");
+}
+
 /// `cargo delta release` 与 `generate` 共用发布实现：最小参数即可产出清单与补丁。
 #[test]
 fn release_generates_manifest_and_patch() {

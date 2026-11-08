@@ -248,6 +248,44 @@ mod tests {
         assert!(dto.security, "签名失败必须能被前端识别为安全阻断");
     }
 
+    /// `guest-js` 的 `Diagnosis` 必须覆盖 Rust 序列化出的每个字段。
+    ///
+    /// 这条契约测试防止"Rust 加了字段、前端类型没跟上"的静默漂移；
+    /// 发布时 guest-js 不随 crate 打包，因此文件缺失时跳过而不是失败。
+    #[test]
+    fn diagnosis_ts_interface_covers_rust_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        let updater = tauri_delta_updater::DeltaUpdater::new(
+            tauri_delta_updater::UpdateConfig::new(
+                "https://cdn.example.com/latest.json",
+                "cHVibGljLWtleQ==",
+            )
+            .current_version("1.0.0")
+            .executable_path(&exe)
+            .work_dir(dir.path()),
+        )
+        .unwrap();
+        let diagnosis = tauri::async_runtime::block_on(updater.diagnose());
+        let value = serde_json::to_value(&diagnosis).unwrap();
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("guest-js/index.ts");
+        let Ok(ts) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let start = ts
+            .find("export interface Diagnosis {")
+            .expect("必须导出 Diagnosis 接口");
+        let body = &ts[start..start + ts[start..].find('}').expect("接口必须以 } 结束")];
+        for key in value.as_object().expect("Diagnosis 必须是对象").keys() {
+            assert!(
+                body.contains(&format!("{key}:")),
+                "guest-js 的 Diagnosis 缺少 Rust 字段 {key}:\n{body}"
+            );
+        }
+    }
+
     /// `tauri.conf.json` 的字段与官方 updater 兼容，迁移时可直接复用。
     #[test]
     fn file_config_is_updater_compatible() {

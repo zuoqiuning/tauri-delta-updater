@@ -255,8 +255,14 @@ impl DeltaUpdater {
     /// - 支持人员按 `log_path` 收集日志。
     pub async fn diagnose(&self) -> Diagnosis {
         let install_dir = self.executable_path.parent();
-        let (authenticode, authenticode_check_skipped) =
-            authenticode_diagnostics(&self.executable_path);
+        // WinVerifyTrust 是同步系统调用，离线时证书链探测可能很慢：
+        // 放 blocking 线程，避免卡住其它命令。
+        let (authenticode, authenticode_check_skipped) = {
+            let exe = self.executable_path.clone();
+            tokio::task::spawn_blocking(move || authenticode_diagnostics(&exe))
+                .await
+                .unwrap_or((None, None))
+        };
         let script_events = read_script_events(&self.work_dir);
         let rollback_history = script_events
             .iter()

@@ -202,16 +202,35 @@ pub fn verify_file_signature(file: &Path, signature: &str, public_key_b64: &str)
 ///
 /// 与 [`verify_manifest_signature_multi`] 使用同一套信任策略；
 /// 用只读 mmap 读取，不把安装包整体读进内存。
+///
+/// 兼容历史行为：接受旧版 (legacy) 签名。需要与
+/// [`crate::UpdateConfig::allow_legacy_signatures`] 保持一致时，
+/// 使用 [`verify_file_signature_multi_with_legacy`]。
 pub fn verify_file_signature_multi(
     file: &Path,
     signature: &str,
     keys: &[&str],
     policy: TrustPolicy,
 ) -> Result<()> {
+    verify_file_signature_multi_with_legacy(file, signature, keys, policy, true)
+}
+
+/// 与 [`verify_file_signature_multi`] 相同，但可显式拒绝旧版签名。
+///
+/// 客户端配置 `allow_legacy_signatures(false)` 时，全量安装包也必须走
+/// 同一条严格策略——否则“清单拒绝 legacy、安装包接受 legacy”会形成
+/// 配置契约与实际验签行为不一致。
+pub fn verify_file_signature_multi_with_legacy(
+    file: &Path,
+    signature: &str,
+    keys: &[&str],
+    policy: TrustPolicy,
+    allow_legacy: bool,
+) -> Result<()> {
     let opened = std::fs::File::open(file)?;
     // mmap 只读，文件在验签期间不会被写；所有权由 `opened` 保证。
     let mapped = unsafe { memmap2::Mmap::map(&opened)? };
-    verify_manifest_signature_multi(&mapped, signature, keys, policy, true)
+    verify_manifest_signature_multi(&mapped, signature, keys, policy, allow_legacy)
 }
 
 /// 版本绑定的 trusted comment 前缀。

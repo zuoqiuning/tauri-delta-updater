@@ -20,6 +20,18 @@ fn main() {
 fn run(cli: Cli) -> Result<(), String> {
     let is_init = matches!(cli.command, Command::Init { .. });
     let is_migrate = matches!(&cli.command, Command::Migrate { .. });
+    // 全局参数对 release/doctor 无意义：静默接受会让用户以为它生效了。
+    if matches!(&cli.command, Command::Release(_) | Command::Doctor(_)) {
+        if cli.apply {
+            return Err("--apply 只用于 init / migrate；release 总是写文件，doctor 只读".into());
+        }
+        if cli.project.is_some() {
+            return Err("--project 只用于 init / migrate".into());
+        }
+        if matches!(&cli.command, Command::Doctor(_)) && cli.dry_run {
+            return Err("--dry-run 只用于 init / migrate / release".into());
+        }
+    }
     let apply = cli.apply;
 
     let changes = match cli.command {

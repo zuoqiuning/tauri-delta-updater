@@ -150,6 +150,8 @@ export interface Diagnosis {
   needs_repair: boolean;
   startup_state: StartupState | null;
   last_rollback: string | null;
+  /** 历史回滚链（`tdx_events.jsonl` 中的 `delta.rollback.triggered`，最多 20 条）。 */
+  rollback_history: ScriptEvent[];
   authenticode: boolean | null;
   authenticode_check_skipped: boolean | null;
   log_path: string;

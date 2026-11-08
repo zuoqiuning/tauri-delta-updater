@@ -162,12 +162,30 @@ impl DeltaUpdater {
         }
 
         // 安装包可能几十到几百 MB：用 mmap 验签，不把整个文件读进内存。
-        if let Err(e) = crate::core::verify::verify_file_signature_multi(
-            &path,
-            &full.signature,
-            &self.config.trusted_keys(),
-            self.config.trust_policy,
-        ) {
+        // 放到 blocking 线程：大文件哈希/证书链检查会把 tokio worker 占住。
+        let verify_path = path.clone();
+        let signature = full.signature.clone();
+        let keys: Vec<String> = self
+            .config
+            .trusted_keys()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let policy = self.config.trust_policy;
+        let allow_legacy = self.config.allow_legacy_signatures;
+        let verified = tokio::task::spawn_blocking(move || {
+            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+            crate::core::verify::verify_file_signature_multi_with_legacy(
+                &verify_path,
+                &signature,
+                &keys,
+                policy,
+                allow_legacy,
+            )
+        })
+        .await
+        .map_err(|e| DeltaError::WorkerFailed(format!("验签线程失败: {e}")))?;
+        if let Err(e) = verified {
             let _ = tokio::fs::remove_file(&path).await;
             return Err(e);
         }

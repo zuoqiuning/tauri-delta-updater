@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri_delta_updater::{
     client_builder, default_signature_url, manifest_version_binding, normalize_version,
-    verify_file_signature_multi, verify_manifest_signature_multi, BundleFile, BundleManifest,
-    PatchInfo, TrustPolicy, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
+    verify_file_signature_multi_with_legacy, verify_manifest_signature_multi, BundleFile,
+    BundleManifest, PatchInfo, TrustPolicy, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
 };
 
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
@@ -347,8 +347,13 @@ async fn check_platforms(
         if deep && !info.signature.trim().is_empty() {
             match download_temp(client, &info.url).await {
                 Ok(path) => {
-                    let verified =
-                        verify_file_signature_multi(&path, &info.signature, keys, verdict.policy);
+                    let verified = verify_file_signature_multi_with_legacy(
+                        &path,
+                        &info.signature,
+                        keys,
+                        verdict.policy,
+                        verdict.allow_legacy,
+                    );
                     let _ = std::fs::remove_file(&path);
                     match verified {
                         Ok(()) => report.ok(format!("平台 {platform} 安装包签名有效")),
