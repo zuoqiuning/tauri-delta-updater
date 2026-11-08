@@ -201,6 +201,14 @@ pub enum DeltaError {
     /// 手动退出。
     #[error("连续更新失败次数已达上限，已停止尝试增量更新")]
     SafeMode,
+
+    /// 上次整包替换未完成：安装目录处于半新半旧状态。
+    ///
+    /// 全量下载/安装会覆盖这个现场，但残留备份仍会让下一次启动生成修复脚本，
+    /// 把刚装好的新版本回滚。必须先用 [`crate::DeltaUpdater::update`] 或
+    /// [`crate::DeltaUpdater::prepare`] 完成修复。
+    #[error("上次整包替换未完成，请先执行修复（update / prepare）后再全量安装")]
+    RepairRequired,
 }
 
 impl DeltaError {
@@ -246,6 +254,7 @@ impl DeltaError {
             DeltaError::FullInstallFailed(_) => "full_install_failed",
             DeltaError::ChainHopFailed { source, .. } => source.code(),
             DeltaError::SafeMode => "safe_mode",
+            DeltaError::RepairRequired => "repair_required",
         }
     }
 
@@ -342,6 +351,7 @@ mod tests {
                 source: Box::new(E::Network(String::new())),
             },
             E::SafeMode,
+            E::RepairRequired,
         ]
     }
 

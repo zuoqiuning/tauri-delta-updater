@@ -880,6 +880,7 @@ fn test_generate_cli_bundle_mode_emits_signed_manifest() {
     let (_sk, sk_text, _pk) = keypair();
     let key_file = dir.join("key.msk");
     std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+    let sums = dir.join("SHA256SUMS");
 
     let args = vec![
         "--app-binary".into(),
@@ -896,6 +897,8 @@ fn test_generate_cli_bundle_mode_emits_signed_manifest() {
         "https://cdn.example.com".into(),
         "--private-key".into(),
         s(&key_file),
+        "--sha256sums".into(),
+        s(&sums),
         "--fail-on-empty".into(),
     ];
     let (code, stdout, stderr) = run_generate(&args, &dir);
@@ -935,6 +938,11 @@ fn test_generate_cli_bundle_mode_emits_signed_manifest() {
     assert!(
         dir.join("0.1.0_to_0.1.1.bundle.patch").exists(),
         "整包补丁必须落盘"
+    );
+    let checksums = std::fs::read_to_string(&sums).unwrap();
+    assert!(
+        checksums.contains("0.1.0_to_0.1.1.bundle.patch"),
+        "SHA256SUMS 必须覆盖整包补丁: {checksums}"
     );
 
     // 独立清单必须能用同一把公钥验证

@@ -11,15 +11,22 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri_delta_updater::{
-    client_builder, manifest_version_binding, normalize_version, verify_file_signature_multi,
-    verify_manifest_signature_multi, BundleFile, BundleManifest, PatchInfo, TrustPolicy,
-    UpdateManifest, MAX_DELTA_CHAIN_HOPS,
+    client_builder, default_signature_url, manifest_version_binding, normalize_version,
+    verify_file_signature_multi, verify_manifest_signature_multi, BundleFile, BundleManifest,
+    PatchInfo, TrustPolicy, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
 };
 
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 1024 * 1024;
 const MAX_BUNDLE_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PATCH_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// 验签策略。默认镜像客户端（AnyOf + 拒绝 legacy），可显式放宽或收紧。
+#[derive(Clone, Copy)]
+struct Verdict {
+    policy: TrustPolicy,
+    allow_legacy: bool,
+}
 
 /// 执行体检并决定退出码：有任何错误时返回 `Err`。
 pub(crate) fn run(args: DoctorArgs) -> Result<(), String> {
@@ -119,6 +126,22 @@ impl Report {
 }
 
 async fn check(args: DoctorArgs) -> Result<Report, String> {
+    let verdict = match args.trust_policy.as_str() {
+        "any" => Verdict {
+            policy: TrustPolicy::AnyOf,
+            allow_legacy: args.allow_legacy,
+        },
+        "all" => Verdict {
+            policy: TrustPolicy::AllOf,
+            allow_legacy: args.allow_legacy,
+        },
+        other => {
+            return Err(format!(
+                "--trust-policy 必须是 any 或 all（客户端默认 any）: {other}"
+            ))
+        }
+    };
+
     let mut report = Report {
         endpoint: args.endpoint.clone(),
         version: None,
@@ -127,6 +150,13 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
         warnings: Vec::new(),
         json_path: args.json.clone(),
     };
+    // 体检必须镜像客户端默认：接受客户端会拒绝的签名，会给出“绿但用户红”的假安全感。
+    if verdict.allow_legacy {
+        report.warn("体检接受旧版 legacy 签名；客户端默认拒绝这类签名（结果可能与真实更新不一致）");
+    }
+    if verdict.policy == TrustPolicy::AllOf {
+        report.warn("体检要求所有公钥都签名（AllOf）；客户端默认 AnyOf，请确认发布端确实双签");
+    }
 
     if !is_http_url(&args.endpoint) {
         report.fail(format!("清单地址必须是 http(s) URL: {}", args.endpoint));
@@ -193,15 +223,16 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
         &manifest_bytes,
         &manifest,
         &keys,
+        verdict,
         &mut report,
     )
     .await;
 
-    check_platforms(&client, &manifest, &keys, args.deep, &mut report).await;
+    check_platforms(&client, &manifest, &keys, verdict, args.deep, &mut report).await;
     check_patches(&client, &manifest, &mut report).await;
 
     if let Some(bundle_url) = &args.bundle_url {
-        check_bundle(&client, &manifest, bundle_url, &keys, &mut report).await;
+        check_bundle(&client, &manifest, bundle_url, &keys, verdict, &mut report).await;
     }
 
     Ok(report)
@@ -232,9 +263,11 @@ async fn check_manifest_signature(
     manifest_bytes: &[u8],
     manifest: &UpdateManifest,
     keys: &[&str],
+    verdict: Verdict,
     report: &mut Report,
 ) {
-    let sig_url = format!("{endpoint}.sig");
+    // 与客户端同一条推导规则：把 `.sig` 追加在路径末尾，查询参数保留。
+    let sig_url = default_signature_url(endpoint);
     let Some(signature_bytes) =
         fetch_or_fail(client, &sig_url, MAX_SIGNATURE_BYTES, "清单签名", report).await
     else {
@@ -252,10 +285,10 @@ async fn check_manifest_signature(
         manifest_bytes,
         &signature,
         keys,
-        TrustPolicy::AnyOf,
-        true,
+        verdict.policy,
+        verdict.allow_legacy,
     ) {
-        Ok(()) => report.ok("清单签名有效（任一受信任公钥）"),
+        Ok(()) => report.ok("清单签名有效"),
         Err(err) => report.fail(format!("清单签名校验失败: {err}")),
     }
 
@@ -275,6 +308,7 @@ async fn check_platforms(
     client: &reqwest::Client,
     manifest: &UpdateManifest,
     keys: &[&str],
+    verdict: Verdict,
     deep: bool,
     report: &mut Report,
 ) {
@@ -313,12 +347,8 @@ async fn check_platforms(
         if deep && !info.signature.trim().is_empty() {
             match download_temp(client, &info.url).await {
                 Ok(path) => {
-                    let verified = verify_file_signature_multi(
-                        &path,
-                        &info.signature,
-                        keys,
-                        TrustPolicy::AnyOf,
-                    );
+                    let verified =
+                        verify_file_signature_multi(&path, &info.signature, keys, verdict.policy);
                     let _ = std::fs::remove_file(&path);
                     match verified {
                         Ok(()) => report.ok(format!("平台 {platform} 安装包签名有效")),
@@ -437,6 +467,7 @@ async fn check_bundle(
     manifest: &UpdateManifest,
     bundle_url: &str,
     keys: &[&str],
+    verdict: Verdict,
     report: &mut Report,
 ) {
     if !is_http_url(bundle_url) {
@@ -462,7 +493,7 @@ async fn check_bundle(
         }
     };
 
-    let sig_url = format!("{bundle_url}.sig");
+    let sig_url = default_signature_url(bundle_url);
     let Some(sig_bytes) = fetch_or_fail(
         client,
         &sig_url,
@@ -479,8 +510,8 @@ async fn check_bundle(
             &bytes,
             &signature,
             keys,
-            TrustPolicy::AnyOf,
-            true,
+            verdict.policy,
+            verdict.allow_legacy,
         ) {
             Ok(()) => report.ok("整包清单签名有效"),
             Err(err) => report.fail(format!("整包清单签名校验失败: {err}")),

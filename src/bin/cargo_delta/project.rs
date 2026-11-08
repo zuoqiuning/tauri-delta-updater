@@ -77,7 +77,7 @@ impl Project {
     }
 
     /// 检查三项接入是否完整；返回缺失项（空表示已完整）。
-    pub(crate) fn init_status(&self) -> Result<Vec<&'static str>, String> {
+    pub(crate) fn init_status(&self) -> Result<Vec<String>, String> {
         let mut missing = Vec::new();
 
         let (_, root) = read_json_or(&self.config_path, json!({}))?;
@@ -95,7 +95,7 @@ impl Project {
                         .is_some_and(|key| !key.trim().is_empty())
             });
         if !config_ok {
-            missing.push("plugins.delta-updater（endpoints + pubkey）");
+            missing.push("plugins.delta-updater（endpoints + pubkey）".to_string());
         }
 
         let (_, capability) = read_json_or(&self.capability_path, json!({}))?;
@@ -114,13 +114,21 @@ impl Project {
                         .any(|v| v.as_str() == Some("delta-updater:default"))
                 });
         if !capability_ok {
-            missing.push("capabilities/default.json（identifier + delta-updater:default）");
+            missing.push(
+                "capabilities/default.json（identifier + delta-updater:default）".to_string(),
+            );
         }
 
         let cargo = fs::read_to_string(&self.cargo_toml)
             .map_err(|e| format!("读取 {} 失败: {e}", self.cargo_toml.display()))?;
-        if !has_dependency(&cargo) {
-            missing.push("src-tauri/Cargo.toml 的 tauri-plugin-delta-updater");
+        if let Some(stale) = dependency_is_stale(&cargo) {
+            missing.push(format!(
+                "src-tauri/Cargo.toml 的 tauri-plugin-delta-updater 版本 {stale:?} 已落后（当前工具 {}，建议写 \"{}\"）",
+                env!("CARGO_PKG_VERSION"),
+                minor_requirement()
+            ));
+        } else if !has_dependency(&cargo) {
+            missing.push("src-tauri/Cargo.toml 的 tauri-plugin-delta-updater".to_string());
         }
 
         Ok(missing)
@@ -382,6 +390,81 @@ fn has_dependency(text: &str) -> bool {
     })
 }
 
+/// 依赖声明的版本要求。
+enum DeclaredVersion {
+    /// 显式的版本约束（可能带 `^`/`~`/`=` 前缀）。
+    Requirement(String),
+    /// `path` / `git` 等无法与发布版本比较的写法。
+    Unverifiable,
+}
+
+/// 从 Cargo.toml 取出本插件依赖的版本要求。
+fn declared_version(text: &str) -> Option<DeclaredVersion> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with(PLUGIN_DEP) {
+            continue;
+        }
+        let rest = trimmed[PLUGIN_DEP.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if rest.starts_with('{') {
+            return Some(match inline_table_version(rest) {
+                Some(version) => DeclaredVersion::Requirement(version),
+                None => DeclaredVersion::Unverifiable,
+            });
+        }
+        let quote = rest.chars().next()?;
+        if !matches!(quote, '"' | '\'') {
+            continue;
+        }
+        let end = rest[1..].find(quote)? + 1;
+        return Some(DeclaredVersion::Requirement(rest[1..end].to_string()));
+    }
+    None
+}
+
+/// 从内联表 `{ version = "0.3", ... }` 中取出引号内容。
+fn inline_table_version(table: &str) -> Option<String> {
+    let pos = table.find("version")?;
+    let after = table[pos + "version".len()..].trim_start();
+    let after = after.strip_prefix('=')?.trim_start();
+    let quote = after.chars().next()?;
+    if !matches!(quote, '"' | '\'') {
+        return None;
+    }
+    let end = after[1..].find(quote)? + 1;
+    Some(after[1..end].to_string())
+}
+
+/// 依赖版本是否明显落后于当前工具版本（返回原始写法）。
+///
+/// 只做 major.minor 级别的粗判：`"0.1"` / `"0.2"` 这类旧约束会让宿主
+/// 长期停在旧插件上，而 `init --check` 却保持绿色。`>=` 这类无上界的
+/// 约束与 `path`/`git` 依赖无法判断，交给 `dependency_is_git` 单独警告。
+fn dependency_is_stale(text: &str) -> Option<String> {
+    let DeclaredVersion::Requirement(raw) = declared_version(text)? else {
+        return None;
+    };
+    let raw = raw.trim();
+    if raw == "*" || raw.starts_with(">=") {
+        return None;
+    }
+    let numeric = raw.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let mut parts = numeric.split('.');
+    let major: u64 = parts.next()?.parse().ok()?;
+    let minor: u64 = match parts.next() {
+        Some(minor) => minor.parse().ok()?,
+        None => 0,
+    };
+    let mut tool = env!("CARGO_PKG_VERSION").split('.');
+    let tool_major: u64 = tool.next()?.parse().ok()?;
+    let tool_minor: u64 = tool.next()?.parse().ok()?;
+    (major < tool_major || (major == tool_major && minor < tool_minor)).then(|| raw.to_string())
+}
+
 /// 先写临时文件再替换，避免中断留下半份配置。
 pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -402,7 +485,43 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_dependency, has_dependency, minor_requirement};
+    use super::{dependency_is_stale, ensure_dependency, has_dependency, minor_requirement};
+
+    /// 依赖版本落后必须在 --check 中暴露；当前/更新版本与 path/git 依赖不得误报。
+    #[test]
+    fn detects_stale_dependency_version() {
+        // 0.x 阶段：0.1 一定落后于当前工具，路径依赖无法判断。
+        assert_eq!(
+            dependency_is_stale("[dependencies]\ntauri-plugin-delta-updater = \"0.1\"\n"),
+            Some("0.1".to_string())
+        );
+        assert_eq!(
+            dependency_is_stale(
+                "[dependencies]\ntauri-plugin-delta-updater = { version = \"0.1\", features = [\"x\"] }\n"
+            ),
+            Some("0.1".to_string())
+        );
+        assert!(
+            dependency_is_stale(&format!(
+                "[dependencies]\ntauri-plugin-delta-updater = \"{}\"\n",
+                minor_requirement()
+            ))
+            .is_none(),
+            "工具自身写的 minor 约束必须被接受"
+        );
+        assert!(
+            dependency_is_stale(
+                "[dependencies]\ntauri-plugin-delta-updater = { path = \"../plugin\" }\n"
+            )
+            .is_none(),
+            "path 依赖没有版本号，不能误判为落后"
+        );
+        assert!(
+            dependency_is_stale("[dependencies]\ntauri-plugin-delta-updater = \">=0.1\"\n")
+                .is_none(),
+            "无上界的版本约束允许升级，不能误判"
+        );
+    }
 
     /// 依赖插入必须保留原有内容与换行风格。
     #[test]

@@ -78,7 +78,13 @@ impl DeltaUpdater {
 
     /// 从指定端点拉取并验签清单（不做端点切换）。
     async fn fetch_verified_manifest_at(&self, url: &str) -> Result<UpdateManifest> {
-        let signature_url = default_signature_url(url);
+        // 主端点允许把签名独立托管在 `config.signature_url`；备用端点没有
+        // 对应配置，沿用同名 `.sig` 推导（保留查询参数）。
+        let signature_url = if url == self.config.manifest_url {
+            self.config.signature_url.clone()
+        } else {
+            default_signature_url(url)
+        };
         let (manifest_bytes, signature) = tokio::join!(
             fetch_bytes(&self.client, url),
             fetch_text(&self.client, &signature_url)

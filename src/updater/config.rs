@@ -58,13 +58,13 @@ impl FallbackPolicy {
 pub struct UpdateConfig {
     /// `latest.json` 的下载地址。
     ///
-    /// # 注意
-    ///
-    /// [`Self::signature_url`] 在 [`Self::new`] 里由它推导。
-    /// **构造之后再手动修改本字段，必须同步修改 `signature_url`**，
-    /// 否则签名会从旧地址拉取，导致验签拿到不匹配的文件。
+    /// [`Self::signature_url`] 默认由它推导；需要把签名独立托管时，
+    /// 在构造后显式修改 `signature_url` 即可（留空会在构造阶段重新推导）。
     pub manifest_url: String,
     /// `latest.json.sig` 的下载地址。
+    ///
+    /// 默认按清单地址同名 + `.sig` 推导（保留查询参数）。
+    /// 只对主端点生效：备用端点各自按自己的清单地址推导签名地址。
     pub signature_url: String,
     /// 用于校验清单签名的公钥。
     ///
@@ -400,7 +400,7 @@ pub(crate) fn endpoint_is_insecure(url: &str) -> bool {
 /// `https://cdn/latest.json?token=abc` 应得到
 /// `https://cdn/latest.json.sig?token=abc`，
 /// 而不是把 `.sig` 追加到 token 后面。
-pub(crate) fn default_signature_url(manifest_url: &str) -> String {
+pub fn default_signature_url(manifest_url: &str) -> String {
     match manifest_url.find('?') {
         Some(pos) => {
             let (base, query) = manifest_url.split_at(pos);

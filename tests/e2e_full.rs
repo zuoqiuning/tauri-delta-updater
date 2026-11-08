@@ -16,6 +16,15 @@ async fn full_fixture(
     installer: &[u8],
     current_version: &str,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer) {
+    full_fixture_with(installer, current_version, serde_json::json!({})).await
+}
+
+/// 与 [`full_fixture`] 相同，可向平台条目追加字段（`rollout` / `min_os`）。
+async fn full_fixture_with(
+    installer: &[u8],
+    current_version: &str,
+    platform_extra: serde_json::Value,
+) -> (tempfile::TempDir, DeltaUpdater, MockServer) {
     let dir = tempdir().unwrap();
     let old_exe = dir.path().join("app.exe");
     std::fs::write(&old_exe, b"OLD").unwrap();
@@ -26,13 +35,20 @@ async fn full_fixture(
     // 安装包签名与清单签名是两把不同的"签名对象"：
     // platforms[].signature 必须对安装包字节本身签名。
     let installer_sig = STANDARD.encode(sign(&sk, installer).as_bytes());
+    let mut platform_entry = serde_json::json!({
+        "signature": installer_sig,
+        "url": server.url("/full.exe")
+    });
+    if let Some(extra) = platform_extra.as_object() {
+        for (key, value) in extra {
+            platform_entry[key] = value.clone();
+        }
+    }
     let manifest = serde_json::json!({
         "version": "0.2.0",
         "notes": "full installer",
         "pub_date": "2026-01-01T00:00:00Z",
-        "platforms": {
-            platform: { "signature": installer_sig, "url": server.url("/full.exe") }
-        },
+        "platforms": { platform: platform_entry },
         "patches": {}
     });
     let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
@@ -136,4 +152,105 @@ async fn test_full_download_up_to_date_makes_no_request() {
         !server.was_requested("/full.exe"),
         "已是最新时绝不能请求安装包"
     );
+}
+
+/// 灰度未命中时全量路径同样不下载；`check()` 隐藏的地址不能经
+/// `full_download()` 重新暴露。
+#[tokio::test]
+async fn test_full_download_respects_rollout_gate() {
+    let installer = b"MZ payload".to_vec();
+    let (_dir, updater, server) = full_fixture_with(
+        &installer,
+        "0.1.0",
+        serde_json::json!({ "rollout": { "percentage": 0 } }),
+    )
+    .await;
+
+    match updater.download_full().await.unwrap() {
+        FullDownloadOutcome::Deferred {
+            version,
+            percentage,
+        } => {
+            assert_eq!(version, "0.2.0");
+            assert_eq!(percentage, 0, "清单声明的放量比例必须原样返回");
+        }
+        other => panic!("灰度 0% 时必须返回 Deferred，实际: {other:?}"),
+    }
+    assert!(
+        !server.was_requested("/full.exe"),
+        "灰度未命中不得下载安装包"
+    );
+
+    let check = updater.check().await.unwrap();
+    assert!(check.deferred_by_rollout);
+    assert!(check.full_download_url.is_none(), "check 必须隐藏全量地址");
+    assert!(
+        check.full_download().is_none(),
+        "full_download() 不得绕过灰度门槛重新暴露 URL"
+    );
+}
+
+/// 系统版本低于清单要求时全量路径同样拒绝下载。
+#[tokio::test]
+async fn test_full_download_respects_min_os_gate() {
+    let installer = b"MZ payload".to_vec();
+    let (_dir, updater, server) = full_fixture_with(
+        &installer,
+        "0.1.0",
+        serde_json::json!({ "min_os": "999.0" }),
+    )
+    .await;
+
+    let outcome = updater.download_full().await.unwrap();
+    assert!(
+        matches!(outcome, FullDownloadOutcome::UnsupportedOs { .. }),
+        "min_os 不满足时必须返回 UnsupportedOs，实际: {outcome:?}"
+    );
+    assert!(
+        !server.was_requested("/full.exe"),
+        "不兼容系统不得下载安装包"
+    );
+
+    let check = updater.check().await.unwrap();
+    assert!(
+        check.full_download().is_none(),
+        "full_download() 不得绕过系统版本门槛"
+    );
+}
+
+/// 全量下载与增量更新共用一把锁：并发调用必须返回可重试的
+/// `update_in_progress`，而不是两个下载同时写工作目录。
+#[tokio::test]
+async fn test_full_download_is_serialized_by_update_lock() {
+    let installer = b"MZ payload".to_vec();
+    let (dir, updater, _server) = full_fixture(&installer, "0.1.0").await;
+
+    let held = tauri_delta_updater::UpdateLock::acquire_in(dir.path()).unwrap();
+    let err = updater.download_full().await.unwrap_err();
+    assert!(
+        matches!(err, DeltaError::UpdateInProgress),
+        "锁被占用时必须返回 UpdateInProgress，实际: {err:?}"
+    );
+    drop(held);
+}
+
+/// Windows：上次整包替换未完成时，全量路径必须先修复而不是覆盖现场。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn test_full_download_refuses_when_repair_is_pending() {
+    use tauri_delta_updater::core::artifacts;
+
+    let installer = b"MZ payload".to_vec();
+    let (dir, updater, server) = full_fixture(&installer, "0.1.0").await;
+
+    let backup = dir.path().join(artifacts::BUNDLE_BACKUP_DIR);
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::write(backup.join("app.exe"), b"old").unwrap();
+
+    let err = updater.download_full().await.unwrap_err();
+    assert!(
+        matches!(err, DeltaError::RepairRequired),
+        "存在未完成整包替换时必须要求先修复，实际: {err:?}"
+    );
+    assert!(!server.was_requested("/full.exe"), "修复前不得发起下载");
 }

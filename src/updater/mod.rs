@@ -31,7 +31,7 @@ mod rollout;
 mod simulate;
 mod staged;
 
-pub use config::{FallbackPolicy, UpdateConfig};
+pub use config::{default_signature_url, FallbackPolicy, UpdateConfig};
 pub use diagnosis::{Diagnosis, ScriptEvent};
 pub use outcome::{CheckOutcome, FallbackReason, UpdateCheck, UpdateOutcome, UpdateResult};
 pub use pending::{PendingArtifact, PendingUpdate};
@@ -117,6 +117,13 @@ impl DeltaUpdater {
         // 表现为"永远没有补丁"这种最难排查的症状。
         config.current_version =
             crate::platform::target::normalize_version(&config.current_version).to_string();
+
+        // 手工改过 manifest_url 但没同步 signature_url 时，空值会让验签从一个
+        // 不存在的地址拉取；按清单地址重新推导，保持构造器的默认不变式。
+        if config.signature_url.trim().is_empty() {
+            config.signature_url =
+                crate::updater::config::default_signature_url(&config.manifest_url);
+        }
 
         // current_version 为空时 find_patch 永远返回 None，会静默退化成全量下载；
         // 不是语义化版本时无法做降级判据。两者都是最难排查的接入错误，

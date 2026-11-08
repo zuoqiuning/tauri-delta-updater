@@ -286,8 +286,8 @@ pub use platform::PlatformUpdater;
 /// 替换脚本的等待时长（由 `UpdateConfig` 的 timeout 配置写入脚本）。
 pub use platform::ScriptTimings;
 pub use updater::{
-    simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy, FallbackReason,
-    FullDownload, FullDownloadOutcome, PendingArtifact, PendingUpdate, ScriptEvent,
+    default_signature_url, simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy,
+    FallbackReason, FullDownload, FullDownloadOutcome, PendingArtifact, PendingUpdate, ScriptEvent,
     SimulationReport, Staged, StagedBundle, StagedFullInstaller, StagedRepair, UpdateCheck,
     UpdateConfig, UpdateOutcome, UpdateResult,
 };

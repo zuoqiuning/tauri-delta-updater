@@ -57,7 +57,9 @@ export interface ErrorDto {
 /** 全量下载结果（`downloadFull` 返回值）。 */
 export type FullDownloadDto =
   | { kind: 'downloaded'; version: string; path: string }
-  | { kind: 'up_to_date'; version: string };
+  | { kind: 'up_to_date'; version: string }
+  | { kind: 'deferred'; version: string; percentage: number }
+  | { kind: 'unsupported_os'; required: string; current: string };
 
 /** 跨重启待安装记录（`pending()` 返回值）；路径留在 Rust 侧。 */
 export interface PendingUpdate {

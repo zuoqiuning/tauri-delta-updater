@@ -237,6 +237,46 @@ fn init_check_is_a_ci_guard() {
     );
 }
 
+/// 依赖写成明显过期的版本时，`--check` 必须失败：它宣称守护“接入不腐烂”。
+#[test]
+fn init_check_rejects_stale_dependency_version() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let cargo_path = root.join("src-tauri/Cargo.toml");
+    let text = std::fs::read_to_string(&cargo_path).unwrap();
+    let stale = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("tauri-plugin-delta-updater") {
+                "tauri-plugin-delta-updater = \"0.1\""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&cargo_path, format!("{stale}\n")).unwrap();
+
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0, "版本落后时 --check 必须失败");
+    assert!(
+        stderr.contains("落后"),
+        "错误必须指出依赖版本落后: {stderr}"
+    );
+}
+
 /// 项目没有 capability 文件时，生成的文件必须是 Tauri 2 可反序列化的：
 /// 缺 `identifier`/`windows` 会让 `tauri build` 直接失败。
 #[test]
@@ -323,6 +363,45 @@ fn migrate_copies_and_can_remove_official() {
     let permissions = capability["permissions"].as_array().unwrap();
     assert!(!permissions.iter().any(|v| v == "updater:default"));
     assert!(permissions.iter().any(|v| v == "delta-updater:default"));
+}
+
+/// 体检对带查询参数的 CDN 地址必须像客户端一样推导签名地址：
+/// `.sig` 追加在路径末尾，而不是查询串之后。
+#[test]
+fn doctor_keeps_query_parameters_in_signature_url() {
+    use common::MockServer;
+    use std::collections::HashMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let server = MockServer::start(HashMap::new());
+    let (sk, pk) = common::signing_keypair();
+    let platform = tauri_delta_updater::current_platform();
+
+    let manifest = serde_json::json!({
+        "version": "0.1.1",
+        "notes": "query fixture",
+        "pub_date": "2026-01-01T00:00:00Z",
+        "platforms": {
+            platform: { "signature": "dummy", "url": server.url("/full.exe") }
+        },
+        "patches": {}
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    let signature = common::sign_bound(&sk, &manifest_bytes, "tdu:v=0.1.1");
+    // 客户端请求的签名地址带同一个 token；旧的 `{endpoint}.sig` 会得到
+    // `/latest.json?token=abc.sig` 而 404。
+    server.set("/latest.json?token=abc", manifest_bytes);
+    server.set("/latest.json.sig?token=abc", signature.into_bytes());
+    server.set("/full.exe", b"installer".to_vec());
+
+    let endpoint = server.url("/latest.json?token=abc");
+    let (code, stdout, stderr) = run(root, &["doctor", &endpoint, "--pubkey", &pk]);
+    assert_eq!(
+        code, 0,
+        "带查询参数的签名地址必须能被解析\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(stdout.contains("清单签名有效"), "{stdout}");
 }
 
 /// `cargo delta release` 与 `generate` 共用发布实现：最小参数即可产出清单与补丁。

@@ -106,6 +106,16 @@ pub(crate) struct DoctorArgs {
     /// 附加请求头（可重复）：`--header Name=Value`，用于私有 CDN Token。
     #[arg(long = "header", value_name = "NAME=VALUE")]
     pub(crate) headers: Vec<String>,
+
+    /// 多钥信任策略：`any`（默认，任意一把有效签名）或 `all`（必须全部签名）。
+    #[arg(long = "trust-policy", value_name = "any|all", default_value = "any")]
+    pub(crate) trust_policy: String,
+
+    /// 接受旧版（legacy）minisign 签名。
+    ///
+    /// 客户端默认拒绝；开启后体检结果可能与真实客户端不一致。
+    #[arg(long = "allow-legacy")]
+    pub(crate) allow_legacy: bool,
 }
 
 /// `cargo delta release` 的参数：与 `generate` 等价，基线用 `--from` 统一表达。

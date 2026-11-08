@@ -61,6 +61,49 @@ async fn test_custom_headers_are_sent() {
     );
 }
 
+/// 显式配置的签名地址必须被真正使用，而不是始终按清单地址推导。
+#[tokio::test]
+async fn test_custom_signature_url_is_used() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app.exe");
+    let work_dir = dir.path().join("work");
+    std::fs::write(&exe, b"app").unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+
+    let (sk, pk) = signing_keypair();
+    let server = MockServer::start(HashMap::new());
+    let platform = tauri_delta_updater::current_platform();
+    let (manifest_bytes, signature) = build_manifest(
+        &sk,
+        &server.base_url,
+        "0.2.0",
+        platform,
+        "patch-hash",
+        "target-hash",
+        None,
+    );
+    server.set("/latest.json", manifest_bytes);
+    // 默认 .sig 地址放错误内容：如果客户端仍按地址推导，验签必然失败。
+    server.set("/latest.json.sig", b"wrong signature".to_vec());
+    server.set("/signatures/latest.sig", signature.into_bytes());
+
+    let mut config = UpdateConfig::new(server.url("/latest.json"), pk)
+        .current_version("0.1.0")
+        .executable_path(&exe)
+        .work_dir(&work_dir);
+    config.signature_url = server.url("/signatures/latest.sig");
+    let updater = DeltaUpdater::new(config).unwrap();
+
+    updater
+        .check()
+        .await
+        .expect("必须从显式配置的签名地址拉取并验签");
+    assert!(
+        server.was_requested("/signatures/latest.sig"),
+        "自定义签名地址必须被实际请求"
+    );
+}
+
 /// 双签清单 + `AllOf`：客户端必须接受双签、拒绝单签。
 #[tokio::test]
 async fn test_multi_key_all_of_is_enforced() {

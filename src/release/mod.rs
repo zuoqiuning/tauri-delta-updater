@@ -233,6 +233,25 @@ fn sign_with_keys(
     Ok(blocks.join("\n"))
 }
 
+/// 与 [`sign_with_keys`] 相同，但从文件流式读取内容。
+///
+/// 安装包可能有几百 MB：`fs::read` 会让发布进程额外驻留同等内存，
+/// 在低内存 CI 上可能 OOM。minisign 接受任意 `Read`，直接传 `File` 即可。
+fn sign_file_with_keys(
+    keys: &[minisign::SecretKey],
+    path: &std::path::Path,
+    trusted_comment: Option<&str>,
+) -> Result<String, String> {
+    let mut blocks = Vec::with_capacity(keys.len());
+    for key in keys {
+        let file = std::fs::File::open(path).map_err(|e| format!("读取安装包失败: {e}"))?;
+        let signature = minisign::sign(None, key, file, trusted_comment, None)
+            .map_err(|e| format!("签名失败: {e}"))?;
+        blocks.push(signature.to_string());
+    }
+    Ok(blocks.join("\n"))
+}
+
 /// 生成签名的更新清单、补丁与发布报告。
 ///
 /// 会对每个基线真实应用一遍补丁并校验产物哈希：坏补丁在发布端失败，
@@ -499,7 +518,7 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
         .collect();
 
     // 整包补丁（多文件）：与单文件补丁独立，失败不影响已生成的清单内容。
-    let bundle_count = generate_bundles(
+    let bundle_patch_paths = generate_bundles(
         &options,
         new_version,
         &platform_key,
@@ -509,6 +528,7 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
         &signing_keys,
     )
     .await?;
+    let bundle_count = bundle_patch_paths.len();
 
     // 保留仍能链到新版本的旧补丁：跨多个版本的客户端可以逐跳升级，
     // 而不必下载全量。超出跳数上限或与目标无关的补丁会被裁掉，
@@ -527,8 +547,8 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
 
     // 安装包本身的签名，供 Tauri 官方 updater 校验全量下载。
     // 双签时把多个 minisign 块拼接：客户端支持多块验签。
-    let installer_bytes = std::fs::read(installer).map_err(|e| format!("读取安装包失败: {e}"))?;
-    let installer_signature = sign_with_keys(&signing_keys, &installer_bytes, None)?;
+    // 流式读取：几百 MB 的安装包不能整个读进发布进程内存。
+    let installer_signature = sign_file_with_keys(&signing_keys, installer, None)?;
 
     if let Some(entry) = manifest.platforms.get_mut(&platform_key) {
         entry.signature = STANDARD.encode(installer_signature.as_bytes());
@@ -589,6 +609,8 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
                 .iter()
                 .map(|record| patch_dir.join(&record.patch_file)),
         );
+        // 整包补丁也是 CDN 上的独立制品；漏传同样只会在客户端失败。
+        files.extend(bundle_patch_paths.iter().cloned());
         write_sha256sums(path, &files).await?;
         println!("[OK] SHA256SUMS: {}", path.display());
     }

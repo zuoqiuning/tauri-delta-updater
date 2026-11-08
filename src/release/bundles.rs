@@ -3,12 +3,14 @@
 use super::files::old_app_version;
 use super::ReleaseOptions;
 use crate::{create_bundle_patch, normalize_version, BundleManifest, BundlePatch};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 生成整包（多文件）补丁，并写出独立签名的 `latest.bundle.json`。
 ///
 /// 未提供 `--new-app-dir` 时是零操作。整包补丁与单文件补丁互不影响：
 /// 客户端可以只消费 `latest.bundle.json`，旧客户端继续使用 `latest.json`。
+///
+/// 返回实际写出的补丁路径（用于 `SHA256SUMS` 与发布报告）。
 pub(crate) async fn generate_bundles(
     options: &ReleaseOptions,
     new_version: &str,
@@ -17,9 +19,9 @@ pub(crate) async fn generate_bundles(
     patch_dir: &Path,
     manifest_file: &str,
     signing_keys: &[minisign::SecretKey],
-) -> Result<usize, String> {
+) -> Result<Vec<PathBuf>, String> {
     let Some(new_dir) = &options.new_app_dir else {
-        return Ok(0);
+        return Ok(Vec::new());
     };
 
     let canonical_new =
@@ -90,6 +92,17 @@ pub(crate) async fn generate_bundles(
         extra: Default::default(),
     };
     let count = manifest.bundles.len();
+    // 以最终清单为准计算路径：dedup 之后不会重复列出同一个补丁。
+    let patch_paths: Vec<PathBuf> = manifest
+        .bundles
+        .iter()
+        .map(|bundle| {
+            patch_dir.join(format!(
+                "{}_to_{}.bundle.patch",
+                bundle.from_version, new_version
+            ))
+        })
+        .collect();
 
     let json =
         serde_json::to_vec_pretty(&manifest).map_err(|e| format!("序列化整包清单失败: {e}"))?;
@@ -103,5 +116,5 @@ pub(crate) async fn generate_bundles(
         .map_err(|e| format!("写入 {manifest_file}.sig 失败: {e}"))?;
 
     println!("[OK] {manifest_file} + .sig 已生成（整包补丁 {count} 个）");
-    Ok(count)
+    Ok(patch_paths)
 }

@@ -92,7 +92,12 @@ impl CheckOutcome {
     ///
     /// 用于增量不可用（无匹配补丁、只读 AppImage、macOS bundle、安全模式）时，
     /// 把 `{version, url, signature}` 原样交给官方 updater 或自定义安装流程。
+    ///
+    /// 灰度未命中或系统版本低于清单要求时返回 `None`：`check()` 刻意隐藏了
+    /// 全量地址，这条路径不能把它重新暴露出来。
     pub fn full_download(&self) -> Option<FullDownload> {
+        // 灰度/系统版本门槛下 check() 已隐藏地址，这里不能重新暴露。
+        self.full_download_url.as_ref()?;
         self.full_download_for(crate::platform::target::current_platform())
     }
 

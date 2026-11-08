@@ -3,6 +3,7 @@
 use super::{
     emit, DeltaUpdater, FullDownload, FullDownloadOutcome, StagedFullInstaller, UpdateResult,
 };
+use crate::core::lock::UpdateLock;
 use crate::error::{DeltaError, Result};
 use crate::session::UpdateEvent;
 use std::path::{Path, PathBuf};
@@ -15,8 +16,16 @@ impl DeltaUpdater {
     /// Linux 替换 AppImage。
     ///
     /// - 版本不高于当前版本时返回 [`FullDownloadOutcome::UpToDate`]，不发起下载；
+    /// - 系统版本低于清单要求、或灰度未命中时返回对应变体，不发起下载；
+    /// - 上次整包替换未完成时返回 [`DeltaError::RepairRequired`]，
+    ///   必须先用 [`Self::update`] / [`Self::prepare`] 修复安装目录；
+    /// - 与增量路径共用 [`UpdateLock`]，并发调用会返回
+    ///   [`DeltaError::UpdateInProgress`]；
     /// - 文件写到工作目录，名称带版本号，已存在的同名半截文件会被续传；
     /// - 装包签名不匹配时删除文件并返回 [`DeltaError::SignatureInvalid`]。
+    ///
+    /// **安全模式不阻断本路径**：安全模式限制的是自动增量重试，
+    /// 全量下载/安装是用户显式选择的回退手段。
     ///
     /// ```no_run
     /// # async fn example(updater: &tauri_delta_updater::DeltaUpdater)
@@ -40,8 +49,23 @@ impl DeltaUpdater {
     /// 带阶段事件与取消的全量下载。
     ///
     /// 与 [`Self::download_full`] 相同，额外按阶段回调 [`UpdateEvent`]：
-    /// `Checking` → `DownloadingFull` → 返回结果。
+    /// `Checking` →（灰度未命中时 `Deferred`）→ `DownloadingFull` → 返回结果。
     pub async fn download_full_with_events<F>(
+        &self,
+        cancel: &crate::core::cancel::CancelToken,
+        on_event: F,
+    ) -> Result<FullDownloadOutcome>
+    where
+        F: FnMut(UpdateEvent) + Send,
+    {
+        // 与增量路径共用同一把锁：两个 install_full、或 install 与 install_full
+        // 并发时会写同一工作目录、启动两个安装器。
+        let _lock = UpdateLock::acquire_in(&self.work_dir)?;
+        self.download_full_locked(cancel, on_event).await
+    }
+
+    /// 全量下载的实际实现；调用方必须已持有 [`UpdateLock`]。
+    async fn download_full_locked<F>(
         &self,
         cancel: &crate::core::cancel::CancelToken,
         on_event: F,
@@ -51,6 +75,16 @@ impl DeltaUpdater {
     {
         let mut on_event: Option<Box<dyn FnMut(UpdateEvent) + Send + '_>> =
             Some(Box::new(on_event));
+
+        // 修复优先：安装目录处于半新半旧状态时继续安装会覆盖现场，
+        // 但下一次启动仍会看到残留备份并生成修复脚本，把新版本回滚。
+        if self.needs_bundle_repair() {
+            return Err(DeltaError::RepairRequired);
+        }
+        if cancel.is_cancelled() {
+            emit(&mut on_event, UpdateEvent::Cancelled);
+            return Err(DeltaError::Cancelled);
+        }
 
         emit(&mut on_event, UpdateEvent::Checking);
         let manifest = self.fetch_verified_manifest().await?;
@@ -65,6 +99,27 @@ impl DeltaUpdater {
                 },
             );
             return Ok(FullDownloadOutcome::UpToDate { version });
+        }
+
+        // 与增量路径同一套门槛：全量安装包同样不能被装到
+        // 不兼容的系统版本或灰度未命中的安装上。
+        if let Some((required, current)) = self.unsupported_os(&manifest) {
+            return Ok(FullDownloadOutcome::UnsupportedOs { required, current });
+        }
+        if self.deferred_by_rollout(&manifest)? {
+            let version = manifest.version.clone();
+            let percentage = self.rollout_percentage(&manifest).unwrap_or(0);
+            emit(
+                &mut on_event,
+                UpdateEvent::Deferred {
+                    version: version.clone(),
+                    percentage,
+                },
+            );
+            return Ok(FullDownloadOutcome::Deferred {
+                version,
+                percentage,
+            });
         }
 
         let full =
@@ -160,7 +215,9 @@ impl DeltaUpdater {
     where
         F: FnMut(UpdateEvent) + Send,
     {
-        let outcome = self.download_full_with_events(cancel, on_event).await?;
+        // 整个“下载 + 启动安装器”持锁：两个安装器并发会互相替换同一个安装目录。
+        let _lock = UpdateLock::acquire_in(&self.work_dir)?;
+        let outcome = self.download_full_locked(cancel, on_event).await?;
 
         match outcome {
             FullDownloadOutcome::Downloaded { installer } => {
@@ -177,6 +234,16 @@ impl DeltaUpdater {
                 })
             }
             FullDownloadOutcome::UpToDate { version } => Ok(UpdateResult::UpToDate { version }),
+            FullDownloadOutcome::Deferred {
+                version,
+                percentage,
+            } => Ok(UpdateResult::Deferred {
+                version,
+                percentage,
+            }),
+            FullDownloadOutcome::UnsupportedOs { required, current } => {
+                Ok(UpdateResult::UnsupportedOs { required, current })
+            }
         }
     }
 }

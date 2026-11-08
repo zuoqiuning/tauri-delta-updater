@@ -31,7 +31,7 @@ pub(crate) async fn install<R: Runtime>(
 ) -> Result<UpdateResult, ErrorDto> {
     let session = state.updater()?.session();
     let token = session.cancel_token();
-    set_cancel(&state, Some(token));
+    begin_operation(&state, token)?;
 
     let result = session
         .run(|event| {
@@ -65,7 +65,7 @@ pub(crate) async fn prepare<R: Runtime>(
 ) -> Result<UpdateResult, ErrorDto> {
     let updater = state.updater()?;
     let token = CancelToken::new();
-    set_cancel(&state, Some(token.clone()));
+    begin_operation(&state, token.clone())?;
 
     let outcome = updater
         .prepare_with_events(&token, |event| {
@@ -115,8 +115,8 @@ pub(crate) async fn launch<R: Runtime>(
 /// 下载全量安装包并校验签名，**不执行安装**。
 ///
 /// 用于"增量不可用"的回退：前端拿到 `path` 后交给平台安装流程
-/// （Windows NSIS/MSI、macOS `.app.tar.gz`、Linux AppImage）。
-/// 安装执行器会在后续版本内置到插件；当前阶段先保证下载与验签是走我们自己的。
+/// （Windows NSIS/MSI、macOS `.app.tar.gz`、Linux AppImage）；
+/// 需要引擎直接启动安装器时用 [`install_full`]。
 #[tauri::command]
 pub(crate) async fn download_full(
     state: State<'_, UpdaterState>,
@@ -124,7 +124,7 @@ pub(crate) async fn download_full(
 ) -> Result<FullDownloadDto, ErrorDto> {
     let updater = state.updater()?;
     let token = CancelToken::new();
-    set_cancel(&state, Some(token.clone()));
+    begin_operation(&state, token.clone())?;
 
     let result = updater
         .download_full_with_events(&token, |event| {
@@ -150,7 +150,7 @@ pub(crate) async fn install_full<R: Runtime>(
 ) -> Result<UpdateResult, ErrorDto> {
     let updater = state.updater()?;
     let token = CancelToken::new();
-    set_cancel(&state, Some(token.clone()));
+    begin_operation(&state, token.clone())?;
 
     let result = updater
         .install_full_with_events(&token, |event| {
@@ -314,6 +314,26 @@ pub(crate) async fn reset_safety(state: State<'_, UpdaterState>) -> Result<(), E
 fn set_cancel(state: &State<'_, UpdaterState>, token: Option<CancelToken>) {
     if let Ok(mut slot) = state.cancel.lock() {
         *slot = token;
+    }
+}
+
+/// 占用“单次更新操作”槽，返回 `update_in_progress` 时说明已有命令在跑。
+///
+/// 库层的 [`tauri_delta_updater::UpdateLock`] 负责跨进程互斥；这里负责
+/// **同一进程内的命令串行化**：并发命令若直接覆盖 `cancel` 槽，
+/// 先发起的会话就再也取消不掉。
+fn begin_operation(state: &State<'_, UpdaterState>, token: CancelToken) -> Result<(), ErrorDto> {
+    match state.cancel.lock() {
+        Ok(mut slot) if slot.is_none() => {
+            *slot = Some(token);
+            Ok(())
+        }
+        _ => Err(ErrorDto {
+            code: "update_in_progress",
+            message: "另一个更新操作正在进行，请稍后再试".into(),
+            retryable: false,
+            security: false,
+        }),
     }
 }
 

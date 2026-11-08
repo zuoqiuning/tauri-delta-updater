@@ -54,6 +54,20 @@ pub enum FullDownloadDto {
         /// 清单声明的版本。
         version: String,
     },
+    /// 新版本存在，但当前安装不在灰度范围内，没有下载。
+    Deferred {
+        /// 清单声明的版本。
+        version: String,
+        /// 放量比例（0–100）。
+        percentage: u8,
+    },
+    /// 本机系统版本低于清单要求，没有下载。
+    UnsupportedOs {
+        /// 清单声明的最低系统版本。
+        required: String,
+        /// 本机探测到的系统版本。
+        current: String,
+    },
 }
 
 impl FullDownloadDto {
@@ -68,6 +82,16 @@ impl FullDownloadDto {
                 path: installer.path().display().to_string(),
             }),
             FullDownloadOutcome::UpToDate { version } => Ok(Self::UpToDate { version }),
+            FullDownloadOutcome::Deferred {
+                version,
+                percentage,
+            } => Ok(Self::Deferred {
+                version,
+                percentage,
+            }),
+            FullDownloadOutcome::UnsupportedOs { required, current } => {
+                Ok(Self::UnsupportedOs { required, current })
+            }
             _ => Err(ErrorDto {
                 code: "unsupported_outcome",
                 message: "插件版本过旧，无法识别全量下载结果，请升级插件".into(),

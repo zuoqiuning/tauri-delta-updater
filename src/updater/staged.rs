@@ -72,6 +72,20 @@ pub enum FullDownloadOutcome {
         /// 清单声明的版本号。
         version: String,
     },
+    /// 新版本存在，但当前安装不在本次灰度范围内，没有任何下载。
+    Deferred {
+        /// 清单声明的版本号。
+        version: String,
+        /// 发布端声明的放量比例（0–100）。
+        percentage: u8,
+    },
+    /// 本机系统版本低于清单要求，没有任何下载。
+    UnsupportedOs {
+        /// 清单声明的最低系统版本。
+        required: String,
+        /// 本机探测到的系统版本。
+        current: String,
+    },
 }
 
 /// 已就绪、等待替换的更新产物。
