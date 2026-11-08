@@ -229,6 +229,16 @@ impl UpdateConfig {
         self
     }
 
+    /// 设置主清单的签名地址。
+    ///
+    /// 缺省按 [`Self::manifest_url`] 同名 + `.sig` 推导（保留查询参数）；
+    /// 显式留空会在 [`crate::DeltaUpdater::new`] 中重新推导。
+    /// 只对主端点生效：备用端点各自按自己的清单地址推导。
+    pub fn signature_url(mut self, url: impl Into<String>) -> Self {
+        self.signature_url = url.into();
+        self
+    }
+
     /// 追加受信任公钥（密钥轮换期的旧钥或新钥）。
     pub fn additional_public_keys(mut self, keys: Vec<String>) -> Self {
         self.additional_public_keys = keys;
@@ -510,13 +520,19 @@ mod tests {
         );
     }
 
-    /// `UpdateConfig::new` 必须立即推导出正确的签名地址。
+    /// `UpdateConfig::new` 必须立即推导出正确的签名地址；builder 可覆盖它。
     #[test]
     fn config_derives_signature_url() {
         let config = UpdateConfig::new("https://cdn.example.com/latest.json?token=abc", "PK");
         assert_eq!(
             config.signature_url,
             "https://cdn.example.com/latest.json.sig?token=abc"
+        );
+
+        let config = config.signature_url("https://sig.example.com/latest.json.sig");
+        assert_eq!(
+            config.signature_url, "https://sig.example.com/latest.json.sig",
+            "独立签名地址必须覆盖推导值"
         );
     }
 }

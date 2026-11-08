@@ -348,10 +348,19 @@ fn init_check_rejects_insecure_endpoint() {
         "错误必须说明如何显式放行: {stderr}"
     );
 
-    // 显式开启后必须放行：本地测试服务器是合法场景。
+    // 独立托管的签名地址同样不能是明文 HTTP。
     let path = root.join("src-tauri/tauri.conf.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config["plugins"]["delta-updater"]["signature_url"] =
+        serde_json::json!("http://mirror.example.com/latest.json.sig");
+    std::fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
+
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0, "明文 HTTP 签名地址必须让 --check 失败");
+    assert!(stderr.contains("signature_url"), "{stderr}");
+
+    // 显式开启后必须放行：本地测试服务器是合法场景。
     config["plugins"]["delta-updater"]["allow_insecure_transport"] = serde_json::json!(true);
     std::fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
 

@@ -148,7 +148,8 @@ the granular sets instead: `delta-updater:read` (`check` / `diagnose` / `pending
 ```
 
 Optional keys (all have safe defaults): `work_dir` (override the user-writable
-cache directory), `wait_timeout_secs` / `confirm_timeout_secs` (replacement
+cache directory), `signature_url` (host the `.sig` separately; defaults to the
+manifest URL plus `.sig`), `wait_timeout_secs` / `confirm_timeout_secs` (replacement
 timings), `proxy` (`http://127.0.0.1:7890`), `headers` (extra HTTP headers for
 private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
 (`false` by default; set `true` only for third-party legacy signing pipelines),
@@ -222,7 +223,8 @@ exits the process once the swap is ready. Errors arrive as
 
 The npm package exports `check`, `install`, `prepare`, `launch`, `downloadFull`,
 `installFull`, `pending`, `discardPending`, `installPending`, `diagnose`,
-`cancel`, `resetSafety`, plus `UpdateEvent` / `UpdateResult` / `ErrorDto` types.
+`cancel`, `resetSafety`, `requiresExit`, plus `UpdateEvent` / `UpdateResult` /
+`ErrorDto` types.
 
 > [!WARNING]
 > **Single-instance apps: test the exit path once per platform.** The plugin
@@ -271,6 +273,9 @@ same `platforms[].signature`. Known boundaries:
   already running and **must relaunch the app itself**: NSIS receives `/R`; Inno
   must do it in `.iss` via `[Run]` **without** `skipifsilent`. The engine never
   relaunches on this path.
+- Official `windows.installMode` and `dangerousInsecureTransportProtocol` are
+  **not** consumed. The plugin logs a startup warning and keeps its safe defaults;
+  use the top-level `install_mode` / `allow_insecure_transport` instead.
 
 **Migration cost vs benefit.** The migration is mostly a **frontend rewrite**:
 this plugin streams `{ stage, ... }` events over a `Channel`, while

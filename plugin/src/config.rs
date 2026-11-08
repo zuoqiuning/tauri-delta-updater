@@ -9,7 +9,9 @@ use tauri_delta_updater::{FallbackPolicy, InstallMode, InstallerKind, TrustPolic
 /// `tauri.conf.json` 里 `plugins.delta-updater` 的配置。
 ///
 /// 字段与官方 updater 的配置兼容：`endpoints` + `pubkey` 可以直接复用，
-/// 迁移时不必改配置。官方配置里的 `windows` / `dmg` 等字段会被忽略。
+/// 迁移时不必改配置。官方配置里的 `windows` / `dmg` 等字段会被忽略；
+/// 其中语义差异会影响行为的字段（`windows.installMode`、
+/// `dangerousInsecureTransportProtocol`）会在启动警告中提示改写到本插件字段。
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct FileConfig {
     /// 清单地址。与官方一致用数组：第一个是主端点，其余作为备用端点。
@@ -28,6 +30,11 @@ pub(crate) struct FileConfig {
     /// 可选：整包清单地址（`latest.bundle.json`）。
     #[serde(default)]
     pub(crate) bundle_endpoint: Option<String>,
+    /// 可选：主清单签名的独立地址；缺省按清单地址同名 + `.sig` 推导。
+    ///
+    /// 只对主端点生效；备用端点各自按自己的清单地址推导。
+    #[serde(default)]
+    pub(crate) signature_url: Option<String>,
     /// 可选：安装包类型，用于展开端点里的 `{{bundle_type}}`。
     ///
     /// 官方配置没有这个字段；在 URL 里使用该占位符时必须提供，
@@ -96,6 +103,9 @@ const OFFICIAL_KEYS: &[&str] = &[
 impl FileConfig {
     /// 未知字段的启动警告（已排除官方 updater 的合法字段）。
     ///
+    /// 官方字段本身不报错，但**语义不同**的两项会额外提示：它们被忽略后
+    /// 行为会悄悄变化（安装模式丢失、明文端点被拒绝），迁移时必须显式改写。
+    ///
     /// 排序保证日志稳定，便于测试与 diff。
     pub(crate) fn unknown_field_warnings(&self) -> Vec<String> {
         let mut keys: Vec<&str> = self
@@ -105,13 +115,47 @@ impl FileConfig {
             .filter(|key| !OFFICIAL_KEYS.contains(key))
             .collect();
         keys.sort_unstable();
-        keys.into_iter()
+        let mut warnings: Vec<String> = keys
+            .into_iter()
             .map(|key| {
                 format!(
                     "plugins.delta-updater 含未知字段 {key:?}：该配置不会生效（检查拼写，字段表见 README）"
                 )
             })
-            .collect()
+            .collect();
+
+        // 官方 windows.installMode → 本插件顶层 install_mode。
+        if let Some(windows) = self
+            .extra
+            .get("windows")
+            .and_then(serde_json::Value::as_object)
+        {
+            if windows.get("installMode").is_some() && self.install_mode.is_none() {
+                warnings.push(
+                    "plugins.delta-updater.windows.installMode 不会生效：请改用顶层 install_mode（passive / basicUi / quiet）".into(),
+                );
+            }
+        }
+
+        // 官方 dangerousInsecureTransportProtocol → 本插件 allow_insecure_transport。
+        // 只在端点确实使用明文 HTTP 时提示：HTTPS 部署不受影响，
+        // 不应因为迁移时原样保留了该字段就产生噪音。
+        let uses_http = self
+            .endpoints
+            .iter()
+            .any(|url| url.trim().to_ascii_lowercase().starts_with("http://"));
+        let insecure = self
+            .extra
+            .get("dangerousInsecureTransportProtocol")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if insecure && self.allow_insecure_transport.is_none() && uses_http {
+            warnings.push(
+                "plugins.delta-updater.dangerousInsecureTransportProtocol 不会生效：请显式设置 allow_insecure_transport: true".into(),
+            );
+        }
+
+        warnings
     }
 
     /// 转成库层配置。
@@ -142,6 +186,14 @@ impl FileConfig {
             .map(|url| expand_endpoint(&url, current_version, bundle_type, &channel))
             .collect::<Result<Vec<_>, _>>()?;
         let mut config = UpdateConfig::new(primary, self.pubkey).current_version(current_version);
+        if let Some(url) = self.signature_url.filter(|url| !url.trim().is_empty()) {
+            config = config.signature_url(expand_endpoint(
+                url.trim(),
+                current_version,
+                bundle_type,
+                &channel,
+            )?);
+        }
         if let Some(keys) = self.additional_pubkeys {
             config = config.additional_public_keys(keys);
         }
@@ -228,7 +280,7 @@ impl FileConfig {
         let proxy = self.proxy.filter(|proxy| !proxy.trim().is_empty());
         let headers = self.headers.unwrap_or_default();
         if proxy.is_some() || !headers.is_empty() {
-            let mut builder = tauri_delta_updater::client_builder();
+            let mut builder = tauri_delta_updater::default_client_builder();
             if let Some(proxy) = proxy {
                 let proxy = reqwest::Proxy::all(proxy.trim())
                     .map_err(|err| format!("plugins.delta-updater.proxy 非法: {err}"))?;

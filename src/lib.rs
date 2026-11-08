@@ -239,7 +239,7 @@ pub use core::bundle::{
     list_archive, verify_layout, BundleFile, BundleManifest, BundlePatch,
 };
 pub use core::cancel::CancelToken;
-pub use core::crypto::{client_builder, install_crypto_provider};
+pub use core::crypto::{client_builder, default_client_builder, install_crypto_provider};
 /// 在**调用方 crate** 展开为它的 `CARGO_PKG_VERSION`。
 ///
 /// 库内部的 `env!("CARGO_PKG_VERSION")` 会得到库自己的版本，不是宿主应用的版本；

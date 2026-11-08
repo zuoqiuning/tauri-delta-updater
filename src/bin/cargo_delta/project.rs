@@ -120,6 +120,11 @@ impl Project {
                     }
                 }
             }
+            if let Some(signature) = delta.get("signature_url").and_then(Value::as_str) {
+                if let Some(issue) = endpoint_issue(signature, allow_insecure) {
+                    missing.push(format!("signature_url: {issue}"));
+                }
+            }
             if let Some(bundle) = delta.get("bundle_endpoint").and_then(Value::as_str) {
                 if let Some(issue) = endpoint_issue(bundle, allow_insecure) {
                     missing.push(format!("bundle_endpoint: {issue}"));

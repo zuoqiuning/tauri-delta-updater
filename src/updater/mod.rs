@@ -15,7 +15,6 @@ use crate::core::paths::{default_work_dir, ensure_writable};
 use crate::error::{DeltaError, Result};
 use crate::session::UpdateEvent;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 mod bundle_flow;
 mod config;
@@ -214,9 +213,7 @@ impl DeltaUpdater {
             // 不设总超时——大补丁在慢网络下可能合法地下很久，
             // 读超时只在"连接挂着但数据彻底停了"时触发。
             None => {
-                let mut builder = reqwest::Client::builder()
-                    .connect_timeout(Duration::from_secs(15))
-                    .read_timeout(Duration::from_secs(60));
+                let mut builder = crate::core::crypto::default_client_builder();
                 if !config.headers.is_empty() {
                     let mut map = reqwest::header::HeaderMap::new();
                     for (name, value) in &config.headers {

@@ -388,6 +388,7 @@ mod tests {
             ],
             "pubkey": "PK",
             "work_dir": "/tmp/tdx",
+            "signature_url": "https://sig.example.com/{{channel}}/latest.json.sig",
             "wait_timeout_secs": 20,
             "confirm_timeout_secs": 120,
             "proxy": "http://127.0.0.1:7890",
@@ -413,6 +414,11 @@ mod tests {
         assert_eq!(
             config.work_dir.as_deref(),
             Some(std::path::Path::new("/tmp/tdx"))
+        );
+        assert!(
+            config.signature_url.contains("/beta/"),
+            "独立签名地址必须生效并展开占位符: {}",
+            config.signature_url
         );
         assert_eq!(config.wait_timeout_secs, 20);
         assert_eq!(config.confirm_timeout_secs, 120);
@@ -478,22 +484,49 @@ mod tests {
         assert!(err.contains("proxy"), "错误必须说明字段: {err}");
     }
 
-    /// 官方配置里的额外字段（windows/dmg 等）必须被忽略，而不是报错。
+    /// 官方配置里的额外字段（windows/dmg 等）必须被忽略而不是报错；
+    /// 语义会影响行为的字段要给出迁移提示，不能静默丢弃。
     #[test]
     fn file_config_ignores_official_extra_fields() {
         let value = serde_json::json!({
-            "endpoints": ["https://cdn.example.com/latest.json"],
+            "endpoints": ["http://cdn.example.com/latest.json"],
             "pubkey": "RWQ...",
             "windows": { "installMode": "quiet" },
             "dangerousInsecureTransportProtocol": true
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         assert!(file.bundle_endpoint.is_none());
+        let warnings = file.unknown_field_warnings();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(
-            file.unknown_field_warnings().is_empty(),
-            "官方 updater 的合法字段不得产生未知字段警告"
+            warnings.iter().any(|w| w.contains("installMode")),
+            "官方安装模式必须提示改写: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("dangerousInsecureTransportProtocol")),
+            "官方明文开关必须提示改写: {warnings:?}"
         );
         assert!(file.into_update_config("1.0.0").is_ok());
+    }
+
+    /// 已显式使用本插件字段、或部署为 HTTPS 时，官方字段不得产生噪音。
+    #[test]
+    fn official_extra_fields_stay_quiet_when_translated() {
+        let value = serde_json::json!({
+            "endpoints": ["https://cdn.example.com/latest.json"],
+            "pubkey": "RWQ...",
+            "install_mode": "quiet",
+            "windows": { "installMode": "quiet" },
+            "dangerousInsecureTransportProtocol": true
+        });
+        let file: FileConfig = serde_json::from_value(value).unwrap();
+        assert!(
+            file.unknown_field_warnings().is_empty(),
+            "{:?}",
+            file.unknown_field_warnings()
+        );
     }
 
     /// 拼写错误的字段必须被报告：静默忽略会让"配了却没有整包回退"无从排查。
@@ -520,6 +553,7 @@ mod tests {
             trust_policy: None,
             channel: None,
             bundle_endpoint: None,
+            signature_url: None,
             bundle_type: None,
             install_id: None,
             work_dir: None,

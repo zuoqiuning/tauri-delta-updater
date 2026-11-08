@@ -199,6 +199,13 @@ export interface Diagnosis {
 }
 /** 判断 `invoke` 抛出的值是否是插件错误 DTO。 */
 export declare function isUpdaterError(value: unknown): value is ErrorDto;
+/**
+ * 替换/修复脚本是否已经启动，调用方**必须让当前进程退出**。
+ *
+ * 与 Rust 的 `UpdateResult::requires_exit()` 一致：`updated` 与
+ * `repair_required` 为 `true`；`prepare` 返回的 `ready` 为 `false`。
+ */
+export declare function requiresExit(result: UpdateResult): boolean;
 /** 只检查是否有新版本，不下载任何内容。 */
 export declare function check(): Promise<CheckOutcome>;
 /** 下载 → 合并 → 启动替换，插件会在产物就绪后退出进程。 */

@@ -247,6 +247,7 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 ///       "trust_policy": "any",
 ///       "channel": "stable",
 ///       "bundle_endpoint": "https://cdn.example.com/latest.bundle.json",
+///       "signature_url": "https://cdn.example.com/latest.json.sig",
 ///       "work_dir": "/custom/writable/dir",
 ///       "wait_timeout_secs": 60,
 ///       "confirm_timeout_secs": 60,

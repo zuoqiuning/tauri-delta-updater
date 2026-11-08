@@ -59,3 +59,19 @@ pub fn client_builder() -> reqwest::ClientBuilder {
     install_crypto_provider();
     reqwest::Client::builder()
 }
+
+/// 内置默认客户端的连接超时（与 [`crate::DeltaUpdater`] 完全一致）。
+const DEFAULT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// 内置默认客户端的读空闲超时：只在“连接还在、数据彻底停了”时触发。
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 与 [`crate::DeltaUpdater`] 内置客户端一致的构建器。
+///
+/// 需要代理、定制 UA 或默认请求头时用它代替 [`client_builder`]：
+/// 自动带上连接 15 秒 / 读空闲 60 秒的超时，避免弱网或黑洞端点把更新
+/// 无限挂起。设置总超时会限制大补丁的下载时长，请只在确有需要时覆盖。
+pub fn default_client_builder() -> reqwest::ClientBuilder {
+    client_builder()
+        .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
+        .read_timeout(DEFAULT_READ_TIMEOUT)
+}

@@ -176,6 +176,16 @@ export function isUpdaterError(value: unknown): value is ErrorDto {
   );
 }
 
+/**
+ * 替换/修复脚本是否已经启动，调用方**必须让当前进程退出**。
+ *
+ * 与 Rust 的 `UpdateResult::requires_exit()` 一致：`updated` 与
+ * `repair_required` 为 `true`；`prepare` 返回的 `ready` 为 `false`。
+ */
+export function requiresExit(result: UpdateResult): boolean {
+  return result.kind === 'updated' || result.kind === 'repair_required';
+}
+
 /** 构造事件通道；命令始终要求 `onEvent` 参数，即使调用方不关心进度。 */
 function channel(onEvent?: (event: UpdateEvent) => void): Channel<UpdateEvent> {
   const events = new Channel<UpdateEvent>();
