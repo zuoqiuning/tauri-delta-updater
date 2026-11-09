@@ -257,13 +257,31 @@ fn sign_file_with_keys(
     Ok(blocks.join("\n"))
 }
 
-/// 生成签名的更新清单、补丁与发布报告。
+/// 发布阶段共享的、已规范化并校验过的上下文。
+struct ReleaseContext {
+    output_dir: PathBuf,
+    patch_dir: PathBuf,
+    new_version: String,
+    min_version: Option<String>,
+    notes_i18n: HashMap<String, String>,
+    channel: String,
+    manifest_file: String,
+    bundle_file: String,
+    signing_keys: Vec<minisign::SecretKey>,
+    installer: PathBuf,
+    installer_name: String,
+    platform_key: String,
+    target_os: String,
+    target_arch: String,
+    new_hash: String,
+    installer_size: u64,
+}
+
+/// 阶段一：校验参数、规范化版本/通道、加载密钥并计算哈希。
 ///
-/// 会对每个基线真实应用一遍补丁并校验产物哈希：坏补丁在发布端失败，
-/// 而不是在用户侧表现为"更新 → 回滚"循环。
-pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, String> {
-    println!("[INFO] 开始生成更新清单...");
-    validate(&options)?;
+/// 所有会失败的环境/参数问题都应在这里返回，后面的阶段只做生成与写盘。
+async fn prepare_context(options: &ReleaseOptions) -> Result<ReleaseContext, String> {
+    validate(options)?;
 
     // 输出目录与补丁目录：
     // - 清单/签名/公钥始终写 --output-dir（默认当前目录）；
@@ -290,6 +308,16 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
         }
         None => None,
     };
+    if let Some(min_os) = &options.min_os {
+        if min_os
+            .split('.')
+            .any(|part| !part.starts_with(|c: char| c.is_ascii_digit()))
+        {
+            return Err(format!(
+                "--min-os 必须是点分数字版本（如 10.0.19045 / 13.0 / 5.15）: {min_os}"
+            ));
+        }
+    }
 
     let mut notes_i18n = HashMap::new();
     for entry in &options.notes_i18n {
@@ -347,7 +375,10 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
         }
     }
 
-    let installer = options.installer.as_deref().unwrap_or(&options.app_binary);
+    let installer = options
+        .installer
+        .clone()
+        .unwrap_or_else(|| options.app_binary.clone());
     if options.installer.is_none() {
         println!(
             "[WARN] 未提供 --installer：全量下载地址将指向主程序而不是安装包；\
@@ -382,7 +413,13 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
     let target_os = platform_key
         .split_once('-')
         .map(|(os, _)| os)
-        .ok_or_else(|| format!("平台标识 {platform_key:?} 不是 os-arch 形式"))?;
+        .ok_or_else(|| format!("平台标识 {platform_key:?} 不是 os-arch 形式"))?
+        .to_string();
+    let target_arch = platform_key
+        .split_once('-')
+        .map(|(_, arch)| arch)
+        .unwrap_or("unknown")
+        .to_string();
 
     if let Some(inferred) = infer_platform(&installer_name) {
         if inferred != platform_key {
@@ -397,7 +434,7 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
     // 安装包与主程序必须分开：补丁基底是安装后的主程序，全量地址指向安装包。
     // 两者内容相同几乎一定是用错了参数；静默生成会让客户端拿到错误基底。
     if options.installer.is_some() {
-        let installer_hash = calculate_hash(installer)
+        let installer_hash = calculate_hash(&installer)
             .await
             .map_err(|e| format!("计算安装包哈希失败: {e}"))?;
         if installer_hash == new_hash {
@@ -408,7 +445,35 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
             );
         }
     }
+    let installer_size = std::fs::metadata(&installer).map(|m| m.len()).unwrap_or(0);
 
+    Ok(ReleaseContext {
+        output_dir,
+        patch_dir,
+        new_version: new_version.to_string(),
+        min_version,
+        notes_i18n,
+        channel,
+        manifest_file,
+        bundle_file,
+        signing_keys,
+        installer,
+        installer_name,
+        platform_key,
+        target_os,
+        target_arch,
+        new_hash,
+        installer_size,
+    })
+}
+
+/// 阶段二：从旧清单（可选）构造本次清单的骨架。
+///
+/// 只填版本/说明/平台条目；补丁与签名在后续阶段合并。
+fn prepare_manifest(
+    options: &ReleaseOptions,
+    ctx: &ReleaseContext,
+) -> Result<UpdateManifest, String> {
     let mut manifest = match &options.existing {
         Some(path) if path.exists() => {
             let content =
@@ -416,7 +481,7 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
             serde_json::from_str(&content).map_err(|e| format!("解析旧清单失败: {e}"))?
         }
         _ => UpdateManifest {
-            version: new_version.to_string(),
+            version: ctx.new_version.clone(),
             notes: String::new(),
             pub_date: chrono::Utc::now().to_rfc3339(),
             min_version: None,
@@ -428,30 +493,20 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
     };
 
     // 最低版本按本次发布显式设置；省略即清除上一轮的门槛。
-    manifest.min_version = min_version;
+    manifest.min_version = ctx.min_version.clone();
 
     // 平台条目始终指向本次发布的新安装包（其它平台条目保留）。
     // 安装包体积写进清单（受清单签名保护），客户端据此计算补丁的真实收益比。
-    let installer_size = std::fs::metadata(installer).map(|m| m.len()).unwrap_or(0);
-    if let Some(min_os) = &options.min_os {
-        if min_os
-            .split('.')
-            .any(|part| !part.starts_with(|c: char| c.is_ascii_digit()))
-        {
-            return Err(format!(
-                "--min-os 必须是点分数字版本（如 10.0.19045 / 13.0 / 5.15）: {min_os}"
-            ));
-        }
-    }
     manifest.platforms.insert(
-        platform_key.clone(),
+        ctx.platform_key.clone(),
         PlatformInfo {
             signature: String::new(),
             url: format!(
-                "{}/{installer_name}",
-                options.base_url.trim_end_matches('/')
+                "{}/{}",
+                options.base_url.trim_end_matches('/'),
+                ctx.installer_name
             ),
-            size: (installer_size > 0).then_some(installer_size),
+            size: (ctx.installer_size > 0).then_some(ctx.installer_size),
             min_os: options.min_os.clone(),
             // 100 即全量：不写字段，让旧客户端与旧清单保持字节级兼容。
             rollout: (options.rollout < 100).then_some(Rollout {
@@ -459,22 +514,32 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
             }),
         },
     );
+    Ok(manifest)
+}
 
-    // 生成补丁：只处理与本次发布同平台的旧**主程序**
-    let target_arch = platform_key
-        .split_once('-')
-        .map(|(_, a)| a)
-        .unwrap_or("unknown");
-    let (platform_patches, mut skipped) = generate_single_patches(&PatchContext {
+/// 生成签名的更新清单、补丁与发布报告。
+///
+/// 会对每个基线真实应用一遍补丁并校验产物哈希：坏补丁在发布端失败，
+/// 而不是在用户侧表现为"更新 → 回滚"循环。
+pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, String> {
+    println!("[INFO] 开始生成更新清单...");
+
+    // 阶段一：校验参数 + 规范化 + 加载密钥 + 哈希。
+    let ctx = prepare_context(&options).await?;
+    // 阶段二：旧清单骨架。
+    let mut manifest = prepare_manifest(&options, &ctx)?;
+
+    // 阶段三：单文件补丁（已包含逐补丁真实应用验证）。
+    let (platform_patches, skipped) = generate_single_patches(&PatchContext {
         app_binary: &options.app_binary,
         old_dirs: &options.old_dirs,
         old_binaries: &options.old_binaries,
-        new_version,
-        target_os,
-        target_arch,
-        new_hash: &new_hash,
-        installer_size,
-        patch_dir: &patch_dir,
+        new_version: &ctx.new_version,
+        target_os: &ctx.target_os,
+        target_arch: &ctx.target_arch,
+        new_hash: &ctx.new_hash,
+        installer_size: ctx.installer_size,
+        patch_dir: &ctx.patch_dir,
         base_url: &options.base_url,
         zstd_level: options.zstd_level,
         legacy_patch: options.legacy_patch,
@@ -483,31 +548,80 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
     })
     .await?;
 
+    if let Some(outputs) = preflight_patches(&options, &ctx, &platform_patches, &skipped)? {
+        return Ok(outputs);
+    }
+
+    // 阶段四：整包补丁（多文件）。与单文件补丁独立，失败不影响已生成的清单内容。
+    let bundle_patch_paths = generate_bundles(
+        &options,
+        &ctx.new_version,
+        &ctx.platform_key,
+        &ctx.output_dir,
+        &ctx.patch_dir,
+        &ctx.bundle_file,
+        &ctx.signing_keys,
+    )
+    .await?;
+
+    // 阶段五：合并补丁链、签名并写盘。
+    let finalized = finalize_manifest(&options, &ctx, &mut manifest, platform_patches)?;
+    write_outputs(&options, &ctx, finalized, bundle_patch_paths, skipped).await
+}
+
+/// dry-run 短路与“零补丁”CI 闸门。
+///
+/// 返回 `Some` 表示无需继续写盘（dry-run）；`Err` 表示发布应中止。
+fn preflight_patches(
+    options: &ReleaseOptions,
+    ctx: &ReleaseContext,
+    patches: &[PatchInfo],
+    skipped: &[SkipRecord],
+) -> Result<Option<ReleaseOutputs>, String> {
     if options.dry_run {
         println!(
-            "[DRY] 平台 {platform_key}：可用补丁 {} 个，未写任何文件",
-            platform_patches.len()
+            "[DRY] 平台 {}：可用补丁 {} 个，未写任何文件",
+            ctx.platform_key,
+            patches.len()
         );
-        return Ok(ReleaseOutputs {
-            version: new_version.to_string(),
-            platform: platform_key,
-            manifest_file,
-            patch_count: platform_patches.len(),
+        return Ok(Some(ReleaseOutputs {
+            version: ctx.new_version.clone(),
+            platform: ctx.platform_key.clone(),
+            manifest_file: ctx.manifest_file.clone(),
+            patch_count: patches.len(),
             skipped_count: skipped.len(),
             bundle_count: 0,
-        });
+        }));
     }
 
     // CI 闸门：没有补丁通常是基线没准备好或平台键写错了，
     // 静默发布一份"只能全量下载"的清单会让问题拖到用户侧才暴露。
     // 整包模式下单个补丁为空是正常的，闸门由 generate_bundles 负责。
-    if options.fail_on_empty && options.new_app_dir.is_none() && platform_patches.is_empty() {
+    if options.fail_on_empty && options.new_app_dir.is_none() && patches.is_empty() {
         return Err(format!(
-            "平台 {platform_key} 未生成任何补丁：检查基线目录与文件是否包含与目标平台一致的旧主程序"
+            "平台 {} 未生成任何补丁：检查基线目录与文件是否包含与目标平台一致的旧主程序",
+            ctx.platform_key
         ));
     }
+    Ok(None)
+}
 
-    // 报告以最终清单中的补丁为准（去重后的结果），避免报告与实际发布不一致。
+/// 已签名的清单与报告数据（写入阶段只读）。
+struct FinalizedRelease {
+    patch_records: Vec<PatchRecord>,
+    json_bytes: Vec<u8>,
+    signature_text: String,
+    patch_count: usize,
+}
+
+/// 阶段四：合并补丁链、写入安装包签名并签清单。
+fn finalize_manifest(
+    options: &ReleaseOptions,
+    ctx: &ReleaseContext,
+    manifest: &mut UpdateManifest,
+    platform_patches: Vec<PatchInfo>,
+) -> Result<FinalizedRelease, String> {
+    // 报告以本次实际生成的补丁为准；随后才合并历史链。
     let patch_records: Vec<PatchRecord> = platform_patches
         .iter()
         .map(|p| PatchRecord {
@@ -517,45 +631,31 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
             patch_size: p.patch_size,
             ratio: p
                 .patch_size
-                .filter(|_| installer_size > 0)
-                .map(|size| size as f64 / installer_size as f64),
+                .filter(|_| ctx.installer_size > 0)
+                .map(|size| size as f64 / ctx.installer_size as f64),
         })
         .collect();
-
-    // 整包补丁（多文件）：与单文件补丁独立，失败不影响已生成的清单内容。
-    let bundle_patch_paths = generate_bundles(
-        &options,
-        new_version,
-        &platform_key,
-        &output_dir,
-        &patch_dir,
-        &bundle_file,
-        &signing_keys,
-    )
-    .await?;
-    let bundle_count = bundle_patch_paths.len();
 
     // 保留仍能链到新版本的旧补丁：跨多个版本的客户端可以逐跳升级，
     // 而不必下载全量。超出跳数上限或与目标无关的补丁会被裁掉，
     // 清单不会随发布次数无限膨胀。
     let mut all_patches: HashMap<String, Vec<PatchInfo>> = manifest.patches.clone();
     all_patches
-        .entry(platform_key.clone())
+        .entry(ctx.platform_key.clone())
         .or_default()
         .extend(platform_patches);
-    manifest.patches = retain_chain_patches(all_patches, new_version);
+    manifest.patches = retain_chain_patches(all_patches, &ctx.new_version);
 
-    manifest.version = new_version.to_string();
+    manifest.version = ctx.new_version.clone();
     manifest.pub_date = chrono::Utc::now().to_rfc3339();
     manifest.notes = options.notes.clone();
-    manifest.notes_i18n = notes_i18n;
+    manifest.notes_i18n = ctx.notes_i18n.clone();
 
     // 安装包本身的签名，供 Tauri 官方 updater 校验全量下载。
     // 双签时把多个 minisign 块拼接：客户端支持多块验签。
     // 流式读取：几百 MB 的安装包不能整个读进发布进程内存。
-    let installer_signature = sign_file_with_keys(&signing_keys, installer, None)?;
-
-    if let Some(entry) = manifest.platforms.get_mut(&platform_key) {
+    let installer_signature = sign_file_with_keys(&ctx.signing_keys, &ctx.installer, None)?;
+    if let Some(entry) = manifest.platforms.get_mut(&ctx.platform_key) {
         entry.signature = STANDARD.encode(installer_signature.as_bytes());
     }
 
@@ -566,24 +666,54 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
     let json_bytes =
         serde_json::to_vec_pretty(&manifest).map_err(|e| format!("序列化清单失败: {e}"))?;
     let signature_text = sign_with_keys(
-        &signing_keys,
+        &ctx.signing_keys,
         &json_bytes,
-        Some(&format!("tdu:v={new_version}")),
+        Some(&format!("tdu:v={}", ctx.new_version)),
     )?;
 
-    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
-    std::fs::write(output_dir.join(&manifest_file), &json_bytes)
+    let patch_count = manifest
+        .patches
+        .get(&ctx.platform_key)
+        .map(|patches| patches.len())
+        .unwrap_or(0);
+    Ok(FinalizedRelease {
+        patch_records,
+        json_bytes,
+        signature_text,
+        patch_count,
+    })
+}
+
+/// 阶段五：写清单/签名/公钥/SHA256SUMS/报告/归档。
+async fn write_outputs(
+    options: &ReleaseOptions,
+    ctx: &ReleaseContext,
+    finalized: FinalizedRelease,
+    bundle_patch_paths: Vec<PathBuf>,
+    mut skipped: Vec<SkipRecord>,
+) -> Result<ReleaseOutputs, String> {
+    let FinalizedRelease {
+        patch_records,
+        json_bytes,
+        signature_text,
+        patch_count,
+    } = finalized;
+    let bundle_count = bundle_patch_paths.len();
+    let manifest_file = &ctx.manifest_file;
+
+    std::fs::create_dir_all(&ctx.output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
+    std::fs::write(ctx.output_dir.join(manifest_file), &json_bytes)
         .map_err(|e| format!("写入 {manifest_file} 失败: {e}"))?;
     std::fs::write(
-        output_dir.join(format!("{manifest_file}.sig")),
+        ctx.output_dir.join(format!("{manifest_file}.sig")),
         &signature_text,
     )
     .map_err(|e| format!("写入 {manifest_file}.sig 失败: {e}"))?;
 
     // 公钥文件只供运维查看；客户端绝不能从服务器读取公钥，
     // 否则攻击者可同时替换清单与公钥。保持 untrusted comment 前缀以兼容解析。
-    let mut public_key_texts = Vec::with_capacity(signing_keys.len());
-    for key in &signing_keys {
+    let mut public_key_texts = Vec::with_capacity(ctx.signing_keys.len());
+    for key in &ctx.signing_keys {
         let text = derive_public_key(key)
             .map_err(|e| format!("导出公钥失败: {e}"))?
             .to_box()
@@ -596,7 +726,7 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
         ));
     }
     std::fs::write(
-        output_dir.join(format!("{manifest_file}.pub")),
+        ctx.output_dir.join(format!("{manifest_file}.pub")),
         public_key_texts.join("\n"),
     )
     .map_err(|e| format!("写入 {manifest_file}.pub 失败: {e}"))?;
@@ -604,15 +734,15 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
     // 运维核对 CDN 是否齐全：一条命令产出清单、签名、公钥、安装包与补丁的校验和。
     if let Some(path) = &options.sha256sums {
         let mut files = vec![
-            output_dir.join(&manifest_file),
-            output_dir.join(format!("{manifest_file}.sig")),
-            output_dir.join(format!("{manifest_file}.pub")),
-            installer.to_path_buf(),
+            ctx.output_dir.join(manifest_file),
+            ctx.output_dir.join(format!("{manifest_file}.sig")),
+            ctx.output_dir.join(format!("{manifest_file}.pub")),
+            ctx.installer.clone(),
         ];
         files.extend(
             patch_records
                 .iter()
-                .map(|record| patch_dir.join(&record.patch_file)),
+                .map(|record| ctx.patch_dir.join(&record.patch_file)),
         );
         // 整包补丁也是 CDN 上的独立制品；漏传同样只会在客户端失败。
         files.extend(bundle_patch_paths.iter().cloned());
@@ -620,19 +750,14 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
         println!("[OK] SHA256SUMS: {}", path.display());
     }
 
-    let patch_count = manifest
-        .patches
-        .get(&platform_key)
-        .map(|p| p.len())
-        .unwrap_or(0);
     let skipped_count = skipped.len();
 
     if let Some(path) = &options.report {
         let report = ReleaseReport {
-            version: new_version.to_string(),
-            platform: platform_key.clone(),
-            installer: installer_name.clone(),
-            installer_size,
+            version: ctx.new_version.clone(),
+            platform: ctx.platform_key.clone(),
+            installer: ctx.installer_name.clone(),
+            installer_size: ctx.installer_size,
             patches: patch_records,
             bundle_patches: bundle_count,
             bundle_patch_files: bundle_patch_paths
@@ -655,22 +780,27 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
     }
 
     if let Some(dir) = &options.archive_dir {
-        archive_baseline(dir, &options.app_binary, new_version, &platform_key)?;
+        archive_baseline(
+            dir,
+            &options.app_binary,
+            &ctx.new_version,
+            &ctx.platform_key,
+        )?;
     }
 
     println!(
-        "[OK] {manifest_file} + {manifest_file}.sig 生成成功。通道: {channel}，平台: {platform_key}，补丁 {patch_count} 个，跳过 {skipped_count} 个"
+        "[OK] {manifest_file} + {manifest_file}.sig 生成成功。通道: {}，平台: {}，补丁 {patch_count} 个，跳过 {skipped_count} 个",
+        ctx.channel, ctx.platform_key
     );
     Ok(ReleaseOutputs {
-        version: new_version.to_string(),
-        platform: platform_key,
-        manifest_file,
+        version: ctx.new_version.clone(),
+        platform: ctx.platform_key.clone(),
+        manifest_file: ctx.manifest_file.clone(),
         patch_count,
         skipped_count,
         bundle_count,
     })
 }
-
 /// 参数范围与输入存在性的统一校验：两个 CLI 共用，避免薄入口各写一遍。
 fn validate(options: &ReleaseOptions) -> Result<(), String> {
     // 发布源是客户端的信任入口：明文 HTTP 默认会被客户端拒绝，

@@ -130,6 +130,7 @@ impl Project {
         }
 
         let (_, capability) = read_json_or(&self.capability_path, json!({}))?;
+        let engine_installer = self.uses_engine_installer()?;
         // Tauri 2 的 capability 必须有非空 identifier；缺它时 `tauri build`
         // 会在反序列化阶段失败，而不是权限不生效。
         let capability_ok = capability
@@ -140,9 +141,8 @@ impl Project {
                 .get("permissions")
                 .and_then(Value::as_array)
                 .is_some_and(|permissions| {
-                    permissions
-                        .iter()
-                        .any(|v| v.as_str() == Some("delta-updater:default"))
+                    let has = |name: &str| permissions.iter().any(|v| v.as_str() == Some(name));
+                    has("delta-updater:default") && (!engine_installer || has("delta-updater:full"))
                 });
         if !capability_ok {
             // 报错必须点名实际使用的文件：多 capability 项目里写死
@@ -154,7 +154,12 @@ impl Project {
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| self.capability_path.display().to_string())
                 .replace('\\', "/");
-            missing.push(format!("{label}（identifier + delta-updater:default）"));
+            let required = if engine_installer {
+                "identifier + delta-updater:default + delta-updater:full"
+            } else {
+                "identifier + delta-updater:default"
+            };
+            missing.push(format!("{label}（{required}）"));
         }
 
         let cargo = fs::read_to_string(&self.cargo_toml)
@@ -229,6 +234,31 @@ impl Project {
             .or_else(|| root.pointer("/plugins/updater"))
             .and_then(|config| config.get("installer_kind"))
             .is_some())
+    }
+
+    /// 是否配置了本引擎的全量安装器（而不是把全量路径交给官方 updater）。
+    ///
+    /// `install_mode` / `installer_kind` / `installer_args`（含官方
+    /// `windows.installMode` / `windows.installerArgs`）只被本引擎的
+    /// `install_full` 消费：出现任一字段说明前端需要 `delta-updater:full`。
+    pub(crate) fn uses_engine_installer(&self) -> Result<bool, String> {
+        let (_, root) = read_json_or(&self.config_path, json!({}))?;
+        let Some(config) = root
+            .pointer("/plugins/delta-updater")
+            .or_else(|| root.pointer("/plugins/updater"))
+            .and_then(Value::as_object)
+        else {
+            return Ok(false);
+        };
+        Ok(["install_mode", "installer_kind", "installer_args"]
+            .iter()
+            .any(|key| config.contains_key(*key))
+            || config
+                .get("windows")
+                .and_then(Value::as_object)
+                .is_some_and(|windows| {
+                    windows.contains_key("installMode") || windows.contains_key("installerArgs")
+                }))
     }
 
     /// 依赖是否仍是 git 形式；插件发布后应改为版本依赖。
@@ -352,6 +382,16 @@ impl Project {
                 .any(|v| v.as_str() == Some("delta-updater:default"))
         {
             permissions.push(json!("delta-updater:default"));
+        }
+        // 全量安装器只被本引擎消费：配置了相关字段时一并授予 `full` 集，
+        // 否则前端调用 install_full / download_full 会被 capability 拦住。
+        if add_delta
+            && self.uses_engine_installer()?
+            && !permissions
+                .iter()
+                .any(|v| v.as_str() == Some("delta-updater:full"))
+        {
+            permissions.push(json!("delta-updater:full"));
         }
         if remove_official {
             permissions.retain(|v| v.as_str() != Some("updater:default"));
@@ -603,6 +643,18 @@ fn config_value_issues(delta: &Map<String, Value>, allow_insecure: bool) -> Vec<
         delta,
         "installer_kind",
         &["inno", "nsis", "msi"],
+        &mut issues,
+    );
+    check_enum(
+        delta,
+        "authenticode_policy",
+        &["strict", "permissive", "off", "none"],
+        &mut issues,
+    );
+    check_enum(
+        delta,
+        "lock_scope",
+        &["work_dir", "workdir", "install_dir", "installdir"],
         &mut issues,
     );
 
@@ -975,6 +1027,8 @@ mod tests {
             "fallback_policy": "sometimes",
             "install_mode": "silentish",
             "installer_kind": "innosetup",
+            "authenticode_policy": "relaxed",
+            "lock_scope": "machine",
             "channel": "be ta",
             "proxy": "http://[",
             "headers": { "X-Auth": 1, "Bad Header": "x" },
@@ -993,6 +1047,8 @@ mod tests {
             "fallback_policy",
             "install_mode",
             "installer_kind",
+            "authenticode_policy",
+            "lock_scope",
             "channel",
             "proxy",
             "headers.X-Auth",
@@ -1036,6 +1092,8 @@ mod tests {
             "headers",
             "install_mode",
             "installer_kind",
+            "authenticode_policy",
+            "lock_scope",
             "installer_args",
             "allow_insecure_transport",
             "install_on_next_launch",

@@ -3,7 +3,6 @@
 use crate::core::artifacts;
 use crate::core::bundle::BundleFile;
 use crate::core::hasher::calculate_hash;
-use crate::core::lock::UpdateLock;
 use crate::error::{DeltaError, Result};
 use crate::platform::target::normalize_version;
 use crate::platform::PlatformUpdater;
@@ -152,7 +151,7 @@ impl DeltaUpdater {
         if PlatformUpdater::bundle_repair_needed(&self.executable_path, self.work_dir()) {
             return Ok(false);
         }
-        let _lock = UpdateLock::acquire_in(self.work_dir())?;
+        let _lock = self.acquire_lock()?;
         let Some(record) = self.pending_update().await? else {
             return Ok(false);
         };
@@ -169,7 +168,7 @@ impl DeltaUpdater {
     /// 再执行新的更新，避免先执行一个基于旧清单的暂存脚本。
     /// 暂存产物本身会在下一次更新开始时统一清理。
     pub async fn discard_pending(&self) -> Result<bool> {
-        let _lock = UpdateLock::acquire_in(self.work_dir())?;
+        let _lock = self.acquire_lock()?;
         match tokio::fs::remove_file(self.work_dir().join(artifacts::PENDING_FILE)).await {
             Ok(()) => Ok(true),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),

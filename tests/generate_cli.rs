@@ -1471,6 +1471,76 @@ fn test_generate_cli_writes_min_os() {
     assert!(stderr.contains("--min-os"), "错误必须说明字段: {stderr}");
 }
 
+/// 输出目录其实是文件时必须立即失败，而不是把清单写丢。
+#[test]
+fn test_generate_cli_fails_when_output_dir_unwritable() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    // 用一个普通文件冒充目录
+    let output_dir = dir.join("not-a-dir");
+    std::fs::write(&output_dir, b"file").unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--output-dir".into(),
+        s(&output_dir),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "输出目录不可写时必须失败");
+    assert!(!stderr.is_empty(), "必须给出可读的错误信息");
+}
+
+/// `--sha256sums` 指向目录时必须失败，不能静默跳过校验文件。
+#[test]
+fn test_generate_cli_fails_when_sha256sums_path_unwritable() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let sums_dir = dir.join("sums-is-a-dir");
+    std::fs::create_dir_all(&sums_dir).unwrap();
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_versions),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--sha256sums".into(),
+        s(&sums_dir),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "SHA256SUMS 路径不可写时必须失败");
+    assert!(!stderr.is_empty(), "必须给出可读的错误信息");
+}
+
 /// 计算字节的 SHA-256（小写十六进制）。
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

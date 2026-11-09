@@ -1,11 +1,12 @@
 //! 环境诊断：只读快照，不发起网络请求。
 
 use crate::platform::full_install::InstallerKind;
+use crate::platform::target::EnvironmentReason;
 use crate::platform::PlatformUpdater;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::DeltaUpdater;
+use super::{DeltaUpdater, SafeModeReason};
 
 /// 替换脚本写入的结构化事件（`tdx_events.jsonl` 的一行）。
 ///
@@ -75,15 +76,20 @@ pub struct Diagnosis {
     pub work_dir_writable: bool,
     /// 安装目录是否可写（为 false 时替换需要提权）。
     pub install_dir_writable: bool,
-    /// 当前环境不适合**单文件**增量的原因（只读 AppImage 目录、macOS bundle 等）。
+    /// 当前环境不适合**单文件**增量的结构化原因（只读 AppImage 目录、macOS bundle 等）。
     ///
     /// AppImage 本身是支持的：替换目标是 `$APPIMAGE` 指向的 `.AppImage` 本体；
     /// 只有定位不到本体或所在目录不可写时才填这里。
-    pub fallback_reason: Option<&'static str>,
+    pub fallback_reason: Option<EnvironmentReason>,
     /// 配置了整包清单且当前环境支持整包替换（macOS `.app` / Windows）。
     pub bundle_capable: bool,
     /// 是否处于安全模式。
     pub safe_mode: bool,
+    /// 安全模式的触发原因；未处于安全模式时为 `None`。
+    ///
+    /// UI 可据此区分“可能被攻击（`security_block`）”与“磁盘/权限问题
+    /// （`environment_failure`）”，给出不同的操作建议。
+    pub safe_mode_reason: Option<SafeModeReason>,
     /// 是否需要先修复上次中断的整包替换（备份仍在）。
     pub needs_repair: bool,
     /// 上次替换的启动状态指针（`staged` / `booting` / `committed` / `failed` / `rolled_back`）。
@@ -119,6 +125,8 @@ pub struct Diagnosis {
     /// [`Self::authenticode`] 为 `Some(false)` 时，可能是"确实未签名"，
     /// 也可能是"无法判定后按不可信处理"；本字段负责区分。
     pub authenticode_check_skipped: Option<bool>,
+    /// 当前配置的 Authenticode 策略（审计用）。
+    pub authenticode_policy: crate::platform::AuthenticodePolicy,
     /// 替换脚本日志路径。
     pub log_path: PathBuf,
     /// 结构化事件流路径（JSON Lines）：脚本在回滚等关键阶段追加一行，
@@ -331,6 +339,12 @@ impl DeltaUpdater {
             .filter(|event| event.event == crate::core::artifacts::EVENT_ROLLBACK)
             .cloned()
             .collect();
+        let safe_mode = crate::core::safety::is_safe_mode_active(&self.work_dir).await;
+        let safe_mode_reason = if safe_mode {
+            crate::core::safety::last_failure_reason(&self.work_dir).await
+        } else {
+            None
+        };
         Diagnosis {
             executable: self.executable_path.clone(),
             work_dir: self.work_dir.clone(),
@@ -344,13 +358,15 @@ impl DeltaUpdater {
             ),
             bundle_capable: self.config.bundle_manifest_url.is_some()
                 && PlatformUpdater::bundle_supported_for(&self.executable_path),
-            safe_mode: crate::core::safety::is_safe_mode_active(&self.work_dir).await,
+            safe_mode,
+            safe_mode_reason,
             needs_repair: self.needs_bundle_repair(),
             startup_state: crate::core::startup::read(&self.work_dir),
             last_rollback: read_rollback_reason(&self.work_dir),
             rollback_history,
             authenticode,
             authenticode_check_skipped,
+            authenticode_policy: self.config.authenticode_policy,
             log_path: self.work_dir.join(crate::core::artifacts::LOG_FILE),
             events_path: self.work_dir.join(crate::core::artifacts::EVENTS_FILE),
             script_events,

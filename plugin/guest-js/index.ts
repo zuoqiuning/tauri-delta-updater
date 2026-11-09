@@ -6,10 +6,41 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 
+/** 当前环境不适合原地增量的结构化原因（与 `EnvironmentReason` 一致）。 */
+export type EnvironmentReason =
+  | 'app_image_not_writable'
+  | 'app_image_unresolved'
+  | 'macos_bundle'
+  | { unsupported_os: { required: string; current: string } }
+  | { other: string };
+
 /** 增量不可用的原因（与 `FallbackReason` 一致）。 */
 export type FallbackReason =
   | { no_matching_patch: { from: string; to: string } }
-  | { environment_unsupported: string };
+  | { environment_unsupported: EnvironmentReason }
+  | {
+      chain_over_budget: {
+        hops: number;
+        total_size: number;
+        installer_size: number;
+      };
+    };
+
+/** 安全模式的触发原因（与 `SafeModeReason` 一致）。 */
+export type SafeModeReason =
+  | 'security_block'
+  | 'environment_failure'
+  | 'transient_retries_exhausted';
+
+/** 全量安装失败的结构化类型（与 `InstallFailureKind` 一致）。 */
+export type InstallFailureKind =
+  | 'user_cancelled_elevation'
+  | 'installer_not_found'
+  | 'installer_returned_non_zero'
+  | 'platform_mismatch'
+  | 'unsupported_kind'
+  | 'launch_failed'
+  | 'other';
 
 /** 全量安装器类型（与 `InstallerKind` 一致）。 */
 export type InstallerKind =
@@ -45,7 +76,7 @@ export type UpdateResult =
   | { kind: 'requires_full_download'; url: string | null; reason: FallbackReason }
   /** The running OS is below `platforms[].min_os`; nothing was downloaded. */
   | { kind: 'unsupported_os'; required: string; current: string }
-  | { kind: 'safe_mode' };
+  | { kind: 'safe_mode'; reason: SafeModeReason };
 
 /** 命令失败时插件返回的结构（`code` 是稳定契约，`message` 仅用于展示）。 */
 export interface ErrorDto {
@@ -53,6 +84,8 @@ export interface ErrorDto {
   message: string;
   retryable: boolean;
   security: boolean;
+  /** 全量安装失败的结构化类型；其它错误没有该字段。 */
+  install_failure?: InstallFailureKind;
 }
 
 /** 全量下载结果（`downloadFull` 返回值）。 */
@@ -138,6 +171,8 @@ export interface CheckOutcome {
   is_delta: boolean;
   rollout_percentage: number | null;
   deferred_by_rollout: boolean;
+  /** A patch chain exists but its total size exceeded the full-installer budget. */
+  chain_rejected_by_budget: boolean;
   download_size: number | null;
   patch_size: number | null;
   needs_repair: boolean;
@@ -170,9 +205,11 @@ export interface Diagnosis {
   platform: string;
   work_dir_writable: boolean;
   install_dir_writable: boolean;
-  fallback_reason: string | null;
+  fallback_reason: EnvironmentReason | null;
   bundle_capable: boolean;
   safe_mode: boolean;
+  /** Why safe mode was entered; `null` when not in safe mode. */
+  safe_mode_reason: SafeModeReason | null;
   needs_repair: boolean;
   startup_state: StartupState | null;
   last_rollback: string | null;
@@ -180,6 +217,8 @@ export interface Diagnosis {
   rollback_history: ScriptEvent[];
   authenticode: boolean | null;
   authenticode_check_skipped: boolean | null;
+  /** Configured Authenticode policy (`strict` / `permissive` / `off`). */
+  authenticode_policy: 'strict' | 'permissive' | 'off';
   log_path: string;
   events_path: string;
   script_events: ScriptEvent[];

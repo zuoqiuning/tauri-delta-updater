@@ -749,6 +749,99 @@ fn doctor_reads_project_config() {
     );
 }
 
+/// 默认权限只覆盖增量路径；配置了本引擎的全量安装器时才额外授予 `full`。
+///
+/// `default` 不再包含 `download_full` / `install_full`：前端 XSS 不应
+/// 直接拥有启动平台安装器的能力。init 根据配置自动补齐权限集。
+#[test]
+fn init_grants_full_only_with_engine_installer() {
+    let (_dir, root) = project();
+    let key = pubkey();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            &key,
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let capability: serde_json::Value =
+        serde_json::from_str(&read(&root, "capabilities/default.json")).unwrap();
+    let permissions = capability["permissions"].as_array().unwrap();
+    assert!(permissions.iter().any(|v| v == "delta-updater:default"));
+    assert!(
+        !permissions.iter().any(|v| v == "delta-updater:full"),
+        "纯增量项目不应默认获得全量安装器权限: {permissions:?}"
+    );
+
+    // 写入 install_mode 后重新生成 capability：必须补上 full。
+    let config_path = root.join("src-tauri").join("tauri.conf.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["plugins"]["delta-updater"]["installer_kind"] = serde_json::json!("inno");
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    std::fs::remove_file(root.join("src-tauri").join("capabilities/default.json")).unwrap();
+
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            &key,
+            "--force",
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let capability: serde_json::Value =
+        serde_json::from_str(&read(&root, "capabilities/default.json")).unwrap();
+    let permissions = capability["permissions"].as_array().unwrap();
+    assert!(
+        permissions.iter().any(|v| v == "delta-updater:full"),
+        "配置了安装器类型时必须授予 full: {permissions:?}"
+    );
+}
+
+/// `--check` 必须发现“配置了安装器却缺少 full 权限”的缺口。
+#[test]
+fn init_check_requires_full_for_engine_installer() {
+    let (_dir, root) = project();
+    let key = pubkey();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            &key,
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let config_path = root.join("src-tauri").join("tauri.conf.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["plugins"]["delta-updater"]["installer_kind"] = serde_json::json!("inno");
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0, "缺少 full 权限时 --check 必须失败");
+    assert!(
+        stderr.contains("delta-updater:full"),
+        "错误必须点名缺失的权限集: {stderr}"
+    );
+}
+
 /// 全局参数被无关子命令接受但静默忽略，会让用户误以为它生效。
 #[test]
 fn release_and_doctor_reject_irrelevant_global_flags() {

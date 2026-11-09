@@ -21,3 +21,37 @@ jobs:
     - uses: rustsec/audit-check@v2.0.0
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+
+  qbsdiff-version-check:
+    name: qbsdiff upgrade watch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+    - uses: actions/checkout@v4
+
+    # qbsdiff 约束较窄（1.4）；上游发布安全修复时必须尽快升级，
+    # 但升级需要跑完整补丁生成/应用测试，不能静默自动合并。
+    - name: Compare pinned qbsdiff with crates.io
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        pinned=$(sed -n 's/^qbsdiff[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)
+        latest=$(curl -fsSL https://crates.io/api/v1/crates/qbsdiff | jq -r '.crate.max_version')
+        echo "pinned=$pinned latest=$latest"
+        if [ -z "$pinned" ] || [ -z "$latest" ] || [ "$latest" = "null" ]; then
+          echo "无法解析 qbsdiff 版本，跳过"
+          exit 0
+        fi
+        if [ "$latest" = "$pinned" ]; then
+          echo "qbsdiff 已是最新"
+          exit 0
+        fi
+        existing=$(gh issue list --state open --search "qbsdiff 升级 in:title" --json number --jq '.[0].number')
+        body=$(printf '上游 qbsdiff 发布新版本 `%s`，当前约束 `%s`。\n\n升级前必须运行：\n\n```bash\ncargo test --all-features --locked\ncargo test --all-features --test e2e_delta\n```\n\n确认补丁生成/应用与多跳链测试通过后再合并。' "$latest" "$pinned")
+        if [ -n "$existing" ]; then
+          gh issue comment "$existing" --body "$body"
+        else
+          gh issue create --title "qbsdiff 升级：$pinned -> $latest" --body "$body"
+        fi

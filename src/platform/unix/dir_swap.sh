@@ -29,9 +29,17 @@ log() {
 # 回滚原因落盘：宿主进程已经退出，下一次启动的 diagnose() 读取它。
 write_rollback() {
     log "event=delta.rollback.triggered reason=$1"
-    printf '%s' "$1" > "$ROLLBACK_FILE" 2>/dev/null
-    printf '%s' 'rolled_back' > "$STATE_FILE" 2>/dev/null
+    printf '%s' "$1" > "$ROLLBACK_FILE.tmp" 2>/dev/null \
+        && mv -f "$ROLLBACK_FILE.tmp" "$ROLLBACK_FILE" 2>/dev/null
+    printf '%s' 'rolled_back' > "$STATE_FILE.tmp" 2>/dev/null \
+        && mv -f "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null
     printf '{"event":"delta.rollback.triggered","reason":"%s","time":"%s"}\n' \
+        "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$EVENTS_FILE" 2>/dev/null || true
+}
+
+# 记录“已有更具体原因、本次不覆盖”的事实，便于事后审计两次写入。
+write_rollback_preserved() {
+    printf '{"event":"delta.rollback.preserved","reason":"%s","time":"%s"}\n' \
         "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$EVENTS_FILE" 2>/dev/null || true
 }
 
@@ -82,6 +90,8 @@ restart_old() {
     [ -f "$ROLLBACK_FILE" ] && EXISTING=$(cat "$ROLLBACK_FILE" 2>/dev/null)
     if [ -z "$EXISTING" ]; then
         write_rollback 'update_failed'
+    else
+        write_rollback_preserved "$EXISTING"
     fi
     if [ ! -d "$APP_ROOT" ] && [ -d "$BACKUP" ]; then
         mv "$BACKUP" "$APP_ROOT" 2>/dev/null

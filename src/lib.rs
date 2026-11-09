@@ -49,8 +49,9 @@
 //!         // 配置整包清单后，macOS `.app` 改走目录切换，不再落在这里。
 //!         let _ = (full_download_url, reason);
 //!     }
-//!     UpdateOutcome::SafeMode => {
-//!         // 连续失败已达上限，提示用户手动下载
+//!     UpdateOutcome::SafeMode { reason } => {
+//!         // 连续失败已达上限；reason 区分安全阻断与环境问题
+//!         let _ = reason;
 //!     }
 //!     // UpdateOutcome 是 non_exhaustive 的，将来新增变体不会破坏现有代码
 //!     _ => {}
@@ -268,8 +269,9 @@ pub use core::hasher::calculate_hash;
 pub use core::lock::UpdateLock;
 pub use core::paths::{default_work_dir, ensure_writable, is_writable};
 pub use core::safety::{
-    clear_failed_attempts, get_failed_attempts, is_safe_mode_active, record_failed_attempt,
-    reset_safety, safe_mode_remaining, should_abort,
+    clear_failed_attempts, get_failed_attempts, is_safe_mode_active, last_failure_reason,
+    record_failed_attempt, record_failed_attempt_with_reason, reset_safety, safe_mode_remaining,
+    should_abort,
 };
 pub use core::startup::StartupState;
 pub use core::verify::{
@@ -278,17 +280,19 @@ pub use core::verify::{
     verify_manifest_signature, verify_manifest_signature_file, verify_manifest_signature_multi,
     verify_manifest_signature_with, TrustPolicy,
 };
-pub use platform::full_install::{InstallMode, InstallerKind};
+pub use platform::full_install::{InstallFailureKind, InstallMode, InstallerKind};
 pub use platform::os_version::current_os_version;
 pub use platform::target::{
     current_platform, detect_arch, incremental_fallback_reason, normalize_version,
+    EnvironmentReason,
 };
-pub use platform::PlatformUpdater;
 /// 替换脚本的等待时长（由 `UpdateConfig` 的 timeout 配置写入脚本）。
 pub use platform::ScriptTimings;
+pub use platform::{AuthenticodePolicy, PlatformUpdater};
 pub use updater::{
     default_signature_url, simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy,
-    FallbackReason, FullDownload, FullDownloadOutcome, MessageKey, OsRequirement, PendingArtifact,
-    PendingUpdate, ScriptEvent, SimulationReport, Staged, StagedBundle, StagedFullInstaller,
-    StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
+    FallbackReason, FullDownload, FullDownloadOutcome, LockScope, MessageKey, OsRequirement,
+    PendingArtifact, PendingUpdate, SafeModeReason, ScriptEvent, SimulationReport, Staged,
+    StagedBundle, StagedFullInstaller, StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome,
+    UpdateResult,
 };

@@ -44,7 +44,11 @@ days. Please allow a coordinated disclosure window before publishing details.
 
 - An attacker who can already write the install directory or the user's work
   directory (the startup success flag is plaintext by design; see README
-  "Security boundaries")
+  "Security boundaries"). We deliberately do **not** add an HMAC to the flag:
+  the key would live in the same directory, so it raises the bar only for an
+  attacker who can write but not read, which is not a realistic desktop
+  threat model. Adding it would also make every replacement script depend on
+  platform crypto tooling.
 - A leaked signing private key (that is a release-process compromise, not an
   engine bug)
 - Denial of service that requires local filesystem access
@@ -79,6 +83,23 @@ file.
 3. Ship a release that trusts **only** the new key.
 4. `any` provides no revocation: after step 3, the old key is rejected; before
    step 3, a leaked old key stays valid. Do not skip step 3.
+
+## Dependency upgrade policy
+
+- **`reqwest`** is pinned to the verified `0.13.x` line (`>=0.13, <0.14`). Patch
+  releases within the line may be adopted after CI passes on all three desktop
+  platforms; a minor/major bump needs an explicit review of redirect, proxy and
+  TLS behaviour.
+- **`qbsdiff`** is constrained to `1.4` because the patch format and error
+  behaviour changed across minor versions. Upgrading requires:
+
+  ```bash
+  cargo test --all-features --locked
+  cargo test --all-features --test e2e_delta
+  ```
+
+  The weekly `Dependency audit` workflow opens/updates an issue when a newer
+  `qbsdiff` is published; do not auto-merge the bump without those tests.
 
 ## Minimum OS gate (`platforms[].min_os`)
 

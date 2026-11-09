@@ -1,24 +1,62 @@
 //! 安全模式：连续失败计数与冷却恢复。
 //!
-//! 计数文件格式：第一行是连续失败次数，第二行是最后一次失败的 Unix 时间戳。
-//! 旧版文件只有第一行，按"冷却已过期"处理——升级用户不会被永久锁死。
+//! 计数文件格式：第一行是连续失败次数，第二行是最后一次失败的 Unix 时间戳，
+//! 第三行是失败类型（`security_block` / `environment_failure` /
+//! `transient_retries_exhausted`）。旧版文件只有第一行，按"冷却已过期"处理——
+//! 升级用户不会被永久锁死。
 
 use crate::core::artifacts;
 use crate::error::Result;
+use crate::updater::SafeModeReason;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 
 /// 记录一次更新失败。
 ///
-/// 返回累计的连续失败次数。
+/// 返回累计的连续失败次数。原因按环境失败处理；
+/// 需要区分安全阻断时用 [`record_failed_attempt_with_reason`]。
 pub async fn record_failed_attempt(base_dir: &Path) -> Result<u32> {
+    record_failed_attempt_with_reason(base_dir, SafeModeReason::EnvironmentFailure).await
+}
+
+/// 记录一次带原因的更新失败。
+pub async fn record_failed_attempt_with_reason(
+    base_dir: &Path,
+    reason: SafeModeReason,
+) -> Result<u32> {
     let fail_file = base_dir.join(artifacts::FAILURE_COUNTER);
     let state = read_state(&fail_file).await;
     let count = state.count.saturating_add(1);
-    let content = format!("{count}\n{}", now_secs());
+    let content = format!("{count}\n{}\n{}", now_secs(), reason_key(reason));
     let _ = fs::write(&fail_file, content).await;
     Ok(count)
+}
+
+/// 最近一次失败的类型；没有记录或旧格式文件只有计数时为 `None`。
+pub async fn last_failure_reason(base_dir: &Path) -> Option<SafeModeReason> {
+    read_state(&base_dir.join(artifacts::FAILURE_COUNTER))
+        .await
+        .last_failure_reason
+}
+
+/// 安全模式原因的持久化键。
+fn reason_key(reason: SafeModeReason) -> &'static str {
+    match reason {
+        SafeModeReason::SecurityBlock => "security_block",
+        SafeModeReason::EnvironmentFailure => "environment_failure",
+        SafeModeReason::TransientRetriesExhausted => "transient_retries_exhausted",
+    }
+}
+
+/// 由持久化键还原原因；未知键按环境失败处理。
+fn reason_from_key(key: &str) -> Option<SafeModeReason> {
+    match key.trim() {
+        "security_block" => Some(SafeModeReason::SecurityBlock),
+        "environment_failure" => Some(SafeModeReason::EnvironmentFailure),
+        "transient_retries_exhausted" => Some(SafeModeReason::TransientRetriesExhausted),
+        _ => None,
+    }
 }
 
 /// 获取当前连续失败次数。
@@ -93,6 +131,7 @@ pub fn clear_failed_attempts_sync(base_dir: &Path) {
 struct SafetyState {
     count: u32,
     last_failure: u64,
+    last_failure_reason: Option<SafeModeReason>,
 }
 
 /// 读取失败计数状态，文件不存在或内容损坏时视为 0。
@@ -108,6 +147,7 @@ async fn read_state(path: &Path) -> SafetyState {
             .next()
             .and_then(|l| l.trim().parse::<u64>().ok())
             .unwrap_or(0),
+        last_failure_reason: lines.next().and_then(reason_from_key),
     }
 }
 
@@ -177,5 +217,25 @@ mod tests {
         reset_safety(dir.path()).await;
         assert_eq!(get_failed_attempts(dir.path()).await, 0);
         assert!(!should_abort(dir.path()).await);
+    }
+
+    /// 失败原因必须持久化，安全模式才能区分“可能被攻击”与“环境问题”。
+    #[tokio::test]
+    async fn records_last_failure_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        record_failed_attempt_with_reason(dir.path(), SafeModeReason::SecurityBlock)
+            .await
+            .unwrap();
+        assert_eq!(
+            last_failure_reason(dir.path()).await,
+            Some(SafeModeReason::SecurityBlock)
+        );
+
+        // 旧格式（只有计数与时间戳）没有原因，返回 None，不猜。
+        let path = dir.path().join(artifacts::FAILURE_COUNTER);
+        fs::write(&path, format!("1\n{}", now_secs()))
+            .await
+            .unwrap();
+        assert_eq!(last_failure_reason(dir.path()).await, None);
     }
 }

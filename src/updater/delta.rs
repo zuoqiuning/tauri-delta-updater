@@ -145,27 +145,33 @@ impl DeltaUpdater {
         }
 
         // 规划补丁路径：直达优先，其次最多 MAX_CHAIN_HOPS 跳；
-        // 链的总成本不划算时返回 None，直接走全量。
-        let Some(chain) = super::plan::plan_single(
+        // 链的总成本不划算时报告 ChainOverBudget，而不是假装"没有补丁"。
+        let plan = super::plan::plan_single(
             &manifest,
             &self.config.platform,
             &self.config.current_version,
-        ) else {
-            // 整包不支持且单文件也没补丁时，报整包原因更准确：
-            // 用户会知道"这台机器本来就不支持整包"，而不是"发布端漏了补丁"。
-            // 与 check() 共用同一份原因组合逻辑，避免两处判断漂移。
-            let reason = super::plan::fallback_reason(
-                bundle_unsupported,
-                None,
-                false,
-                &self.config.current_version,
-                &manifest.version,
-            )
-            .unwrap_or(FallbackReason::NoMatchingPatch {
-                from: self.config.current_version.clone(),
-                to: manifest.version.clone(),
-            });
-            return Ok(fallback_to_full(full_download_url, reason, &mut on_event));
+        );
+        let chain_over_budget = plan.over_budget();
+        let chain = match plan.patches() {
+            Some(chain) => chain,
+            None => {
+                // 整包不支持且单文件也没补丁时，报整包原因更准确：
+                // 用户会知道"这台机器本来就不支持整包"，而不是"发布端漏了补丁"。
+                // 与 check() 共用同一份原因组合逻辑，避免两处判断漂移。
+                let reason = super::plan::fallback_reason(
+                    bundle_unsupported,
+                    None,
+                    false,
+                    chain_over_budget,
+                    &self.config.current_version,
+                    &manifest.version,
+                )
+                .unwrap_or(FallbackReason::NoMatchingPatch {
+                    from: self.config.current_version.clone(),
+                    to: manifest.version.clone(),
+                });
+                return Ok(fallback_to_full(full_download_url, reason, &mut on_event));
+            }
         };
 
         // 下载并逐跳应用。每跳复用同一个补丁文件名，应用后立即校验**中间产物**
@@ -305,8 +311,9 @@ impl DeltaUpdater {
         // WinVerifyTrust 是同步系统调用，同样放 blocking 线程。
         let original = self.executable_path.clone();
         let staged = artifact.path().to_path_buf();
+        let policy = self.config.authenticode_policy;
         tokio::task::spawn_blocking(move || {
-            PlatformUpdater::verify_patched_binary(&original, &staged)
+            PlatformUpdater::verify_patched_binary_with(&original, &staged, policy)
         })
         .await
         .map_err(|e| DeltaError::WorkerFailed(format!("Authenticode 校验线程失败: {e}")))??;
@@ -374,6 +381,15 @@ impl DeltaUpdater {
 ///
 /// `apply_patch` 的最后一跳会覆盖暂存路径；如果它属于一条 pending 记录，
 /// 失败时必须把旧产物放回去，否则用户"新版本没下到、旧产物也没了"。
+///
+/// # Drop 契约
+///
+/// - [`Self::new`] 在调用方**覆盖原文件之前**复制副本；
+/// - 未调用 [`Self::commit`] 就 `Drop` 时，用副本替换原文件（恢复旧 pending）；
+/// - 调用 [`Self::commit`] 后 `Drop` 不再恢复（新产物已就绪）。
+///
+/// 若将来合并逻辑改为写多个文件，`new` 必须把所有这些路径纳入备份，
+/// 否则本 guard 的恢复语义不再成立。
 struct PendingArtifactGuard {
     original: PathBuf,
     keep: PathBuf,
@@ -432,5 +448,64 @@ fn fallback_to_full<'a>(
     UpdateOutcome::FallbackToFullDownload {
         full_download_url,
         reason,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingArtifactGuard;
+    use proptest::prelude::*;
+
+    // A-04：无论旧 pending 内容是什么、被覆盖成什么，guard Drop 后
+    // 必须恢复为原始字节；commit 后则绝不回滚。
+    proptest! {
+        #[test]
+        fn pending_guard_restores_overwritten_artifact(
+            original in prop::collection::vec(any::<u8>(), 0..4096),
+            overwritten in prop::collection::vec(any::<u8>(), 0..4096),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("staged");
+            let keep = dir.path().join("staged.backup");
+            std::fs::write(&path, &original).unwrap();
+
+            {
+                let _guard = PendingArtifactGuard::new(&path, keep.clone())
+                    .expect("已存在的产物必须能建立保底副本");
+                std::fs::write(&path, &overwritten).unwrap();
+            }
+
+            prop_assert_eq!(
+                std::fs::read(&path).unwrap(),
+                original,
+                "未 commit 的 guard 必须恢复旧产物"
+            );
+            prop_assert!(!keep.exists());
+        }
+
+        #[test]
+        fn pending_guard_commit_keeps_new_artifact(
+            original in prop::collection::vec(any::<u8>(), 0..4096),
+            overwritten in prop::collection::vec(any::<u8>(), 0..4096),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("staged");
+            let keep = dir.path().join("staged.backup");
+            std::fs::write(&path, &original).unwrap();
+
+            {
+                let mut guard = PendingArtifactGuard::new(&path, keep.clone())
+                    .expect("已存在的产物必须能建立保底副本");
+                std::fs::write(&path, &overwritten).unwrap();
+                guard.commit();
+            }
+
+            prop_assert_eq!(
+                std::fs::read(&path).unwrap(),
+                overwritten,
+                "commit 后必须保留新产物"
+            );
+            prop_assert!(!keep.exists());
+        }
     }
 }

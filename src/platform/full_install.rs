@@ -40,6 +40,30 @@ pub enum InstallerKind {
     Other,
 }
 
+/// 全量安装失败的结构化类型。
+///
+/// 前端可据此精确分支：取消提权应提示“已取消”，平台不匹配应提示
+/// “下载了错误的安装包”，而不是统一显示一条错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum InstallFailureKind {
+    /// 用户在 UAC / 系统授权框上点了“否”。
+    UserCancelledElevation,
+    /// 解包后找不到预期的安装器 / `.app` 目录。
+    InstallerNotFound,
+    /// 安装器/解包工具返回非零状态。
+    InstallerReturnedNonZero,
+    /// 安装包类型与当前平台不匹配（例如在 Windows 上执行 `.app.tar.gz`）。
+    PlatformMismatch,
+    /// 安装包类型无法识别或不受支持。
+    UnsupportedKind,
+    /// 启动安装器本身失败（ShellExecute / 进程创建错误）。
+    LaunchFailed,
+    /// 其它失败。
+    Other,
+}
+
 /// Windows 安装器的交互模式（对应 Tauri 官方 updater 的 `installMode`）。
 ///
 /// 默认 `Passive`，与官方保持同一行为；其它模式只改变安装器 UI 与提权方式，
@@ -77,6 +101,17 @@ pub fn installer_kind(path: &Path) -> InstallerKind {
         InstallerKind::Nsis
     } else {
         InstallerKind::Other
+    }
+}
+
+/// 构造带结构化类型的全量安装错误。
+fn install_failed(
+    kind: InstallFailureKind,
+    message: impl Into<String>,
+) -> crate::error::DeltaError {
+    crate::error::DeltaError::FullInstallFailed {
+        kind,
+        message: message.into(),
     }
 }
 
@@ -151,10 +186,10 @@ pub fn install_with_mode_kind_and_args(
             #[cfg(not(target_os = "windows"))]
             {
                 let _ = (current_exe, work_dir, timings, mode);
-                Err(crate::error::DeltaError::FullInstallFailed(format!(
-                    "{} 只能在 Windows 上执行",
-                    installer.display()
-                )))
+                Err(install_failed(
+                    InstallFailureKind::PlatformMismatch,
+                    format!("{} 只能在 Windows 上执行", installer.display()),
+                ))
             }
         }
         InstallerKind::MacAppTarGz => {
@@ -166,8 +201,9 @@ pub fn install_with_mode_kind_and_args(
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = (current_exe, work_dir, timings, mode);
-                Err(crate::error::DeltaError::FullInstallFailed(
-                    "macOS .app.tar.gz 只能在 macOS 上执行".into(),
+                Err(install_failed(
+                    InstallFailureKind::PlatformMismatch,
+                    "macOS .app.tar.gz 只能在 macOS 上执行",
                 ))
             }
         }
@@ -180,15 +216,16 @@ pub fn install_with_mode_kind_and_args(
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = (current_exe, work_dir, timings, mode);
-                Err(crate::error::DeltaError::FullInstallFailed(
-                    "AppImage 安装包只能在 Linux 上执行".into(),
+                Err(install_failed(
+                    InstallFailureKind::PlatformMismatch,
+                    "AppImage 安装包只能在 Linux 上执行",
                 ))
             }
         }
-        InstallerKind::Other => Err(crate::error::DeltaError::FullInstallFailed(format!(
-            "不支持的全量安装包类型：{}",
-            installer.display()
-        ))),
+        InstallerKind::Other => Err(install_failed(
+            InstallFailureKind::UnsupportedKind,
+            format!("不支持的全量安装包类型：{}", installer.display()),
+        )),
     }
 }
 
@@ -347,8 +384,8 @@ fn detect_exe_kind(installer: &Path) -> InstallerKind {
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::{InstallMode, InstallerKind};
-    use crate::error::{DeltaError, Result};
+    use super::{install_failed, InstallFailureKind, InstallMode, InstallerKind};
+    use crate::error::Result;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
@@ -394,10 +431,13 @@ mod windows {
             // Inno 的 `/UPDATE` / `/R` 语义由 `.iss` 脚本承担，没有对应命令行参数。
             InstallerKind::Inno => (installer.to_path_buf(), append(inno_parameters(mode))),
             other => {
-                return Err(DeltaError::FullInstallFailed(format!(
-                    "不支持的全量安装包类型（{other:?}）：{}",
-                    installer.display()
-                )))
+                return Err(install_failed(
+                    InstallFailureKind::UnsupportedKind,
+                    format!(
+                        "不支持的全量安装包类型（{other:?}）：{}",
+                        installer.display()
+                    ),
+                ))
             }
         };
 
@@ -421,10 +461,18 @@ mod windows {
         // 返回值 <= 32 是错误码（SE_ERR_ACCESSDENIED = 5 对应用户取消提权）。
         let code = result as isize;
         if code <= 32 {
-            return Err(DeltaError::FullInstallFailed(format!(
-                "启动安装器失败（ShellExecute 返回 {code}，5 表示用户取消提权）：{}",
-                installer.display()
-            )));
+            let kind = if code == 5 {
+                InstallFailureKind::UserCancelledElevation
+            } else {
+                InstallFailureKind::LaunchFailed
+            };
+            return Err(install_failed(
+                kind,
+                format!(
+                    "启动安装器失败（ShellExecute 返回 {code}，5 表示用户取消提权）：{}",
+                    installer.display()
+                ),
+            ));
         }
         Ok(())
     }
@@ -475,6 +523,7 @@ mod windows {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use super::{install_failed, InstallFailureKind};
     use crate::core::bundle::describe_dir;
     use crate::error::{DeltaError, Result};
     use crate::platform::ScriptTimings;
@@ -502,19 +551,30 @@ mod macos {
             .arg("-C")
             .arg(&staging_root)
             .output()
-            .map_err(|e| DeltaError::FullInstallFailed(format!("无法启动 tar: {e}")))?;
+            .map_err(|e| {
+                install_failed(
+                    InstallFailureKind::LaunchFailed,
+                    format!("无法启动 tar: {e}"),
+                )
+            })?;
         if !output.status.success() {
             let _ = std::fs::remove_dir_all(&staging_root);
-            return Err(DeltaError::FullInstallFailed(format!(
-                "解包 {} 失败: {}",
-                installer.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
+            return Err(install_failed(
+                InstallFailureKind::InstallerReturnedNonZero,
+                format!(
+                    "解包 {} 失败: {}",
+                    installer.display(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ));
         }
 
         let app_dir = find_app_bundle(&staging_root).ok_or_else(|| {
             let _ = std::fs::remove_dir_all(&staging_root);
-            DeltaError::FullInstallFailed(format!("{} 里没有找到 .app 目录", installer.display()))
+            install_failed(
+                InstallFailureKind::InstallerNotFound,
+                format!("{} 里没有找到 .app 目录", installer.display()),
+            )
         })?;
 
         // 安装包不在这里删除：目录切换失败时它是唯一的恢复来源。
@@ -791,8 +851,14 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, DeltaError::FullInstallFailed(_)),
-            "未知安装包类型必须返回 FullInstallFailed，实际: {err:?}"
+            matches!(
+                err,
+                DeltaError::FullInstallFailed {
+                    kind: super::InstallFailureKind::UnsupportedKind,
+                    ..
+                }
+            ),
+            "未知安装包类型必须返回 UnsupportedKind，实际: {err:?}"
         );
     }
 
@@ -812,8 +878,14 @@ mod tests {
         let err = install(&exe, &file, dir.path(), ScriptTimings::default()).unwrap_err();
 
         assert!(
-            matches!(err, DeltaError::FullInstallFailed(_)),
-            "平台不匹配的安装包必须报错，实际: {err:?}"
+            matches!(
+                err,
+                DeltaError::FullInstallFailed {
+                    kind: super::InstallFailureKind::PlatformMismatch,
+                    ..
+                }
+            ),
+            "平台不匹配的安装包必须报 PlatformMismatch，实际: {err:?}"
         );
     }
 }

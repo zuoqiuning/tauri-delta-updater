@@ -5,13 +5,24 @@ CI 覆盖静态断言与合成脚本；以下路径必须在真实机器上跑�
 
 ## macOS
 
+一键检查签名 / Gatekeeper / 公证 / quarantine：
+
 ```bash
-codesign -dv --verbose=4 /Applications/MyApp.app
+./examples/macos-verify.sh /Applications/MyApp.app
+```
+
+底层的等价命令：
+
+```bash
+codesign --verify --deep --strict --verbose=2 /Applications/MyApp.app
 spctl -a -vv /Applications/MyApp.app
+xcrun stapler validate /Applications/MyApp.app
+xattr -l /Applications/MyApp.app | grep com.apple.quarantine
 ```
 
 - [ ] 用已签名 + 公证的构建完整更新一次（`.app` 目录切换）。
 - [ ] 重启后版本号变化，`spctl -a` 仍返回 accepted。
+- [ ] `examples/macos-verify.sh` 退出码为 0（公证项为 WARN 时可接受，需记录原因）。
 - [ ] 篡改补丁导致失败时能回滚到旧版本并正常启动。
 
 ## Windows

@@ -70,6 +70,37 @@
   `signature valid`、`signature verification failed`），便于 CI grep 与
   非中文环境排障；发布端补丁验证失败时给出下一步建议。
 - 回归测试锁定 `check()` 不清理已准备好的 pending，避免“检查一次就丢下载进度”。
+- 多跳链因总下载量超预算被拒绝时返回 `chain_over_budget`（含跳数与体积），
+  `CheckOutcome.chain_rejected_by_budget` 同步标记；不再伪装成“没有补丁”。
+- 安全模式返回结构化原因 `SafeModeReason`：`security_block` 与
+  `environment_failure` / `transient_retries_exhausted` 不再混为一谈，
+  `diagnose().safe_mode_reason` 可直接展示。
+- 环境回退原因改为 `EnvironmentReason`（AppImage 目录只读 / 无法定位本体 /
+  macOS bundle / 系统版本不足 / 其它），UI 不再需要匹配中文文案。
+- 全量安装失败携带 `InstallFailureKind`（取消提权、安装器不存在、非零退出、
+  平台不匹配、无法识别、启动失败），插件错误 DTO 增加 `install_failure`。
+- 新增 `authenticode_policy`（`strict` 默认 / `permissive` / `off`）：
+  企业离线环境因证书链不在缓存而“无法得出结论”时可只告警；明确未签名仍阻断。
+- 新增 `lock_scope`（`work_dir` 默认 / `install_dir`）：per-machine 多用户
+  场景可在安装目录加跨用户锁；目录只读时退回工作目录锁并告警。
+- 回滚原因与启动状态改为临时文件 + 原子替换，并记录
+  `delta.rollback.preserved`（已有更具体原因时不再覆盖成 `update_failed`）。
+- 默认权限收窄：`delta-updater:default` 只含增量路径（read + update）；
+  `download_full` / `install_full` 需要显式 `delta-updater:full`。
+  `cargo delta init` 在检测到引擎安装器配置时自动补 `full`，`--check`
+  会报告缺失。宿主若依赖旧默认，需要给对应窗口补上 `delta-updater:full`。
+- 新增按场景划分的接入索引（`docs/USAGE.md`）、配置速查/决策树
+  （`docs/CONFIG_CHEATSHEET.md`）、迁移前后端示例
+  （`examples/migration-example/`）与 macOS 一键验证脚本
+  （`examples/macos-verify.sh`）。
+- 测试补齐：`check()`/`update()` 灰门禁一致性属性测试、generate 输出目录/
+  SHA256SUMS 失败注入、`PendingArtifactGuard` 恢复契约属性测试、
+  `VerifiedArtifact` 构造 `compile_fail` 文档测试。
+- 发布流程拆分为 `prepare_context` / `prepare_manifest` / 补丁生成 /
+  `finalize_manifest` / `write_outputs` 五个阶段：dry-run 与零补丁闸门
+  提前短路，输出错误与输入校验集中在同一处。
+- 周度差分后端 A/B 进入 CI 计划任务；`audit.yml` 增加 qbsdiff 上游版本
+  监测并自动开/更新 issue。
 
 ### 变更（公开 API）
 
@@ -88,6 +119,23 @@
 - Windows 全量安装支持额外参数（插件配置 `installer_args`，官方
   `windows.installerArgs` 自动迁移）；含空格/引号自动加引号，NUL 在构造阶段拒绝。
 - `ReleaseOptions` 新增 `allow_http`：默认 `false`，明文 `base_url` 需要显式开启。
+- `FallbackReason::EnvironmentUnsupported` 改为携带 `EnvironmentReason`
+  （`#[non_exhaustive]`）：已有 `match` 需要按新类型调整；
+  `FallbackReason` 新增 `ChainOverBudget { hops, total_size, installer_size }`。
+- `UpdateOutcome::SafeMode` / `UpdateResult::SafeMode` 改为结构体变体，
+  携带 `SafeModeReason`；新增 TS 类型 `SafeModeReason`。
+- `DeltaError::FullInstallFailed` 改为 `{ kind: InstallFailureKind, message }`。
+- 新增公开类型 `EnvironmentReason`、`SafeModeReason`、`InstallFailureKind`、
+  `AuthenticodePolicy`、`LockScope`；新增
+  `UpdateConfig::authenticode_policy()` / `lock_scope()`、
+  `PlatformUpdater::verify_patched_binary_with()`、
+  `record_failed_attempt_with_reason()`、`last_failure_reason()`。
+- `UpdateConfig` 新增 `authenticode_policy` 与 `lock_scope` 字段（结构体
+  `#[non_exhaustive]`，字面量构造需改用 builder 或 serde）。
+- `Diagnosis` 新增 `safe_mode_reason` / `authenticode_policy`，
+  `fallback_reason` 类型从 `Option<&'static str>` 变为
+  `Option<EnvironmentReason>`；TS 类型同步。
+- `CheckOutcome` 新增 `chain_rejected_by_budget`。
 - 插件配置新增 `signature_url`：签名可独立托管，缺省仍按清单地址推导。
 - 新增 `UpdateResult::requires_exit()`：`Updated` / `RepairRequired` 为 `true`，
   宿主不必再自行维护需要退出的变体列表。

@@ -4,6 +4,7 @@ use crate::core::verify::TrustPolicy;
 use crate::error::DeltaError;
 use crate::platform::full_install::{InstallMode, InstallerKind};
 use crate::platform::target::current_platform;
+use crate::platform::AuthenticodePolicy;
 use std::path::{Path, PathBuf};
 
 /// 主清单不可用时，何时切换到备用端点。
@@ -47,6 +48,22 @@ impl FallbackPolicy {
             ),
         }
     }
+}
+
+/// 更新互斥锁的作用范围。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum LockScope {
+    /// 只锁用户工作目录（默认）。同一用户的多进程互斥。
+    #[default]
+    WorkDir,
+    /// 额外在安装目录加一把跨用户锁。
+    ///
+    /// 适合 per-machine 安装（`Program Files`）且允许多个用户账户登录的机器。
+    /// 安装目录不可写时退回 [`Self::WorkDir`] 并记录告警（否则普通用户
+    /// 会连原本可用的更新都做不了）。
+    InstallDir,
 }
 
 /// 增量更新的配置。
@@ -181,6 +198,19 @@ pub struct UpdateConfig {
     /// 官方 `tauri-plugin-updater` 的 `windows.installerArgs` 对应本字段；
     /// 插件配置会自动迁移它。
     pub installer_args: Vec<String>,
+    /// Windows 更新产物的 Authenticode 策略，默认 [`AuthenticodePolicy::Strict`]。
+    ///
+    /// - `strict`：原版本可信而产物不可信（含离线无法验证）→ 阻断；
+    /// - `permissive`：离线无法验证只告警，明确未签名仍阻断；
+    /// - `off`：完全跳过检查（仅用于已知受控环境）。
+    ///
+    /// 其它平台忽略该字段（macOS 由替换脚本执行 `codesign --verify`）。
+    pub authenticode_policy: AuthenticodePolicy,
+    /// 更新互斥锁的作用范围，默认 [`LockScope::WorkDir`]。
+    ///
+    /// per-machine 安装（多个用户账户可能同时更新）可设为
+    /// [`LockScope::InstallDir`]：在安装目录额外加一把跨用户锁。
+    pub lock_scope: LockScope,
     /// 是否允许明文 HTTP 端点，默认 `false`。
     ///
     /// 默认拒绝非回环地址的 `http://`；本地开发/内网测试可显式设为 `true`。
@@ -231,6 +261,8 @@ impl UpdateConfig {
             install_mode: InstallMode::default(),
             installer_kind: None,
             installer_args: Vec::new(),
+            authenticode_policy: AuthenticodePolicy::default(),
+            lock_scope: LockScope::default(),
             allow_insecure_transport: false,
             install_on_next_launch: false,
             rollback_notice: true,
@@ -374,6 +406,23 @@ impl UpdateConfig {
     /// 追加在引擎固定的静默/重启参数之后；只在 `install_full()` 生效。
     pub fn installer_args(mut self, args: Vec<String>) -> Self {
         self.installer_args = args;
+        self
+    }
+
+    /// 设置 Windows 产物的 Authenticode 策略。
+    ///
+    /// 离线企业环境若因证书链不在缓存而无法验证签名，可设为
+    /// [`AuthenticodePolicy::Permissive`]；明确未签名/被拒绝仍会阻断。
+    pub fn authenticode_policy(mut self, policy: AuthenticodePolicy) -> Self {
+        self.authenticode_policy = policy;
+        self
+    }
+
+    /// 设置更新互斥锁的作用范围（默认只锁工作目录）。
+    ///
+    /// per-machine 安装且多用户共享时可设为 [`LockScope::InstallDir`]。
+    pub fn lock_scope(mut self, scope: LockScope) -> Self {
+        self.lock_scope = scope;
         self
     }
 

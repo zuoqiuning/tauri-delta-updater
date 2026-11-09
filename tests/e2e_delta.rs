@@ -3,6 +3,8 @@
 mod common;
 use common::*;
 
+use proptest::prelude::*;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,6 +14,48 @@ use tauri_delta_updater::{
     UpdateOutcome, UpdateResult,
 };
 use tempfile::tempdir;
+
+// H-01：`check()` 与 `update()`（这里用不启动脚本的 `prepare()`，
+// 共用同一段 `run_locked`）对同一份清单的门禁结论必须一致。
+//
+// 随机化灰度比例：同一安装的分桶结果稳定，`check()` 说"未命中"时
+// `prepare()` 也必须返回 `Deferred`，绝不能在检查之后偷偷下载。
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+
+    #[test]
+    fn gate_decisions_match_between_check_and_update(
+        percentage in 0u8..=100,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (info, outcome) = runtime.block_on(async {
+            let (_dir, updater, _server, _new_bytes) =
+                delta_fixture_with_rollout(Some(percentage)).await;
+            let info = updater.check().await.unwrap();
+            let outcome = updater.prepare().await.unwrap();
+            (info, outcome)
+        });
+
+        prop_assert!(info.is_newer, "夹具版本必然更新");
+        match (info.deferred_by_rollout, outcome) {
+            (true, UpdateOutcome::Deferred { version, percentage: actual }) => {
+                prop_assert!(!info.has_patch, "灰度未命中不得展示可下载补丁");
+                prop_assert_eq!(version, info.version.clone());
+                prop_assert_eq!(actual, percentage);
+            }
+            (false, UpdateOutcome::Patched { .. }) => {
+                prop_assert!(info.has_patch, "灰度命中时检查必须报告可下载补丁");
+            }
+            (deferred, other) => prop_assert!(
+                false,
+                "check 与 update 门禁漂移：deferred={deferred}, outcome={other:?}"
+            ),
+        }
+    }
+}
 
 /// 端到端：清单 + 补丁 → 一次调用 → 生成新版本。
 #[tokio::test]

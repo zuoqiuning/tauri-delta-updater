@@ -1,5 +1,16 @@
 # Usage guide
 
+## 0. 场景索引（先选路径，再读细节）
+
+| 你的场景 | 最小配置 | 验证方式 | 常见坑 |
+|---|---|---|---|
+| 只替换主程序（Windows `.exe`、Linux AppImage、macOS 裸二进制） | `endpoints` + `pubkey`；权限 `delta-updater:default` | `cargo delta simulate --old old.exe --new new.exe` 看收益；再跑一次真实更新 | macOS `.app` 不在这个场景里（见下一行）；Linux `.deb`/`.rpm` 不能自动装 |
+| 主程序 + sidecar/resources，或 macOS `.app` | 额外 `bundle_endpoint` | `generate --new-app-dir … --old-app-dir …` 后检查 `latest.bundle.json` | 旧版本目录名必须含版本号；macOS 必须真机验证签名/公证 |
+| 增量不可用时用平台安装器兜底 | 权限加 `delta-updater:full`；配置 `installer_kind`/`install_mode`/`installer_args` | `installFull()` 或 `checkCompat()` 的自动回退 | 前端没有 `full` 权限会被 capability 拒绝；Inno 必须显式 `installer_kind: "inno"` |
+| Inno Setup 打包 | `installer_kind: "inno"` | `cargo delta init --check`、`doctor` | Inno 没有 `/UPDATE` `/R` 等价参数，重启由 `.iss` 的 `[Run]` 负责 |
+| 灰度放量 | 发布端 `--rollout 20`、必要时 `--min-version` | 同一安装重复 `check()` 结果稳定 | `deferred_by_rollout` 不是“已最新”；灰度未命中时不返回全量地址 |
+| 官方 updater 迁移 | `cargo delta migrate`，前端改用 `checkCompat()` | `cargo delta init --check`、粘贴 migrate 输出 | 官方 `downloadAndInstall` 的回调形状由兼容层转换，需授予 `delta-updater:full` |
+
 ## 1. Add the dependency
 
 ```toml

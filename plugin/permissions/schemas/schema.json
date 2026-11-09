@@ -451,10 +451,10 @@
           "markdownDescription": "Denies the reset_safety command without any pre-configured scope."
         },
         {
-          "description": "默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-config-warnings`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-discard-pending`\n- `allow-install-pending`",
+          "description": "默认权限：检查、增量安装、诊断、取消、退出安全模式与跨重启安装。\n不包含全量安装器（download_full / install_full）：需要全量回退时额外授予\n`delta-updater:full`。命令名与 `src/lib.rs` 中的 `generate_handler!` 列表一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-diagnose`\n- `allow-config-warnings`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-discard-pending`\n- `allow-install-pending`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。\n命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-download-full`\n- `allow-install-full`\n- `allow-diagnose`\n- `allow-config-warnings`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-discard-pending`\n- `allow-install-pending`"
+          "markdownDescription": "默认权限：检查、增量安装、诊断、取消、退出安全模式与跨重启安装。\n不包含全量安装器（download_full / install_full）：需要全量回退时额外授予\n`delta-updater:full`。命令名与 `src/lib.rs` 中的 `generate_handler!` 列表一致。\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-install`\n- `allow-prepare`\n- `allow-launch`\n- `allow-diagnose`\n- `allow-config-warnings`\n- `allow-cancel`\n- `allow-reset-safety`\n- `allow-pending`\n- `allow-discard-pending`\n- `allow-install-pending`"
         },
         {
           "description": "Full-installer fallback: download and execute the platform installer. This is\nthe highest-privilege set; grant it only to windows that really need it.\n\n#### This permission set includes:\n\n- `allow-download-full`\n- `allow-install-full`",

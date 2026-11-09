@@ -1,6 +1,7 @@
 //! 对宿主可见的结果类型：检查结果、更新结果与回退原因。
 
 use crate::models::UpdateManifest;
+use crate::platform::target::EnvironmentReason;
 use serde::Serialize;
 
 use super::{FullDownload, Staged, StagedBundle, StagedRepair};
@@ -21,7 +22,19 @@ pub enum FallbackReason {
         to: String,
     },
     /// 当前运行环境不适合原地替换（只读的 AppImage 安装目录、macOS `.app` bundle 等）。
-    EnvironmentUnsupported(&'static str),
+    EnvironmentUnsupported(EnvironmentReason),
+    /// 存在多跳补丁链，但总下载量不划算：全量安装包更快也更稳。
+    ///
+    /// 与 [`Self::NoMatchingPatch`] 区分：这里**有**可用路径，只是成本被拒绝。
+    /// UI 可以据此提示“跨版本更新，建议下载完整安装包”。
+    ChainOverBudget {
+        /// 链的跳数。
+        hops: usize,
+        /// 链的总下载体积（字节）。
+        total_size: u64,
+        /// 全量安装包体积（字节）。
+        installer_size: u64,
+    },
 }
 
 impl std::fmt::Display for FallbackReason {
@@ -31,9 +44,33 @@ impl std::fmt::Display for FallbackReason {
                 f,
                 "清单里没有从 {from} 到 {to} 的增量补丁（跨版本升级或首次安装）"
             ),
-            FallbackReason::EnvironmentUnsupported(detail) => f.write_str(detail),
+            FallbackReason::EnvironmentUnsupported(reason) => write!(f, "{reason}"),
+            FallbackReason::ChainOverBudget {
+                hops,
+                total_size,
+                installer_size,
+            } => write!(
+                f,
+                "{hops} 跳补丁合计 {total_size} 字节，超过全量安装包 {installer_size} 字节的收益阈值，改为全量下载"
+            ),
         }
     }
+}
+
+/// 安全模式的触发原因。
+///
+/// 安全模式既可能来自安全阻断（签名/哈希失败），也可能来自持续性环境问题
+/// （磁盘满、权限不足）。UI 应据此区分“可能被攻击”与“磁盘满了”。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SafeModeReason {
+    /// 签名或哈希校验失败：可能正在被攻击。
+    SecurityBlock,
+    /// 磁盘、权限、配置等环境问题：修复环境后可重试。
+    EnvironmentFailure,
+    /// 暂态错误重试次数耗尽（网络持续不可用）。
+    TransientRetriesExhausted,
 }
 
 /// 清单声明的最低系统版本与本机探测到的版本。
@@ -77,6 +114,11 @@ pub struct CheckOutcome {
     /// 为 `true` 时 `is_newer` 仍为 `true`（确实存在新版本），
     /// 但 `has_patch` / `is_delta` 为 `false`，宿主不应触发任何下载。
     pub deferred_by_rollout: bool,
+    /// 存在多跳补丁链，但因总下载量超过收益阈值被拒绝。
+    ///
+    /// 为 `true` 时 `fallback_reason` 是
+    /// [`FallbackReason::ChainOverBudget`]：更新会走全量下载。
+    pub chain_rejected_by_budget: bool,
     /// 实际会下载的体积（增量时为补丁体积；全量时为 `None`）。
     pub download_size: Option<u64>,
     /// 补丁文件大小（字节）。清单未提供时为 `None`。
@@ -250,9 +292,11 @@ pub enum UpdateOutcome {
     ///
     /// 注意语义边界：触发原因可能是安全阻断（签名/哈希失败），
     /// 也可能是持续性环境问题（磁盘满、权限不足）。
-    /// 展示 UI 时用 [`DeltaError::is_security_blocking()`] 区分，
-    /// 不要把所有 SafeMode 都当成安全风险提示。
-    SafeMode,
+    /// `reason` 已区分这两类，UI 可据此给出针对性建议。
+    SafeMode {
+        /// 触发安全模式的原因。
+        reason: SafeModeReason,
+    },
 }
 
 /// 面向 UI 的更新结果。
@@ -275,7 +319,7 @@ pub enum UpdateOutcome {
 /// {"kind":"up_to_date","version":"1.2.3"}
 /// {"kind":"deferred","version":"1.2.3","percentage":20}
 /// {"kind":"requires_full_download","url":"https://...","reason":{"no_matching_patch":{"from":"1.2.3","to":"1.3.0"}}}
-/// {"kind":"safe_mode"}
+/// {"kind":"safe_mode","reason":"security_block"}
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -340,7 +384,10 @@ pub enum UpdateResult {
         current: String,
     },
     /// 连续失败已达上限，已进入安全模式。
-    SafeMode,
+    SafeMode {
+        /// 触发安全模式的原因。
+        reason: SafeModeReason,
+    },
 }
 
 /// UI 检查结果的语义别名。
@@ -385,7 +432,7 @@ impl From<UpdateOutcome> for UpdateResult {
                 url: full_download_url,
                 reason,
             },
-            UpdateOutcome::SafeMode => UpdateResult::SafeMode,
+            UpdateOutcome::SafeMode { reason } => UpdateResult::SafeMode { reason },
         }
     }
 }
@@ -418,6 +465,7 @@ mod tests {
             is_delta: patch_size.is_some(),
             rollout_percentage: None,
             deferred_by_rollout: false,
+            chain_rejected_by_budget: false,
             download_size: patch_size,
             patch_size,
             needs_repair: false,
@@ -446,7 +494,10 @@ mod tests {
             version: "1".into()
         }
         .requires_exit());
-        assert!(!UpdateResult::SafeMode.requires_exit());
+        assert!(!UpdateResult::SafeMode {
+            reason: super::SafeModeReason::EnvironmentFailure
+        }
+        .requires_exit());
     }
 
     /// 占比来自清单签名覆盖的安装包体积，而不是客户端猜测。

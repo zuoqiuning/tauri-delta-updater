@@ -3,7 +3,8 @@
 | 路径 | 用途 |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 模块边界、主流程、不可破坏的不变量与失败恢复矩阵 |
-| [USAGE.md](USAGE.md) | 客户端接入、前端结果处理、可取消会话与库 API 分层 |
+| [USAGE.md](USAGE.md) | 按场景划分的接入索引、客户端接入、前端结果处理、可取消会话与库 API 分层 |
+| [CONFIG_CHEATSHEET.md](CONFIG_CHEATSHEET.md) | 配置决策树、插件字段速查、权限集与发布参数 |
 | [PUBLISHING.md](PUBLISHING.md) | `generate` / `cargo delta release` / `doctor` 参数与发布流程 |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 接入对比、症状排障、错误码与版本迁移 |
 | [RELEASING.md](RELEASING.md) | 发布门禁、授权、失败补救与 CI 边界 |

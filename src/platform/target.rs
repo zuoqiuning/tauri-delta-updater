@@ -141,7 +141,55 @@ pub fn runtime_executable() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
-/// 判断当前运行环境是否适合执行增量替换，不适合时返回回退原因。
+/// 当前运行环境不适合原地增量替换的结构化原因。
+///
+/// 比自由字符串更适合 UI 分支与本地化：界面可以直接匹配“AppImage 目录只读”
+/// 并给出针对性建议，而不是对中文文案做包含判断。
+///
+/// 新增变体不会破坏已有匹配（枚举是 `#[non_exhaustive]`）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum EnvironmentReason {
+    /// Linux AppImage 所在目录不可写。
+    AppImageNotWritable,
+    /// 运行在 AppImage 中，但无法定位 `.AppImage` 本体（只会写入临时挂载点）。
+    AppImageUnresolved,
+    /// macOS `.app` bundle：原地替换会丢失开发者签名与公证状态。
+    MacOsBundle,
+    /// 本机系统版本低于清单要求。
+    UnsupportedOs {
+        /// 清单要求的最低版本。
+        required: String,
+        /// 本机探测到的版本。
+        current: String,
+    },
+    /// 其它环境原因（主要来自整包路径的平台判定）。
+    Other(&'static str),
+}
+
+impl std::fmt::Display for EnvironmentReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnvironmentReason::AppImageNotWritable => {
+                f.write_str("AppImage 所在目录不可写，无法原地替换 .AppImage")
+            }
+            EnvironmentReason::AppImageUnresolved => {
+                f.write_str("AppImage 运行时：无法定位 .AppImage 本体，替换只会写入临时挂载点")
+            }
+            EnvironmentReason::MacOsBundle => f.write_str(
+                "macOS .app bundle：增量替换后只能 ad-hoc 重签，会丢失开发者签名与公证状态",
+            ),
+            EnvironmentReason::UnsupportedOs { required, current } => write!(
+                f,
+                "本机系统版本 {current} 低于清单要求 {required}，已拒绝下载"
+            ),
+            EnvironmentReason::Other(detail) => f.write_str(detail),
+        }
+    }
+}
+
+/// 判断当前运行环境是否适合执行增量替换，不适合时返回结构化原因。
 ///
 /// 判定只依赖运行环境（exe 路径与平台），发生在**下载补丁之前**——
 /// 清单仍会拉取（客户端需要知道有无新版本与全量地址），
@@ -160,7 +208,7 @@ pub fn runtime_executable() -> std::io::Result<PathBuf> {
 ///   （bundle 外的裸二进制仍是实验性支持。）
 ///
 /// Windows 单文件 exe 是本库的甜点区，始终返回 `None`。
-pub fn incremental_fallback_reason(exe: &Path) -> Option<&'static str> {
+pub fn incremental_fallback_reason(exe: &Path) -> Option<EnvironmentReason> {
     #[cfg(target_os = "linux")]
     {
         match appimage_target() {
@@ -170,14 +218,12 @@ pub fn incremental_fallback_reason(exe: &Path) -> Option<&'static str> {
                     .map(crate::core::paths::is_writable)
                     .unwrap_or(false);
                 if !writable {
-                    return Some("AppImage 所在目录不可写，无法原地替换 .AppImage");
+                    return Some(EnvironmentReason::AppImageNotWritable);
                 }
             }
             None => {
                 if std::env::var_os("APPIMAGE").is_some() || exe.starts_with("/tmp/.mount") {
-                    return Some(
-                        "AppImage 运行时：无法定位 .AppImage 本体，替换只会写入临时挂载点",
-                    );
+                    return Some(EnvironmentReason::AppImageUnresolved);
                 }
             }
         }
@@ -189,9 +235,7 @@ pub fn incremental_fallback_reason(exe: &Path) -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {
         if crate::platform::macos::bundle_root(exe).is_some() {
-            return Some(
-                "macOS .app bundle：增量替换后只能 ad-hoc 重签，会丢失开发者签名与公证状态",
-            );
+            return Some(EnvironmentReason::MacOsBundle);
         }
     }
     None

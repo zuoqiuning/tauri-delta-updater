@@ -1,7 +1,8 @@
 ## Default Permission
 
-默认权限：检查、增量安装、全量下载、诊断、取消、退出安全模式与跨重启安装。
-命令名与 `src/lib.rs` 中的 `generate_handler!` 列表保持一致。
+默认权限：检查、增量安装、诊断、取消、退出安全模式与跨重启安装。
+不包含全量安装器（download_full / install_full）：需要全量回退时额外授予
+`delta-updater:full`。命令名与 `src/lib.rs` 中的 `generate_handler!` 列表一致。
 
 #### This default permission set includes the following:
 
@@ -9,8 +10,6 @@
 - `allow-install`
 - `allow-prepare`
 - `allow-launch`
-- `allow-download-full`
-- `allow-install-full`
 - `allow-diagnose`
 - `allow-config-warnings`
 - `allow-cancel`

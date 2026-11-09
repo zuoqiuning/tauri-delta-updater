@@ -30,10 +30,11 @@ mod rollout;
 mod simulate;
 mod staged;
 
-pub use config::{default_signature_url, FallbackPolicy, UpdateConfig};
+pub use config::{default_signature_url, FallbackPolicy, LockScope, UpdateConfig};
 pub use diagnosis::{Diagnosis, MessageKey, ScriptEvent};
 pub use outcome::{
-    CheckOutcome, FallbackReason, OsRequirement, UpdateCheck, UpdateOutcome, UpdateResult,
+    CheckOutcome, FallbackReason, OsRequirement, SafeModeReason, UpdateCheck, UpdateOutcome,
+    UpdateResult,
 };
 pub use pending::{PendingArtifact, PendingUpdate};
 pub use simulate::{simulate_update, SimulationReport};
@@ -368,6 +369,20 @@ impl DeltaUpdater {
         }
     }
 
+    /// 按 `lock_scope` 获取更新锁。
+    ///
+    /// 所有会写安装目录的流程（更新、修复、全量安装、待安装记录）都必须
+    /// 走这里，保证多用户场景下 `InstallDir` 模式真正生效。
+    pub(super) fn acquire_lock(&self) -> Result<crate::core::lock::UpdateLock> {
+        match self.config.lock_scope {
+            config::LockScope::WorkDir => crate::core::lock::UpdateLock::acquire_in(&self.work_dir),
+            config::LockScope::InstallDir => crate::core::lock::UpdateLock::acquire_scoped(
+                &self.work_dir,
+                self.executable_path.parent(),
+            ),
+        }
+    }
+
     /// 清单端点序列：主地址 + 备用地址。
     pub(super) fn manifest_endpoints(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.config.manifest_url.as_str()).chain(
@@ -462,9 +477,10 @@ pub(super) async fn download_and_verify_patch<'a>(
 #[cfg(test)]
 mod ui_result_tests {
     use super::{
-        DeltaUpdater, Diagnosis, FallbackReason, MessageKey, UpdateConfig, UpdateOutcome,
-        UpdateResult,
+        DeltaUpdater, Diagnosis, FallbackReason, MessageKey, SafeModeReason, UpdateConfig,
+        UpdateOutcome, UpdateResult,
     };
+    use crate::platform::target::EnvironmentReason;
     use std::path::PathBuf;
 
     #[test]
@@ -500,8 +516,16 @@ mod ui_result_tests {
 
     #[test]
     fn maps_safe_mode() {
-        let ui: UpdateResult = UpdateOutcome::SafeMode.into();
-        assert!(matches!(ui, UpdateResult::SafeMode));
+        let ui: UpdateResult = UpdateOutcome::SafeMode {
+            reason: SafeModeReason::SecurityBlock,
+        }
+        .into();
+        match ui {
+            UpdateResult::SafeMode { reason } => {
+                assert_eq!(reason, SafeModeReason::SecurityBlock);
+            }
+            other => panic!("SafeMode 映射错误: {other:?}"),
+        }
     }
 
     #[test]
@@ -592,8 +616,11 @@ mod ui_result_tests {
         );
 
         assert_eq!(
-            serde_json::to_value(UpdateResult::SafeMode).unwrap(),
-            json!({ "kind": "safe_mode" })
+            serde_json::to_value(UpdateResult::SafeMode {
+                reason: SafeModeReason::SecurityBlock
+            })
+            .unwrap(),
+            json!({ "kind": "safe_mode", "reason": "security_block" })
         );
     }
 
@@ -628,12 +655,14 @@ mod ui_result_tests {
             fallback_reason: None,
             bundle_capable: false,
             safe_mode: false,
+            safe_mode_reason: None,
             needs_repair: false,
             startup_state: None,
             last_rollback: None,
             rollback_history: Vec::new(),
             authenticode: None,
             authenticode_check_skipped: None,
+            authenticode_policy: crate::platform::AuthenticodePolicy::Strict,
             log_path: PathBuf::from("work/tdx_update.log"),
             events_path: PathBuf::from("work/tdx_events.jsonl"),
             script_events: Vec::new(),
@@ -649,7 +678,7 @@ mod ui_result_tests {
 
         assert_eq!(
             Diagnosis {
-                fallback_reason: Some("macOS .app bundle"),
+                fallback_reason: Some(EnvironmentReason::MacOsBundle),
                 ..base.clone()
             }
             .warnings(),
@@ -665,13 +694,13 @@ mod ui_result_tests {
         );
 
         assert!(!Diagnosis {
-            fallback_reason: Some("AppImage"),
+            fallback_reason: Some(EnvironmentReason::AppImageNotWritable),
             ..base.clone()
         }
         .can_use_delta());
         assert_eq!(
             Diagnosis {
-                fallback_reason: Some("AppImage"),
+                fallback_reason: Some(EnvironmentReason::AppImageNotWritable),
                 ..base.clone()
             }
             .user_message(),
@@ -679,7 +708,7 @@ mod ui_result_tests {
         );
         // macOS `.app` 单文件不可增量，但整包可用时仍然能走增量。
         assert!(Diagnosis {
-            fallback_reason: Some("macOS .app bundle"),
+            fallback_reason: Some(EnvironmentReason::MacOsBundle),
             bundle_capable: true,
             ..base.clone()
         }

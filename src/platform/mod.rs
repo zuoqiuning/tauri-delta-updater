@@ -4,6 +4,24 @@ use crate::core::diff::VerifiedArtifact;
 use crate::error::Result;
 use std::path::{Path, PathBuf};
 
+/// 更新产物的 Authenticode 策略（跨平台声明，仅 Windows 执行）。
+///
+/// 默认 [`Self::Strict`]：原版本可信而产物不可信（含无法得出结论）时阻断。
+/// 企业离线环境或证书链不在缓存时，可以放宽到 [`Self::Permissive`]：
+/// “无法得出结论”只告警，不阻断；明确“未签名/被拒绝”仍然阻断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AuthenticodePolicy {
+    /// 原版本可信 + 产物不可信（含 `Inconclusive`）→ 阻断。
+    #[default]
+    Strict,
+    /// 原版本可信 + 产物明确不可信 → 阻断；`Inconclusive` 只告警。
+    Permissive,
+    /// 完全跳过 Authenticode 检查（不推荐，仅用于已知受控环境）。
+    Off,
+}
+
 /// Windows Authenticode 校验（更新产物是否会因未签名而在企业环境被拒启动）。
 #[cfg(target_os = "windows")]
 pub mod authenticode;
@@ -136,25 +154,46 @@ impl PlatformUpdater {
         }
     }
 
-    /// 校验更新产物没有发生"签名退化"。
+    /// 校验更新产物没有发生"签名退化"（严格策略）。
     ///
-    /// Windows 上比较原版本与产物的 Authenticode 状态：
-    /// **原版本可信而产物不可信**时拒绝更新（企业环境会拒绝启动未签名程序）。
-    /// 原版本本身未签名（开发构建、便携应用）时不做额外要求。
+    /// 等价于 [`Self::verify_patched_binary_with`] + `AuthenticodePolicy::Strict`。
+    pub fn verify_patched_binary(original: &Path, staged: &Path) -> Result<()> {
+        Self::verify_patched_binary_with(original, staged, AuthenticodePolicy::Strict)
+    }
+
+    /// 按策略校验更新产物的 Authenticode 状态。
+    ///
+    /// Windows 上比较原版本与产物：**原版本可信而产物不可信**时拒绝更新
+    /// （企业环境会拒绝启动未签名程序）。`Permissive` 只对“无法得出结论”
+    /// 放宽，明确未签名/被拒绝仍然阻断；`Off` 跳过检查。
     ///
     /// 其它平台目前是零操作：macOS `.app` 由替换脚本在切换前执行
     /// `codesign --verify --deep --strict`，Linux 不依赖 Authenticode。
-    pub fn verify_patched_binary(original: &Path, staged: &Path) -> Result<()> {
+    pub fn verify_patched_binary_with(
+        original: &Path,
+        staged: &Path,
+        policy: AuthenticodePolicy,
+    ) -> Result<()> {
         #[cfg(target_os = "windows")]
         {
-            if authenticode::is_trusted(original) && !authenticode::is_trusted(staged) {
+            let (blocked, warn) = authenticode::evaluate(original, staged, policy);
+            if blocked {
                 return Err(crate::error::DeltaError::AuthenticodeUnsigned);
+            }
+            if warn {
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    target: "tauri_delta_updater",
+                    event = "delta.authenticode.inconclusive",
+                    staged = %staged.display(),
+                    "产物签名无法验证（可能离线/证书链不在缓存），按 Permissive 策略继续"
+                );
             }
             Ok(())
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (original, staged);
+            let _ = (original, staged, policy);
             Ok(())
         }
     }

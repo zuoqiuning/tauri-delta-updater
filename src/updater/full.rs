@@ -3,7 +3,6 @@
 use super::{
     emit, DeltaUpdater, FullDownload, FullDownloadOutcome, StagedFullInstaller, UpdateResult,
 };
-use crate::core::lock::UpdateLock;
 use crate::error::{DeltaError, Result};
 use crate::session::UpdateEvent;
 use std::path::{Path, PathBuf};
@@ -19,7 +18,7 @@ impl DeltaUpdater {
     /// - 系统版本低于清单要求、或灰度未命中时返回对应变体，不发起下载；
     /// - 上次整包替换未完成时返回 [`DeltaError::RepairRequired`]，
     ///   必须先用 [`Self::update`] / [`Self::prepare`] 修复安装目录；
-    /// - 与增量路径共用 [`UpdateLock`]，并发调用会返回
+    /// - 与增量路径共用 [`crate::core::lock::UpdateLock`]，并发调用会返回
     ///   [`DeltaError::UpdateInProgress`]；
     /// - 文件写到工作目录，名称带版本号，已存在的同名半截文件会被续传；
     /// - 装包签名不匹配时删除文件并返回 [`DeltaError::SignatureInvalid`]。
@@ -60,11 +59,11 @@ impl DeltaUpdater {
     {
         // 与增量路径共用同一把锁：两个 install_full、或 install 与 install_full
         // 并发时会写同一工作目录、启动两个安装器。
-        let _lock = UpdateLock::acquire_in(&self.work_dir)?;
+        let _lock = self.acquire_lock()?;
         self.download_full_locked(cancel, on_event).await
     }
 
-    /// 全量下载的实际实现；调用方必须已持有 [`UpdateLock`]。
+    /// 全量下载的实际实现；调用方必须已持有 [`crate::core::lock::UpdateLock`]。
     async fn download_full_locked<F>(
         &self,
         cancel: &crate::core::cancel::CancelToken,
@@ -263,7 +262,7 @@ impl DeltaUpdater {
         F: FnMut(UpdateEvent) + Send,
     {
         // 整个“下载 + 启动安装器”持锁：两个安装器并发会互相替换同一个安装目录。
-        let _lock = UpdateLock::acquire_in(&self.work_dir)?;
+        let _lock = self.acquire_lock()?;
         let outcome = self.download_full_locked(cancel, on_event).await?;
 
         match outcome {

@@ -257,6 +257,16 @@ fn raw_patch_path(patch_path: &Path) -> PathBuf {
 ///
 /// 产物同时携带校验时算出的 SHA-256，替换脚本在复制前可以再校验一次，
 /// 封住"校验完成到脚本执行之间文件被替换"的 TOCTOU 窗口。
+///
+/// 外部代码无法凭空构造它：
+///
+/// ```compile_fail
+/// use tauri_delta_updater::VerifiedArtifact;
+/// let fake = VerifiedArtifact {
+///     path: "app.exe".into(),
+///     sha256: "not-verified".into(),
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct VerifiedArtifact {
     path: PathBuf,

@@ -1,7 +1,7 @@
 //! 命令返回给前端的 DTO：稳定错误码与全量下载结果。
 
 use serde::Serialize;
-use tauri_delta_updater::{DeltaError, FullDownloadOutcome};
+use tauri_delta_updater::{DeltaError, FullDownloadOutcome, InstallFailureKind};
 
 /// 命令失败时返回给前端的结构。
 #[derive(Debug, Clone, Serialize)]
@@ -14,6 +14,9 @@ pub struct ErrorDto {
     pub retryable: bool,
     /// 是否为安全阻断（签名/哈希校验失败），UI 应据此升级提示语气。
     pub security: bool,
+    /// 全量安装失败的结构化类型；其它错误为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_failure: Option<InstallFailureKind>,
 }
 
 /// 跨重启待安装记录的精简视图（`pending` 命令）。
@@ -97,6 +100,7 @@ impl FullDownloadDto {
                 message: "插件版本过旧，无法识别全量下载结果，请升级插件".into(),
                 retryable: false,
                 security: false,
+                install_failure: None,
             }),
         }
     }
@@ -110,6 +114,7 @@ impl ErrorDto {
             message: format!("更新器不可用: {reason}"),
             retryable: false,
             security: false,
+            install_failure: None,
         }
     }
 
@@ -120,17 +125,23 @@ impl ErrorDto {
             message: "没有待启动的更新产物：请先调用 prepare".into(),
             retryable: false,
             security: false,
+            install_failure: None,
         }
     }
 }
 
 impl From<DeltaError> for ErrorDto {
     fn from(err: DeltaError) -> Self {
+        let install_failure = match &err {
+            DeltaError::FullInstallFailed { kind, .. } => Some(*kind),
+            _ => None,
+        };
         Self {
             code: err.code(),
             message: err.to_string(),
             retryable: err.is_retryable(),
             security: err.is_security_blocking(),
+            install_failure,
         }
     }
 }

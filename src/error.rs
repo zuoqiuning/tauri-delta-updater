@@ -1,3 +1,4 @@
+use crate::platform::full_install::InstallFailureKind;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -168,8 +169,14 @@ pub enum DeltaError {
     ///
     /// 与 [`DeltaError::Io`] 区分：这是"安装包已经验签通过，但装不上"，
     /// UI 应提示用户手动运行安装包，而不是重试下载。
-    #[error("全量安装失败: {0}")]
-    FullInstallFailed(String),
+    /// `kind` 让前端可以精确分支（例如取消提权时提示“已取消”而不是报错）。
+    #[error("全量安装失败: {message}")]
+    FullInstallFailed {
+        /// 结构化的失败类型。
+        kind: InstallFailureKind,
+        /// 面向开发者的详细说明。
+        message: String,
+    },
 
     /// 多跳补丁链中的某一跳失败（`hop` 从 1 开始）。
     ///
@@ -251,7 +258,7 @@ impl DeltaError {
             DeltaError::Cancelled => "cancelled",
             DeltaError::BundleInvalid(_) => "bundle_invalid",
             DeltaError::AuthenticodeUnsigned => "authenticode_unsigned",
-            DeltaError::FullInstallFailed(_) => "full_install_failed",
+            DeltaError::FullInstallFailed { .. } => "full_install_failed",
             DeltaError::ChainHopFailed { source, .. } => source.code(),
             DeltaError::SafeMode => "safe_mode",
             DeltaError::RepairRequired => "repair_required",
@@ -342,7 +349,10 @@ mod tests {
             E::Cancelled,
             E::BundleInvalid(String::new()),
             E::AuthenticodeUnsigned,
-            E::FullInstallFailed(String::new()),
+            E::FullInstallFailed {
+                kind: crate::platform::full_install::InstallFailureKind::Other,
+                message: String::new(),
+            },
             E::ChainHopFailed {
                 hop: 1,
                 total: 2,

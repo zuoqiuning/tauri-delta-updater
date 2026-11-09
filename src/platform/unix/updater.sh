@@ -29,10 +29,19 @@ log() {
 }
 
 # 回滚原因落盘 + 结构化事件：宿主进程已经退出，下一次启动的 diagnose() 读取。
+# 先写临时文件再 mv：写到一半被杀死不会留下空原因。
 write_rollback() {
-    printf '%s' "$1" > "$ROLLBACK_FILE" 2>/dev/null
-    printf '%s' 'rolled_back' > "$STATE_FILE" 2>/dev/null
+    printf '%s' "$1" > "$ROLLBACK_FILE.tmp" 2>/dev/null \
+        && mv -f "$ROLLBACK_FILE.tmp" "$ROLLBACK_FILE" 2>/dev/null
+    printf '%s' 'rolled_back' > "$STATE_FILE.tmp" 2>/dev/null \
+        && mv -f "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null
     printf '{"event":"delta.rollback.triggered","reason":"%s","time":"%s"}\n' \
+        "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$EVENTS_FILE" 2>/dev/null || true
+}
+
+# 记录“已有更具体原因、本次不覆盖”的事实，便于事后审计两次写入。
+write_rollback_preserved() {
+    printf '{"event":"delta.rollback.preserved","reason":"%s","time":"%s"}\n' \
         "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$EVENTS_FILE" 2>/dev/null || true
 }
 
@@ -71,6 +80,8 @@ restart_old() {
     if [ -z "$EXISTING" ]; then
         log 'event=delta.rollback.triggered reason=update_failed'
         write_rollback 'update_failed'
+    else
+        write_rollback_preserved "$EXISTING"
     fi
     # 替换可能只写了一半（磁盘满、I/O 错误）：只要备份还在就必须无条件还原，
     # 不能因为目标文件“存在”就把半截内容当成旧版本启动。

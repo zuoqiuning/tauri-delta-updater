@@ -20,6 +20,8 @@ use windows_sys::Win32::Security::WinTrust::{
     WTD_STATEACTION_VERIFY, WTD_UI_NONE,
 };
 
+use super::AuthenticodePolicy;
+
 /// `WinVerifyTrust` 的结论。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustState {
@@ -29,6 +31,34 @@ pub enum TrustState {
     NotTrusted,
     /// 无法得出结论：通常是离线且证书链不在本地缓存（cache-only 模式）。
     Inconclusive,
+}
+
+/// 按策略比较原版本与产物。
+///
+/// 返回 `(是否阻断, 是否需要告警)`；非 Windows 平台由调用方直接跳过。
+pub fn evaluate(original: &Path, staged: &Path, policy: AuthenticodePolicy) -> (bool, bool) {
+    decide(trust_state(original), trust_state(staged), policy)
+}
+
+/// 纯决策函数：把两种签名状态按策略映射成 `(阻断, 告警)`。
+pub fn decide(
+    original: TrustState,
+    staged: TrustState,
+    policy: AuthenticodePolicy,
+) -> (bool, bool) {
+    if policy == AuthenticodePolicy::Off {
+        return (false, false);
+    }
+    match (original, staged) {
+        // 原版本本身不可信（开发构建、便携应用）：不做额外要求。
+        (TrustState::NotTrusted | TrustState::Inconclusive, _) => (false, false),
+        (TrustState::Trusted, TrustState::Trusted) => (false, false),
+        (TrustState::Trusted, TrustState::NotTrusted) => (true, false),
+        (TrustState::Trusted, TrustState::Inconclusive) => match policy {
+            AuthenticodePolicy::Permissive => (false, true),
+            _ => (true, false),
+        },
+    }
 }
 
 /// 文件是否带有**可被本机信任**的 Authenticode 签名。
@@ -116,7 +146,45 @@ fn classify(code: i32) -> TrustState {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, is_trusted, TrustState};
+    use super::{classify, decide, is_trusted, TrustState};
+    use crate::platform::AuthenticodePolicy;
+
+    /// 三态策略：严格阻断“无法得出结论”，宽松只告警，关闭完全不检查。
+    #[test]
+    fn policy_controls_inconclusive_outcomes() {
+        use TrustState::{Inconclusive, NotTrusted, Trusted};
+
+        assert_eq!(
+            decide(Trusted, NotTrusted, AuthenticodePolicy::Strict),
+            (true, false),
+            "明确未签名必须阻断"
+        );
+        assert_eq!(
+            decide(Trusted, Inconclusive, AuthenticodePolicy::Strict),
+            (true, false),
+            "strict 下无法得出结论按不可信处理"
+        );
+        assert_eq!(
+            decide(Trusted, Inconclusive, AuthenticodePolicy::Permissive),
+            (false, true),
+            "permissive 下无法得出结论只告警"
+        );
+        assert_eq!(
+            decide(Trusted, NotTrusted, AuthenticodePolicy::Permissive),
+            (true, false),
+            "permissive 不放过明确未签名"
+        );
+        assert_eq!(
+            decide(Trusted, NotTrusted, AuthenticodePolicy::Off),
+            (false, false),
+            "off 跳过所有检查"
+        );
+        assert_eq!(
+            decide(NotTrusted, NotTrusted, AuthenticodePolicy::Strict),
+            (false, false),
+            "原版本本身未签名时不做额外要求"
+        );
+    }
 
     /// 离线且证书链不在缓存时，WinVerifyTrust 返回"无法建链"；
     /// 这类结果必须与"未签名/被拒绝"区分开，才能被诊断看到。

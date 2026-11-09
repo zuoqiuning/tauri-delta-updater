@@ -4,7 +4,7 @@
 //! 补丁序列**，不必再自己判断"有没有补丁、要不要全量、先打哪个"。
 
 use crate::models::{PatchInfo, UpdateManifest};
-use crate::platform::target::normalize_version;
+use crate::platform::target::{normalize_version, EnvironmentReason};
 use std::collections::{HashMap, VecDeque};
 
 /// 组合“为什么不能走增量”的统一原因。
@@ -14,24 +14,82 @@ use std::collections::{HashMap, VecDeque};
 ///
 /// - 环境不适合原地替换时，环境原因优先于“整包不支持”；
 /// - 有单文件补丁时不算回退（`None`）；
+/// - 有链但超预算时报告 [`FallbackReason::ChainOverBudget`]；
 /// - 否则整包不支持解释整包原因，未配置整包解释“没有匹配补丁”。
 pub(super) fn fallback_reason(
     bundle_unsupported: Option<&'static str>,
-    environment: Option<&'static str>,
+    environment: Option<EnvironmentReason>,
     has_single_patch: bool,
+    chain_over_budget: Option<(usize, u64, u64)>,
     from: &str,
     to: &str,
 ) -> Option<super::FallbackReason> {
-    if let Some(detail) = environment {
-        return Some(super::FallbackReason::EnvironmentUnsupported(detail));
+    if let Some(reason) = environment {
+        return Some(super::FallbackReason::EnvironmentUnsupported(reason));
+    }
+    if let Some((hops, total_size, installer_size)) = chain_over_budget {
+        if !has_single_patch {
+            return Some(super::FallbackReason::ChainOverBudget {
+                hops,
+                total_size,
+                installer_size,
+            });
+        }
     }
     match (bundle_unsupported, has_single_patch) {
-        (Some(detail), false) => Some(super::FallbackReason::EnvironmentUnsupported(detail)),
+        (Some(detail), false) => Some(super::FallbackReason::EnvironmentUnsupported(
+            EnvironmentReason::Other(detail),
+        )),
         (_, true) => None,
         (None, false) => Some(super::FallbackReason::NoMatchingPatch {
             from: from.to_string(),
             to: to.to_string(),
         }),
+    }
+}
+
+/// 补丁路径的规划结果。
+///
+/// 把“没有补丁”与“有链但太贵”分开：UI 可以据此提示
+/// “跨版本更新，建议下载完整安装包”，而不是笼统地说“没有补丁”。
+pub(crate) enum PlanOutcome<'a> {
+    /// 直达补丁（1 跳）。
+    Direct(&'a PatchInfo),
+    /// 多跳链（至少 2 跳，已排序）。
+    Chain(Vec<&'a PatchInfo>),
+    /// 存在链，但总下载量超过全量安装包的收益阈值。
+    OverBudget {
+        /// 链的跳数。
+        hops: usize,
+        /// 链的总下载体积（字节）。
+        total_size: u64,
+        /// 全量安装包体积（字节）。
+        installer_size: u64,
+    },
+    /// 没有可用路径（无补丁、跳数超限或版本不可解析）。
+    Unreachable,
+}
+
+impl<'a> PlanOutcome<'a> {
+    /// 可执行的补丁序列；`OverBudget` / `Unreachable` 为 `None`。
+    pub(crate) fn patches(self) -> Option<Vec<&'a PatchInfo>> {
+        match self {
+            PlanOutcome::Direct(patch) => Some(vec![patch]),
+            PlanOutcome::Chain(chain) => Some(chain),
+            PlanOutcome::OverBudget { .. } | PlanOutcome::Unreachable => None,
+        }
+    }
+
+    /// 超预算的 `(跳数, 总大小, 安装包大小)`；其它结果为 `None`。
+    pub(crate) fn over_budget(&self) -> Option<(usize, u64, u64)> {
+        match self {
+            PlanOutcome::OverBudget {
+                hops,
+                total_size,
+                installer_size,
+            } => Some((*hops, *total_size, *installer_size)),
+            _ => None,
+        }
     }
 }
 
@@ -47,16 +105,31 @@ pub(crate) const MAX_CHAIN_BUDGET_RATIO: f64 = 0.8;
 
 /// 为清单规划一条到达目标版本的单文件补丁路径。
 ///
-/// 返回 `None` 表示没有可用路径（调用方回退全量）。
+/// 返回 [`PlanOutcome::Unreachable`] 表示没有可用路径（调用方回退全量）；
+/// 返回 [`PlanOutcome::OverBudget`] 表示有链但成本不划算。
 pub(crate) fn plan_single<'a>(
     manifest: &'a UpdateManifest,
     platform: &str,
     current: &str,
-) -> Option<Vec<&'a PatchInfo>> {
-    let patches = manifest.patches.get(platform)?;
-    let chain = plan_chain(patches, current, &manifest.version, MAX_CHAIN_HOPS)?;
+) -> PlanOutcome<'a> {
+    let Some(patches) = manifest.patches.get(platform) else {
+        return PlanOutcome::Unreachable;
+    };
+    let Some(chain) = plan_chain(patches, current, &manifest.version, MAX_CHAIN_HOPS) else {
+        return PlanOutcome::Unreachable;
+    };
+    if chain.len() == 1 {
+        return PlanOutcome::Direct(chain[0]);
+    }
     let installer_size = manifest.platforms.get(platform).and_then(|p| p.size);
-    within_budget(&chain, installer_size).then_some(chain)
+    match budget_violation(&chain, installer_size) {
+        Some((total_size, installer_size)) => PlanOutcome::OverBudget {
+            hops: chain.len(),
+            total_size,
+            installer_size,
+        },
+        None => PlanOutcome::Chain(chain),
+    }
 }
 
 /// 在补丁列表里找一条从 `current` 到 `target` 的最短路径。
@@ -146,30 +219,37 @@ fn reconstruct<'a>(
 /// 多跳链的总字节数是否仍然比全量安装包划算。
 ///
 /// 大小未知（旧清单没有 `patch_size` / `size`）时不做限制：无法比较就不猜。
+#[cfg(test)]
 pub(crate) fn within_budget(chain: &[&PatchInfo], installer_size: Option<u64>) -> bool {
+    budget_violation(chain, installer_size).is_none()
+}
+
+/// 超预算时返回 `(链总大小, 安装包大小)`；未知大小或仍然划算时为 `None`。
+pub(crate) fn budget_violation(
+    chain: &[&PatchInfo],
+    installer_size: Option<u64>,
+) -> Option<(u64, u64)> {
     if chain.len() < 2 {
-        return true;
+        return None;
     }
-    let Some(installer_size) = installer_size.filter(|size| *size > 0) else {
-        return true;
-    };
+    let installer_size = installer_size.filter(|size| *size > 0)?;
     let mut total = 0u64;
     for patch in chain {
-        let Some(size) = patch.patch_size else {
-            return true;
-        };
-        total = total.saturating_add(size);
+        total = total.saturating_add(patch.patch_size?);
     }
-    (total as f64) <= (installer_size as f64) * MAX_CHAIN_BUDGET_RATIO
+    let too_expensive = (total as f64) > (installer_size as f64) * MAX_CHAIN_BUDGET_RATIO;
+    too_expensive.then_some((total, installer_size))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{fallback_reason, plan_chain, plan_single, within_budget, MAX_CHAIN_HOPS};
+    use super::{
+        fallback_reason, plan_chain, plan_single, within_budget, PlanOutcome, MAX_CHAIN_HOPS,
+    };
     use crate::models::{
         PatchInfo, PatchScope, PlatformInfo, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
     };
-    use crate::platform::target::normalize_version;
+    use crate::platform::target::{normalize_version, EnvironmentReason};
     use crate::updater::FallbackReason;
     use proptest::prelude::*;
 
@@ -177,20 +257,40 @@ mod tests {
     #[test]
     fn fallback_reason_prefers_environment_and_single_patch() {
         assert_eq!(
-            fallback_reason(Some("bundle"), Some("env"), false, "1.0", "2.0"),
-            Some(FallbackReason::EnvironmentUnsupported("env"))
+            fallback_reason(
+                Some("bundle"),
+                Some(EnvironmentReason::MacOsBundle),
+                false,
+                None,
+                "1.0",
+                "2.0"
+            ),
+            Some(FallbackReason::EnvironmentUnsupported(
+                EnvironmentReason::MacOsBundle
+            ))
         );
         assert_eq!(
-            fallback_reason(Some("bundle"), None, true, "1.0", "2.0"),
+            fallback_reason(Some("bundle"), None, true, None, "1.0", "2.0"),
             None,
             "单文件补丁可用时不算回退"
         );
         assert_eq!(
-            fallback_reason(Some("bundle"), None, false, "1.0", "2.0"),
-            Some(FallbackReason::EnvironmentUnsupported("bundle"))
+            fallback_reason(Some("bundle"), None, false, None, "1.0", "2.0"),
+            Some(FallbackReason::EnvironmentUnsupported(
+                EnvironmentReason::Other("bundle")
+            ))
         );
         assert_eq!(
-            fallback_reason(None, None, false, "1.0", "2.0"),
+            fallback_reason(None, None, false, Some((2, 900, 1000)), "1.0", "2.0"),
+            Some(FallbackReason::ChainOverBudget {
+                hops: 2,
+                total_size: 900,
+                installer_size: 1000,
+            }),
+            "超预算的链必须与“没有补丁”区分"
+        );
+        assert_eq!(
+            fallback_reason(None, None, false, None, "1.0", "2.0"),
             Some(FallbackReason::NoMatchingPatch {
                 from: "1.0".into(),
                 to: "2.0".into(),
@@ -413,10 +513,18 @@ mod tests {
             ],
             Some(1_000),
         );
-        assert!(
-            plan_single(&m, "windows-x86_64", "0.1.0").is_none(),
-            "超过预算的链应回退全量"
-        );
+        match plan_single(&m, "windows-x86_64", "0.1.0") {
+            PlanOutcome::OverBudget {
+                hops,
+                total_size,
+                installer_size,
+            } => {
+                assert_eq!(hops, 2);
+                assert_eq!(total_size, 900);
+                assert_eq!(installer_size, 1_000);
+            }
+            _ => panic!("超过预算的链必须报告 OverBudget"),
+        }
 
         let m = manifest(
             "0.3.0",
@@ -426,7 +534,23 @@ mod tests {
             ],
             Some(1_000),
         );
-        assert_eq!(plan_single(&m, "windows-x86_64", "0.1.0").unwrap().len(), 2);
-        assert!(plan_single(&m, "darwin-aarch64", "0.1.0").is_none());
+        let chain = plan_single(&m, "windows-x86_64", "0.1.0")
+            .patches()
+            .expect("划算的链必须可执行");
+        assert_eq!(chain.len(), 2);
+        assert!(matches!(
+            plan_single(&m, "darwin-aarch64", "0.1.0"),
+            PlanOutcome::Unreachable
+        ));
+
+        let direct = manifest(
+            "0.2.0",
+            vec![patch("0.1.0", "0.2.0", Some(900))],
+            Some(1_000),
+        );
+        assert!(matches!(
+            plan_single(&direct, "windows-x86_64", "0.1.0"),
+            PlanOutcome::Direct(_)
+        ));
     }
 }

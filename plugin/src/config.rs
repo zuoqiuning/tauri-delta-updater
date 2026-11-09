@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::{AppHandle, Runtime};
-use tauri_delta_updater::{FallbackPolicy, InstallMode, InstallerKind, TrustPolicy, UpdateConfig};
+use tauri_delta_updater::{
+    AuthenticodePolicy, FallbackPolicy, InstallMode, InstallerKind, LockScope, TrustPolicy,
+    UpdateConfig,
+};
 
 /// `tauri.conf.json` 里 `plugins.delta-updater` 的配置。
 ///
@@ -80,6 +83,12 @@ pub(crate) struct FileConfig {
     /// 官方配置的 `windows.installerArgs` 会自动迁移到本字段。
     #[serde(default)]
     pub(crate) installer_args: Option<Vec<String>>,
+    /// 可选：Windows 产物 Authenticode 策略（`strict` 默认 / `permissive` / `off`）。
+    #[serde(default)]
+    pub(crate) authenticode_policy: Option<String>,
+    /// 可选：更新锁作用范围（`work_dir` 默认 / `install_dir`）。
+    #[serde(default)]
+    pub(crate) lock_scope: Option<String>,
     /// 可选：是否允许明文 HTTP 端点，默认 `false`（仅本地开发/内网测试可开启）。
     #[serde(default)]
     pub(crate) allow_insecure_transport: Option<bool>,
@@ -299,6 +308,31 @@ impl FileConfig {
         }
         if let Some(args) = installer_args {
             config = config.installer_args(args);
+        }
+        if let Some(policy) = self.authenticode_policy {
+            let policy = match policy.trim().to_ascii_lowercase().as_str() {
+                "strict" => AuthenticodePolicy::Strict,
+                "permissive" => AuthenticodePolicy::Permissive,
+                "off" | "none" => AuthenticodePolicy::Off,
+                other => {
+                    return Err(format!(
+                        "plugins.delta-updater.authenticode_policy 非法: {other}（strict / permissive / off）"
+                    ))
+                }
+            };
+            config = config.authenticode_policy(policy);
+        }
+        if let Some(scope) = self.lock_scope {
+            let scope = match scope.trim().to_ascii_lowercase().as_str() {
+                "work_dir" | "workdir" => LockScope::WorkDir,
+                "install_dir" | "installdir" => LockScope::InstallDir,
+                other => {
+                    return Err(format!(
+                        "plugins.delta-updater.lock_scope 非法: {other}（work_dir / install_dir）"
+                    ))
+                }
+            };
+            config = config.lock_scope(scope);
         }
         if let Some(allow) = self.allow_insecure_transport {
             config = config.allow_insecure_transport(allow);

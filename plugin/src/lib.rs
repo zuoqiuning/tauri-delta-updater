@@ -298,32 +298,58 @@ mod tests {
                 })
                 .map(str::to_string)
                 .collect();
-        let mut default: Vec<String> = until_bracket(
-            include_str!("../permissions/default.toml"),
-            "permissions = [",
-        )
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .map(|permission| {
-            permission
-                .trim_start_matches("allow-")
-                // 权限标识用 kebab-case，命令/函数名用 snake_case。
-                .replace('-', "_")
-        })
-        .collect();
+        fn permission_set(text: &str) -> Vec<String> {
+            until_bracket(text, "permissions = [")
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(|permission| {
+                    permission
+                        .trim_start_matches("allow-")
+                        // 权限标识用 kebab-case，命令/函数名用 snake_case。
+                        .replace('-', "_")
+                })
+                .collect()
+        }
+
+        let default = permission_set(include_str!("../permissions/default.toml"));
+        let read = permission_set(include_str!("../permissions/read.toml"));
+        let update = permission_set(include_str!("../permissions/update.toml"));
+        let full = permission_set(include_str!("../permissions/full.toml"));
 
         build.sort_unstable();
         handler.sort_unstable();
-        default.sort_unstable();
         assert_eq!(
             build, handler,
             "build.rs 与 generate_handler! 命令列表不一致"
         );
+
+        // 所有权限集合起来必须覆盖每个命令（新增命令不能没有权限入口）。
+        let mut covered: Vec<String> = default
+            .iter()
+            .chain(&read)
+            .chain(&update)
+            .chain(&full)
+            .cloned()
+            .collect();
+        covered.sort_unstable();
+        covered.dedup();
         assert_eq!(
-            build, default,
-            "permissions/default.toml 与命令列表不一致（新增命令必须补权限）"
+            build, covered,
+            "权限集合并集与命令列表不一致（新增命令必须补权限）"
         );
+
+        // default 只覆盖增量路径：全量安装器必须显式授予 full。
+        for command in ["download_full", "install_full"] {
+            assert!(
+                !default.iter().any(|name| name == command),
+                "default 不应包含全量安装器命令 {command}"
+            );
+            assert!(
+                full.iter().any(|name| name == command),
+                "full 必须包含 {command}"
+            );
+        }
     }
 
     /// `guest-js` 的 `Diagnosis` 必须覆盖 Rust 序列化出的每个字段。
@@ -645,6 +671,8 @@ mod tests {
             install_mode: None,
             installer_kind: None,
             installer_args: None,
+            authenticode_policy: None,
+            lock_scope: None,
             allow_insecure_transport: None,
             install_on_next_launch: None,
             rollback_notice: None,

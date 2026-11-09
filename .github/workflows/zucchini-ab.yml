@@ -1,8 +1,11 @@
 name: Zucchini A/B
 
-# 手动触发：不进入主 CI，不阻塞日常开发；产出数据后人工写入 docs/。
+# 手动触发 + 每周一次：不进入主 CI，不阻塞日常开发；
+# 产出数据后人工写入 docs/。周度运行保证差分后端不会悄悄退化。
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
 
 permissions:
   contents: read

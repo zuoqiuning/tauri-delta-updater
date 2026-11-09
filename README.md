@@ -134,11 +134,18 @@ development; real projects should depend on `"0.3"` from crates.io.
 }
 ```
 
-`delta-updater:default` grants every command. For least-privilege setups, compose
-the granular sets instead: `delta-updater:read` (`check` / `diagnose` / `pending`),
+`delta-updater:default` grants the incremental path (`read` + `update`); it does
+**not** include the full-installer permissions. Add `delta-updater:full` only to
+the windows that really call `installFull()` / `downloadFull()` (or the
+`checkCompat()` fallback path). For tightest scope, compose the granular sets:
+`delta-updater:read` (`check` / `diagnose` / `pending`),
 `delta-updater:update` (`install` / `prepare` / `launch` / `cancel` / `reset_safety` /
 `discard_pending` / `install_pending`), and `delta-updater:full`
 (`download_full` / `install_full` — the permission that can launch an installer).
+
+```json
+"permissions": ["delta-updater:default", "delta-updater:full"]
+```
 
 `src-tauri/tauri.conf.json` — same shape as the official updater plugin:
 
@@ -337,7 +344,8 @@ match updater.install().await? {
     UpdateResult::UpToDate { .. } => {}
     UpdateResult::Deferred { .. } => { /* newer version exists, but this install is not in the rollout yet */ }
     UpdateResult::RequiresFullDownload { .. } => { /* install_full(), or hand off to the official updater */ }
-    UpdateResult::SafeMode => { /* prompt for a manual install */ }
+    // `reason` separates a security block from a disk/permission problem.
+    UpdateResult::SafeMode { reason } => { let _ = reason; /* prompt for a manual install */ }
     // `UpdateResult` is non_exhaustive: new outcomes won't break your build.
     _ => {}
 }
@@ -436,7 +444,7 @@ Platform support:
 - **Signed percentage rollout** — `generate --rollout 20` writes `platforms[].rollout` into the signed manifest; clients bucket on `sha256(install_id + version) % 100`. Misses get `Deferred` and download nothing; `0` pauses the release, `100` behaves like a normal release. The install ID persists in `tdx_install_id`, or pass `UpdateConfig::install_id(...)`. No server-side bucketing and no second manifest.
 - **Forced minimum version** — `generate --min-version 0.1.5` writes a signed floor into the manifest. Clients below it ignore the rollout percentage and must update, so a bad release can be reversed without waiting for the bucket.
 - **Deterministic startup handshake** — the replacement script writes `staged`, the new process writes `booting`, and `confirm_startup_success_with(|| ...)` writes `committed` only after the host's health check passes. Failure writes `health_check_failed` and rolls back immediately; `diagnose().startup_state` / `last_rollback` distinguish "never started", "crashed before commit", "started but unhealthy" and "committed".
-- **Startup doctor** — `diagnose().warnings()` returns actionable configuration gaps; the plugin prints them to the startup log on first run (work directory not writable, macOS `.app` without a bundle manifest, Linux without `runuser` / `su`).
+- **Startup doctor** — `diagnose().warnings()` returns actionable configuration gaps; the plugin prints them to the startup log on first run (work directory not writable, macOS `.app` without a bundle manifest, Linux without `runuser` / `su`). `diagnose().safe_mode_reason` (`security_block` / `environment_failure` / `transient_retries_exhausted`) and `diagnose().fallback_reason` (`EnvironmentReason`) are structured, so the UI can localize without matching Chinese text.
 - **Structured rollback events** — replacement scripts append one JSON line per rollback (and the repair path) to `tdx_events.jsonl` (`{ event, reason, time }`). `diagnose().events_path` points at the file and `diagnose().script_events` already returns the last 20 parsed entries as typed `ScriptEvent` values, so the UI can explain what happened without parsing a free-form log. Malformed or future lines are ignored.
 - **Optional structured events** — enable the `tracing` feature to receive `delta.check`, `delta.patch.matched`, `delta.patch.rejected`, `delta.fallback`, `delta.safety_mode.entered`, `delta.safety_mode.cooldown_active`, and `delta.patched` events; zero cost when disabled.
 - **Zero-config constructor** — `DeltaUpdater::auto(url, pubkey, version)` derives the platform, user work directory, and HTTP client.

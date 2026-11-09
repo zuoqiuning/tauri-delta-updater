@@ -2,13 +2,14 @@
 
 use super::bundle_flow::BundleResolution;
 use super::diagnosis::read_rollback_reason;
+use super::plan::PlanOutcome;
 use super::{
-    emit, is_cancelled, CheckOutcome, DeltaUpdater, FallbackReason, OsRequirement, StagedRepair,
-    UpdateOutcome, UpdateResult,
+    emit, is_cancelled, CheckOutcome, DeltaUpdater, FallbackReason, OsRequirement, SafeModeReason,
+    StagedRepair, UpdateOutcome, UpdateResult,
 };
-use crate::core::lock::UpdateLock;
-use crate::core::safety::{record_failed_attempt, should_abort};
+use crate::core::safety::should_abort;
 use crate::error::{DeltaError, Result};
+use crate::platform::target::EnvironmentReason;
 use crate::platform::PlatformUpdater;
 use crate::session::UpdateEvent;
 use std::sync::atomic::AtomicBool;
@@ -72,16 +73,18 @@ impl DeltaUpdater {
             None
         };
         // 单文件补丁路径：直达优先，其次最多 MAX_CHAIN_HOPS 跳；
-        // 链的总成本超过安装包预算时视为"没有补丁"。
-        let single_chain = if is_newer && !deferred_by_rollout && unsupported_os.is_none() {
+        // 链的总成本超过安装包预算时返回 OverBudget，UI 可给出明确建议。
+        let plan = if is_newer && !deferred_by_rollout && unsupported_os.is_none() {
             super::plan::plan_single(
                 &manifest,
                 &self.config.platform,
                 &self.config.current_version,
             )
         } else {
-            None
+            PlanOutcome::Unreachable
         };
+        let chain_over_budget = plan.over_budget();
+        let single_chain = plan.patches();
         let single_patch_size = single_chain.as_ref().and_then(|chain| {
             chain.iter().try_fold(0u64, |total, patch| {
                 patch.patch_size.map(|size| total.saturating_add(size))
@@ -100,11 +103,12 @@ impl DeltaUpdater {
         // 单文件补丁存在时仍应报告 has_patch，而 update() 也会走单文件路径。
         let fallback_reason = if !is_newer || deferred_by_rollout {
             None
-        } else if unsupported_os.is_some() {
-            // `FallbackReason::EnvironmentUnsupported` 持有静态文案；
-            // 具体版本号由 `update()` 的 `UnsupportedOs` 返回。
+        } else if let Some((required, current)) = &unsupported_os {
             Some(FallbackReason::EnvironmentUnsupported(
-                "本机系统版本低于清单要求，已拒绝下载",
+                EnvironmentReason::UnsupportedOs {
+                    required: required.clone(),
+                    current: current.clone(),
+                },
             ))
         } else {
             let no_matching = || FallbackReason::NoMatchingPatch {
@@ -117,6 +121,7 @@ impl DeltaUpdater {
                     Some(detail),
                     environment,
                     single_chain.is_some(),
+                    chain_over_budget,
                     &self.config.current_version,
                     &manifest.version,
                 ),
@@ -125,12 +130,17 @@ impl DeltaUpdater {
                     None,
                     environment,
                     single_chain.is_some(),
+                    chain_over_budget,
                     &self.config.current_version,
                     &manifest.version,
                 ),
             }
         };
         let has_patch = is_newer && !deferred_by_rollout && fallback_reason.is_none();
+        let chain_rejected_by_budget = matches!(
+            fallback_reason,
+            Some(FallbackReason::ChainOverBudget { .. })
+        );
 
         crate::core::events::check(
             &manifest.version,
@@ -148,6 +158,7 @@ impl DeltaUpdater {
             is_delta: has_patch,
             rollout_percentage,
             deferred_by_rollout,
+            chain_rejected_by_budget,
             needs_repair,
             download_size: patch_size,
             patch_size,
@@ -522,7 +533,10 @@ impl DeltaUpdater {
             if let Some(cb) = on_event.as_mut() {
                 cb(UpdateEvent::SafeMode);
             }
-            return Ok(UpdateOutcome::SafeMode);
+            let reason = crate::core::safety::last_failure_reason(&self.work_dir)
+                .await
+                .unwrap_or(SafeModeReason::EnvironmentFailure);
+            return Ok(UpdateOutcome::SafeMode { reason });
         }
 
         if is_cancelled(cancel) {
@@ -561,7 +575,7 @@ impl DeltaUpdater {
         );
 
         // 修复同样要持锁：它与更新会写同一批文件。
-        let _lock = UpdateLock::acquire_in(&self.work_dir)?;
+        let _lock = self.acquire_lock()?;
         let script = PlatformUpdater::generate_bundle_repair_with(
             &self.executable_path,
             &self.work_dir,
@@ -591,7 +605,7 @@ impl DeltaUpdater {
     ) -> Result<UpdateOutcome> {
         // 互斥锁：防止多个更新进程同时改写文件。
         // 失败计数也在锁内记录，避免并发时的读-改-写竞争丢计数。
-        let _lock = UpdateLock::acquire_in(&self.work_dir)?;
+        let _lock = self.acquire_lock()?;
 
         let result = self.run_locked(launch, on_event, cancel).await;
 
@@ -602,10 +616,23 @@ impl DeltaUpdater {
         if let Err(e) = &result {
             crate::core::events::patch_rejected(&e.to_string());
             if !e.is_retryable() && !matches!(e, DeltaError::Cancelled) {
-                let _ = record_failed_attempt(&self.work_dir).await;
+                let reason = safe_mode_reason(e);
+                let _ =
+                    crate::core::safety::record_failed_attempt_with_reason(&self.work_dir, reason)
+                        .await;
             }
         }
-
         result
+    }
+}
+
+/// 把一次确定性失败归类为安全模式原因。
+fn safe_mode_reason(error: &DeltaError) -> SafeModeReason {
+    if error.is_security_blocking() {
+        SafeModeReason::SecurityBlock
+    } else if error.is_retryable() {
+        SafeModeReason::TransientRetriesExhausted
+    } else {
+        SafeModeReason::EnvironmentFailure
     }
 }

@@ -618,7 +618,7 @@ async fn test_end_to_end_safe_mode_after_repeated_failures() {
         );
         match updater.update().await {
             Err(e) => eprintln!("[attempt {attempts}] update 失败: {e:?}"),
-            Ok(UpdateOutcome::SafeMode) => {} // 计数恰在本轮达到阈值
+            Ok(UpdateOutcome::SafeMode { .. }) => {} // 计数恰在本轮达到阈值
             Ok(other) => panic!("签名错误的清单必须导致更新失败，实际得到: {other:?}"),
         }
     }
@@ -627,9 +627,16 @@ async fn test_end_to_end_safe_mode_after_repeated_failures() {
         "至少需要 3 次确定性失败才能达到阈值，实际只尝试了 {attempts} 次"
     );
 
-    // 达到上限后进入安全模式，不再发起网络请求
+    // 达到上限后进入安全模式，不再发起网络请求。
+    // 本轮失败全部是签名校验，原因必须归类为安全阻断。
     match updater.update().await.unwrap() {
-        UpdateOutcome::SafeMode => {}
+        UpdateOutcome::SafeMode { reason } => {
+            assert_eq!(
+                reason,
+                tauri_delta_updater::SafeModeReason::SecurityBlock,
+                "签名失败进入安全模式时必须报告 SecurityBlock"
+            );
+        }
         other => panic!("应当进入安全模式，实际得到: {other:?}"),
     }
 }

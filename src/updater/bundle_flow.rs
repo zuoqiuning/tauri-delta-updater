@@ -106,7 +106,11 @@ impl DeltaUpdater {
 
         // 整包：新版本主程序也必须保持原有的 Authenticode 状态
         if let Some(name) = self.executable_path.file_name() {
-            PlatformUpdater::verify_patched_binary(&self.executable_path, &staging_dir.join(name))?;
+            PlatformUpdater::verify_patched_binary_with(
+                &self.executable_path,
+                &staging_dir.join(name),
+                self.config.authenticode_policy,
+            )?;
         }
 
         let _ = tokio::fs::remove_file(&patch_path).await;

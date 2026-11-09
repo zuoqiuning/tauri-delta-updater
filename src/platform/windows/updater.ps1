@@ -31,11 +31,29 @@ function Write-Log([string]$message) {
 # 下一次启动的 diagnose() 读取这个文件告诉用户发生了什么。
 function Write-Rollback([string]$reason) {
     Write-Log ('event=delta.rollback.triggered reason=' + $reason)
-    try { [System.IO.File]::WriteAllText($rollbackFlag, $reason) } catch { }
-    try { [System.IO.File]::WriteAllText($stateFile, 'rolled_back') } catch { }
+    # 先写临时文件再原子替换：进程在写一半时被杀死，也不会留下空原因，
+    # 下一次启动的 diagnose() 不会把已知回滚原因当成“未知”。
+    try {
+        $tmp = $rollbackFlag + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, $reason)
+        Move-Item -LiteralPath $tmp -Destination $rollbackFlag -Force
+    } catch { }
+    try {
+        $tmp = $stateFile + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, 'rolled_back')
+        Move-Item -LiteralPath $tmp -Destination $stateFile -Force
+    } catch { }
     # 结构化事件：宿主下次启动时可以直接解析 JSONL，不必正则匹配日志。
     try {
         $evt = @{ event = 'delta.rollback.triggered'; reason = $reason; time = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
+        [System.IO.File]::AppendAllText($eventsFile, $evt + [Environment]::NewLine)
+    } catch { }
+}
+
+# 记录“已有更具体原因、本次不覆盖”的事实，便于事后审计两次写入。
+function Write-RollbackPreserved([string]$reason) {
+    try {
+        $evt = @{ event = 'delta.rollback.preserved'; reason = $reason; time = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
         [System.IO.File]::AppendAllText($eventsFile, $evt + [Environment]::NewLine)
     } catch { }
 }
@@ -128,7 +146,11 @@ function Restart-Old {
     # 已经有明确原因（超时/健康检查失败）时不要覆盖成笼统的 update_failed。
     $existing = ''
     try { $existing = ([System.IO.File]::ReadAllText($rollbackFlag)).Trim() } catch { }
-    if (-not $existing) { Write-Rollback 'update_failed' }
+    if ($existing) {
+        Write-RollbackPreserved $existing
+    } else {
+        Write-Rollback 'update_failed'
+    }
     if (-not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath $backup)) {
         Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction SilentlyContinue
     }

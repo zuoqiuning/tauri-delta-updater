@@ -343,6 +343,7 @@ fn begin_operation(state: &State<'_, UpdaterState>, token: CancelToken) -> Resul
             message: "另一个更新操作正在进行，请稍后再试".into(),
             retryable: false,
             security: false,
+            install_failure: None,
         }),
     }
 }

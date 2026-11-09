@@ -45,7 +45,9 @@ async fn main() {
         Ok(UpdateResult::RequiresFullDownload { url, reason }) => {
             println!("增量不可用（{reason}），请走全量下载: {url:?}");
         }
-        Ok(UpdateResult::SafeMode) => println!("连续失败已达上限，请提示用户手动安装"),
+        Ok(UpdateResult::SafeMode { reason }) => {
+            println!("连续失败已达上限（{reason:?}），请提示用户手动安装")
+        }
         // UpdateResult 是 non_exhaustive 的：将来新增变体不会破坏现有代码
         Ok(_) => {}
         Err(e) => eprintln!("更新失败: {e}"),

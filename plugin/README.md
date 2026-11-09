@@ -38,9 +38,14 @@ The plugin reuses the official updater's `plugins.updater` config as-is when
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "windows": ["main"],
-  "permissions": ["delta-updater:default"]
+  "permissions": ["delta-updater:default", "delta-updater:full"]
 }
 ```
+
+`delta-updater:default` covers the incremental path (`read` + `update`);
+`delta-updater:full` is only needed by windows that call `installFull()` /
+`downloadFull()` (including the `checkCompat()` fallback). Drop it if you never
+install the platform installer from the frontend.
 
 `src-tauri/src/lib.rs`:
 

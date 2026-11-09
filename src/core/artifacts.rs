@@ -205,6 +205,13 @@ pub const LEGACY_SCRIPTS: &[&str] = &["sereno_update.ps1", "sereno_update.sh", "
 /// 换名字会让它们在过渡期同时改写文件。
 pub const LOCK_FILE: &str = ".update.lock";
 
+/// 跨用户互斥锁（`LockScope::InstallDir`）。
+///
+/// 放在安装目录而不是用户缓存目录：per-machine 安装的多个用户账户
+/// 必须争同一把锁，否则会同时替换 `Program Files` 里的文件。
+/// 目录只读（需要提权）时无法创建，引擎会退回仅工作目录锁并告警。
+pub const MACHINE_LOCK_FILE: &str = "tdx_machine.lock";
+
 /// 连续失败多少次后停止尝试增量更新。
 pub const MAX_FAILED_ATTEMPTS: u32 = 3;
 
