@@ -184,6 +184,10 @@ pub(crate) struct ReleaseArgs {
     #[arg(long = "base-url", value_name = "URL")]
     pub(crate) base_url: String,
 
+    /// 允许 `base-url` 使用明文 HTTP（默认拒绝；仅本地/内网测试使用）。
+    #[arg(long = "allow-http")]
+    pub(crate) allow_http: bool,
+
     /// minisign 私钥：文件路径、base64 内容或密钥原文。
     #[arg(long = "private-key", env = "TAURI_SIGNING_PRIVATE_KEY")]
     pub(crate) private_key: String,
@@ -290,6 +294,7 @@ impl ReleaseArgs {
 
         let mut options =
             ReleaseOptions::new(self.app_binary, self.to, self.base_url, self.private_key);
+        options.allow_http = self.allow_http;
         options.old_dirs = old_dirs;
         options.old_binaries = old_binaries;
         options.installer = self.installer;

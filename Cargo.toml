@@ -77,7 +77,7 @@ zstd = "0.13"
 # 旧文件与补丁都用只读内存映射替代全量 fs::read：操作系统按需分页，
 # 峰值 RSS 显著低于一次性分配。
 memmap2 = "0.9"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 # 0.13 起 `rustls-tls` feature 更名为 `rustls`；约束收窄到 0.13+，
 # 与宿主工程的 reqwest 统一解析，彻底消灭双版本共存。
 #

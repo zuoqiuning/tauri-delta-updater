@@ -369,7 +369,7 @@ impl Report {
 
     fn print(&self) {
         println!(
-            "[{}] 体检完成：{} 项检查，{} 个错误，{} 个警告",
+            "[{}] 体检完成 / audit finished：{} 项检查，{} 个错误 / errors，{} 个警告 / warnings",
             if self.errors.is_empty() { "OK" } else { "FAIL" },
             self.checks,
             self.errors.len(),
@@ -568,8 +568,14 @@ async fn check_manifest_signature(
         verdict.policy,
         verdict.allow_legacy,
     ) {
-        Ok(()) => report.ok(format!("清单签名有效: {}", source.endpoint)),
-        Err(err) => report.fail(format!("清单签名校验失败（{}）: {err}", source.endpoint)),
+        Ok(()) => report.ok(format!(
+            "清单签名有效 / signature valid: {}",
+            source.endpoint
+        )),
+        Err(err) => report.fail(format!(
+            "清单签名校验失败 / signature verification failed（{}）: {err}",
+            source.endpoint
+        )),
     }
 
     match manifest_version_binding(&signature) {

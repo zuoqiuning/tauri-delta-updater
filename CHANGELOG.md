@@ -56,6 +56,20 @@
 - 全量 `.exe` 未显式配置 `installer_kind` 时按内容识别 Inno/NSIS，降低漏配导致弹向导的风险。
 - pending 路径改用 canonicalize，阻止 `work_dir/../evil` 逃逸；`os_version` 缺失段补零。
 - 日志/事件超过 2 MB 时轮转保留 `.1`；测试与 CI 清理噪声。
+- 补丁生成/应用在进程内串行化：并发调用不再叠加内存峰值，也不会互相覆盖
+  临时产物（`core::diff` 内部信号量）。
+- `cargo delta release` / `generate` 的 `--base-url` 默认必须是带主机名的
+  HTTPS；内网或本地联调需显式加 `--allow-http`。
+- 全量下载在发起请求前拒绝 Linux `.deb` / `.rpm`：这类包无法自动安装，
+  提前失败并提示改用发行版包管理器或 AppImage。
+- `generate --from` 同时接受目录与单个可执行文件，与 `cargo delta release`
+  的基线参数语义一致。
+- `Diagnosis` 新增 `insecure_endpoint`：前端可直接提示“当前走明文 HTTP”的
+  具体端点；TS 类型同步。
+- `cargo delta doctor` 的关键结论附带英文关键词（`audit finished`、
+  `signature valid`、`signature verification failed`），便于 CI grep 与
+  非中文环境排障；发布端补丁验证失败时给出下一步建议。
+- 回归测试锁定 `check()` 不清理已准备好的 pending，避免“检查一次就丢下载进度”。
 
 ### 变更（公开 API）
 
@@ -73,6 +87,7 @@
   `UpdateConfig::installer_args()`、`install_with_mode_kind_and_args`。
 - Windows 全量安装支持额外参数（插件配置 `installer_args`，官方
   `windows.installerArgs` 自动迁移）；含空格/引号自动加引号，NUL 在构造阶段拒绝。
+- `ReleaseOptions` 新增 `allow_http`：默认 `false`，明文 `base_url` 需要显式开启。
 - 插件配置新增 `signature_url`：签名可独立托管，缺省仍按清单地址推导。
 - 新增 `UpdateResult::requires_exit()`：`Updated` / `RepairRequired` 为 `true`，
   宿主不必再自行维护需要退出的变体列表。

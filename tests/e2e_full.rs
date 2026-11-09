@@ -25,6 +25,16 @@ async fn full_fixture_with(
     current_version: &str,
     platform_extra: serde_json::Value,
 ) -> (tempfile::TempDir, DeltaUpdater, MockServer) {
+    full_fixture_at(installer, current_version, platform_extra, "/full.exe").await
+}
+
+/// 与 [`full_fixture_with`] 相同，但可指定安装包 URL 的路径。
+async fn full_fixture_at(
+    installer: &[u8],
+    current_version: &str,
+    platform_extra: serde_json::Value,
+    url_path: &str,
+) -> (tempfile::TempDir, DeltaUpdater, MockServer) {
     let dir = tempdir().unwrap();
     let old_exe = dir.path().join("app.exe");
     std::fs::write(&old_exe, b"OLD").unwrap();
@@ -37,7 +47,7 @@ async fn full_fixture_with(
     let installer_sig = STANDARD.encode(sign(&sk, installer).as_bytes());
     let mut platform_entry = serde_json::json!({
         "signature": installer_sig,
-        "url": server.url("/full.exe")
+        "url": server.url(url_path)
     });
     if let Some(extra) = platform_extra.as_object() {
         for (key, value) in extra {
@@ -55,6 +65,7 @@ async fn full_fixture_with(
     server.set("/latest.json", bytes.clone());
     server.set("/latest.json.sig", sign(&sk, &bytes).into_bytes());
     server.set("/full.exe", installer.to_vec());
+    server.set(url_path, installer.to_vec());
 
     let updater = DeltaUpdater::new(
         UpdateConfig::new(server.url("/latest.json"), pk_b64)
@@ -66,6 +77,17 @@ async fn full_fixture_with(
     .unwrap();
 
     (dir, updater, server)
+}
+
+/// `.deb` / `.rpm` 必须在下载前拒绝：下载几十 MB 后才说不支持是纯浪费。
+#[tokio::test]
+async fn test_full_download_rejects_deb_before_download() {
+    let (_dir, updater, _server) =
+        full_fixture_at(b"deb package", "0.1.0", serde_json::json!({}), "/app.deb").await;
+
+    let err = updater.download_full().await.unwrap_err();
+    assert!(matches!(err, DeltaError::Config(_)), "{err:?}");
+    assert!(err.to_string().contains(".deb"), "{err}");
 }
 
 /// 全量下载：安装包落盘、签名校验通过、阶段事件正确。

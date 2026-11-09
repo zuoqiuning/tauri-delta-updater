@@ -40,6 +40,8 @@ pub struct ReleaseOptions {
     pub version: String,
     /// 补丁与安装包的下载前缀。
     pub base_url: String,
+    /// 允许 `base_url` 使用明文 HTTP（默认拒绝：客户端默认也不接受）。
+    pub allow_http: bool,
     /// minisign 私钥：文件路径、base64 内容或密钥原文。
     pub private_key: String,
     /// 私钥口令（加密私钥时必填）。
@@ -106,6 +108,7 @@ impl ReleaseOptions {
             installer: None,
             version: version.into(),
             base_url: base_url.into(),
+            allow_http: false,
             private_key: private_key.into(),
             password: None,
             secondary_private_key: None,
@@ -670,6 +673,20 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
 
 /// 参数范围与输入存在性的统一校验：两个 CLI 共用，避免薄入口各写一遍。
 fn validate(options: &ReleaseOptions) -> Result<(), String> {
+    // 发布源是客户端的信任入口：明文 HTTP 默认会被客户端拒绝，
+    // 必须在生成清单之前失败，而不是等用户更新时才发现。
+    let base_url = options.base_url.trim();
+    let parsed = reqwest::Url::parse(base_url)
+        .map_err(|e| format!("base_url 不是合法 URL（{base_url}）: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(format!("base_url 必须是带主机名的 http(s) URL: {base_url}"));
+    }
+    if parsed.scheme() == "http" && !options.allow_http {
+        return Err(format!(
+            "base_url 使用明文 HTTP（{base_url}），客户端默认会拒绝；如确认要使用请加 --allow-http"
+        ));
+    }
+
     if !(0.0..=1.0).contains(&options.max_patch_ratio) {
         return Err("--max-patch-ratio 必须在 0.0 到 1.0 之间".into());
     }

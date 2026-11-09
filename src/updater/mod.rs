@@ -639,6 +639,7 @@ mod ui_result_tests {
             script_events: Vec::new(),
             privilege_tools_available: None,
             insecure_transport: false,
+            insecure_endpoint: None,
             installer_kind: None,
         };
         assert!(base.can_use_delta());

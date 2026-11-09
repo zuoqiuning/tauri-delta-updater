@@ -51,6 +51,71 @@ fn s(value: impl AsRef<std::ffi::OsStr>) -> String {
     value.as_ref().to_string_lossy().to_string()
 }
 
+/// `--from` 是 `--old-dir` / `--old-binary` 的统一别名：目录与文件都要识别。
+#[test]
+fn test_generate_cli_accepts_from_alias() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args = vec![
+        "--from".to_string(),
+        s(&old_versions),
+        "--app-binary".to_string(),
+        s(&new_exe),
+        "--version".to_string(),
+        "0.1.1".to_string(),
+        "--base-url".to_string(),
+        "https://cdn.example.com".to_string(),
+        "--private-key".to_string(),
+        s(&key_file),
+        "--output-dir".to_string(),
+        s(dir.join("dist")),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(code, 0, "--from 别名必须可用: {stdout}\n{stderr}");
+}
+
+/// 发布源默认必须 HTTPS；显式 `--allow-http` 后才允许明文。
+#[test]
+fn test_generate_cli_rejects_http_base_url() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let old_versions = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_versions).unwrap();
+    std::fs::copy(&old_exe, old_versions.join("App_0.1.0_x64.exe")).unwrap();
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let mut args = vec![
+        "--old-dir".to_string(),
+        s(&old_versions),
+        "--app-binary".to_string(),
+        s(&new_exe),
+        "--version".to_string(),
+        "0.1.1".to_string(),
+        "--base-url".to_string(),
+        "http://cdn.example.com".to_string(),
+        "--private-key".to_string(),
+        s(&key_file),
+        "--output-dir".to_string(),
+        s(dir.join("dist")),
+    ];
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "明文 HTTP 默认必须失败");
+    assert!(stderr.contains("allow-http"), "{stderr}");
+
+    args.push("--allow-http".to_string());
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(code, 0, "显式允许后应成功: {stdout}\n{stderr}");
+}
+
 /// 端到端：主程序与安装包分离，生成清单、补丁与安装包签名。
 #[test]
 fn test_generate_cli_produces_manifest_and_patch() {

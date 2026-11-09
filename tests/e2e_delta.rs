@@ -1420,6 +1420,23 @@ fn test_update_config_has_sensible_defaults() {
     assert_eq!(config.confirm_timeout_secs, 45);
 }
 
+/// `check()` 只读：不能清理已就绪的 pending 产物。
+#[tokio::test]
+async fn test_check_never_cleans_pending() {
+    let (_dir, updater, _server, _new_bytes) = delta_fixture().await;
+    let _ = updater.prepare().await.unwrap();
+    assert!(
+        updater.pending_update().await.unwrap().is_some(),
+        "prepare 应落盘 pending"
+    );
+
+    let _ = updater.check().await.unwrap();
+    assert!(
+        updater.pending_update().await.unwrap().is_some(),
+        "check 不得清理 pending"
+    );
+}
+
 /// 清单版本与当前版本相同时必须返回 UpToDate，且不下载任何东西。
 #[tokio::test]
 async fn test_end_to_end_up_to_date() {

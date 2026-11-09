@@ -61,6 +61,14 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) base_url: String,
 
+    /// 补丁基线（可重复）：目录或单个主程序文件；与 `--old-dir` / `--old-binary` 等价。
+    #[arg(long = "from", value_name = "PATH")]
+    pub(crate) from: Vec<PathBuf>,
+
+    /// 允许 `base-url` 使用明文 HTTP（默认拒绝；仅本地/内网测试使用）。
+    #[arg(long = "allow-http")]
+    pub(crate) allow_http: bool,
+
     /// minisign 私钥：文件路径、base64 内容或密钥原文。
     #[arg(long, env = "TAURI_SIGNING_PRIVATE_KEY")]
     pub(crate) private_key: String,
@@ -194,8 +202,16 @@ impl Args {
             self.base_url,
             self.private_key,
         );
+        options.allow_http = self.allow_http;
         options.old_dirs = self.old_dir.into_iter().collect();
         options.old_binaries = self.old_binary;
+        for path in self.from {
+            if path.is_dir() {
+                options.old_dirs.push(path);
+            } else {
+                options.old_binaries.push(path);
+            }
+        }
         options.installer = self.installer;
         options.password = self.password;
         options.secondary_private_key = self.secondary_private_key;

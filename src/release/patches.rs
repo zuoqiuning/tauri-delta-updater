@@ -235,7 +235,9 @@ pub(crate) async fn generate_single_patches(
         let _ = std::fs::remove_file(&verify_out);
         let _ = std::fs::remove_dir_all(&verify_dir);
         verify_result.map_err(|e| {
-            format!("补丁 {patch_name} 无法从旧主程序重建出新版本（发布中止）: {e}")
+            format!(
+                "补丁 {patch_name} 无法从旧主程序重建出新版本（发布中止 / patch verification failed）: {e}\n建议：\n  1. 检查 --old-dir / --from 的基线是否与目标架构一致\n  2. 检查 --max-patch-ratio 是否过于严格\n  3. 发布后运行 `cargo delta doctor` 体检线上桶"
+            )
         })?;
         println!("[OK] 补丁验证通过: {patch_name}（{patch_size:?} 字节）");
 

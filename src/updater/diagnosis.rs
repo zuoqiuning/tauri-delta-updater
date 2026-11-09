@@ -138,6 +138,10 @@ pub struct Diagnosis {
     /// 明文不影响完整性（清单/补丁仍验签），但会暴露版本号等元数据，
     /// 并让中间人可以看到更新活动的节奏。生产环境应改用 HTTPS。
     pub insecure_transport: bool,
+    /// 第一个明文 HTTP 端点（非回环）；全部 HTTPS/回环时为 `None`。
+    ///
+    /// 只给宿主排障用：端点可能包含私有 CDN token，展示前请自行脱敏。
+    pub insecure_endpoint: Option<String>,
     /// 配置显式声明的全量安装器类型；`None` 表示按文件后缀推断。
     ///
     /// 用 Inno Setup 打包的宿主必须显式配置，否则排障时无法从诊断页看出
@@ -352,6 +356,7 @@ impl DeltaUpdater {
             script_events,
             privilege_tools_available: privilege_tools_available(),
             insecure_transport: self.config.uses_insecure_transport(),
+            insecure_endpoint: self.config.insecure_endpoint().map(str::to_string),
             installer_kind: self.config.installer_kind,
         }
     }

@@ -186,16 +186,20 @@ jobs:
             echo "插件 $VERSION 已发布，跳过"
             exit 0
           fi
-          # 固定 sleep 在索引慢时会直接失败；轮询最多约 5 分钟。
+          # 索引延迟不可预测：指数退避比固定 sleep 更稳，总等待约 6 分钟。
           visible=false
-          for i in $(seq 1 15); do
+          delay=20
+          for i in $(seq 1 6); do
             if curl -sf -H "User-Agent: tauri-delta-updater-release-ci" \
               "https://crates.io/api/v1/crates/tauri-delta-updater/$VERSION" > /dev/null; then
               visible=true
               echo "crates.io 已可见 $VERSION"
               break
             fi
-            sleep 20
+            echo "等待 crates.io 索引（${delay}s，第 ${i}/6 次）"
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 120 ]; then delay=120; fi
           done
           if [ "$visible" != true ]; then
             echo "核心 $VERSION 在 crates.io 仍不可见；插件未发布，可稍后单独重跑本 job"

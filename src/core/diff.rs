@@ -474,15 +474,25 @@ pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     })
 }
 
+/// 进程级串行化：512 MB 栈预留 + 手动线程在多平台并行发布时可能撞上
+/// 线程创建失败。跨进程由调用方的 `UpdateLock` 负责，这里只约束本进程。
+static PATCH_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 /// 在独立线程中执行阻塞操作。
 ///
 /// - 闭包返回的原始 `DeltaError` **原样透传**，不重新包装，
 ///   调用方才能区分"哈希不匹配"和"线程崩溃"这类完全不同的失败；
-/// - 线程 panic 与线程创建失败（通常是内存不足）转成 `WorkerFailed`。
+/// - 线程 panic 与线程创建失败（通常是内存不足）转成 `WorkerFailed`；
+/// - 同一进程内的补丁生成/应用会在这里串行排队。
 async fn run_blocking<F>(task: &'static str, f: F) -> Result<()>
 where
     F: FnOnce() -> Result<()> + Send + 'static,
 {
+    // 等待串行锁时不占用阻塞线程池；真正的重活仍在独立大栈线程里执行。
+    let _permit = PATCH_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|e| DeltaError::WorkerFailed(format!("{task}等待串行锁失败: {e}")))?;
     tokio::task::spawn_blocking(move || {
         match std::thread::Builder::new()
             .stack_size(WORKER_STACK_SIZE)
@@ -516,6 +526,25 @@ mod tests {
             working_set_required(300 * 1024 * 1024, 300 * 1024 * 1024),
             5_100 * 1024 * 1024
         );
+    }
+
+    /// 并发调用补丁生成不能被 512 MB 栈线程创建失败击穿。
+    #[tokio::test]
+    async fn concurrent_patch_jobs_are_serialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Vec::new();
+        for index in 0..3 {
+            let old = dir.path().join(format!("old{index}.bin"));
+            let new = dir.path().join(format!("new{index}.bin"));
+            let output = dir.path().join(format!("p{index}.patch"));
+            std::fs::write(&old, format!("old-{index}")).unwrap();
+            std::fs::write(&new, format!("new-{index}")).unwrap();
+            jobs.push(super::create_patch(old, new, output));
+        }
+        let results = futures_util::future::join_all(jobs).await;
+        for result in results {
+            assert!(result.is_ok(), "并发补丁失败: {result:?}");
+        }
     }
 
     /// 超过上限时必须返回可识别的错误，发布端据此跳过基线。

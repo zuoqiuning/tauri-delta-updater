@@ -186,6 +186,8 @@ export interface Diagnosis {
   privilege_tools_available: boolean | null;
   /** 端点使用明文 HTTP 且非回环（配置降级，建议在 UI/日志中暴露）。 */
   insecure_transport: boolean;
+  /** 第一个明文 HTTP 端点；展示前请自行脱敏（可能包含 CDN token）。 */
+  insecure_endpoint: string | null;
   /** 显式声明的全量安装器类型；`null` 表示按文件后缀推断。 */
   installer_kind: InstallerKind | null;
 }

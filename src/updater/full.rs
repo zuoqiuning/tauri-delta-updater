@@ -124,6 +124,23 @@ impl DeltaUpdater {
             });
         }
 
+        let platform_url = manifest
+            .platforms
+            .get(&self.config.platform)
+            .map(|info| info.url.as_str())
+            .unwrap_or_default();
+        let path = platform_url
+            .split('?')
+            .next()
+            .unwrap_or(platform_url)
+            .to_ascii_lowercase();
+        if path.ends_with(".deb") || path.ends_with(".rpm") {
+            return Err(DeltaError::Config(format!(
+                "Linux .deb/.rpm 不支持自动安装（{}）：请使用发行版包管理器；AppImage 可直接更新",
+                self.config.platform
+            )));
+        }
+
         let full =
             FullDownload::from_manifest(&manifest, &self.config.platform).ok_or_else(|| {
                 DeltaError::ManifestInvalid(format!(
