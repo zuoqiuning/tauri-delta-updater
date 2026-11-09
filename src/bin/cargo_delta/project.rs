@@ -970,6 +970,68 @@ mod tests {
         }
     }
 
+    /// 插件 `FileConfig` 的每个字段都必须被 `init --check` 覆盖，
+    /// 或明确属于“由其它检查/内部逻辑处理”的例外。
+    ///
+    /// 插件新增配置项而 CLI 守卫没跟上时，这条测试会失败，
+    /// 避免“配置写了却没人校验”的长期漂移。
+    #[test]
+    fn config_schema_covers_plugin_fields() {
+        const NOT_VALIDATED_HERE: &[&str] = &["endpoints", "pubkey", "extra"];
+        const VALIDATED: &[&str] = &[
+            "additional_pubkeys",
+            "trust_policy",
+            "channel",
+            "signature_url",
+            "bundle_endpoint",
+            "bundle_type",
+            "install_id",
+            "work_dir",
+            "wait_timeout_secs",
+            "confirm_timeout_secs",
+            "proxy",
+            "allow_legacy_signatures",
+            "fallback_policy",
+            "headers",
+            "install_mode",
+            "installer_kind",
+            "installer_args",
+            "allow_insecure_transport",
+            "install_on_next_launch",
+            "rollback_notice",
+        ];
+
+        let source = include_str!("../../../plugin/src/config.rs");
+        let start = source
+            .find("pub(crate) struct FileConfig {")
+            .expect("插件必须定义 FileConfig");
+        let body = &source[start..start + source[start..].find("\n}").expect("结构体必须闭合")];
+        let fields: Vec<&str> = body
+            .lines()
+            .skip(1) // 第一行是结构体声明本身
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix("pub(crate) ")?;
+                let name = rest.split(':').next()?.trim();
+                (!name.is_empty()).then_some(name)
+            })
+            .collect();
+        assert!(!fields.is_empty(), "必须解析出插件配置字段");
+
+        for field in &fields {
+            assert!(
+                VALIDATED.contains(field) || NOT_VALIDATED_HERE.contains(field),
+                "插件配置字段 {field} 没有被 init --check 覆盖；请补校验或加入例外"
+            );
+        }
+        for key in VALIDATED {
+            assert!(
+                fields.contains(key),
+                "校验列表包含插件不存在的字段 {key}，请同步清理"
+            );
+        }
+    }
+
     /// 多 capability 项目必须复用已有文件，而不是另建 `default.json`。
     #[test]
     fn pick_capability_prefers_existing_files() {
