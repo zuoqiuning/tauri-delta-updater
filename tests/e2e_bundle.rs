@@ -478,6 +478,17 @@ async fn test_end_to_end_rejects_bad_signature() {
         result,
         Err(tauri_delta_updater::DeltaError::SignatureInvalid(_))
     ));
+
+    // 失败必须留下结构化记录：诊断页无需解析日志即可解释原因。
+    let attempt = updater
+        .diagnose()
+        .await
+        .last_attempt
+        .expect("失败的更新必须写入 tdx_last_attempt.json");
+    assert_eq!(attempt.outcome, tauri_delta_updater::AttemptOutcome::Failed);
+    assert_eq!(attempt.error_code.as_deref(), Some("signature_invalid"));
+    assert_eq!(attempt.current_version, "0.1.0");
+    assert!(attempt.target_version.is_none());
 }
 
 /// 端到端：签名合法但版本绑定与清单不符时必须拒绝（防重放过期清单）。
