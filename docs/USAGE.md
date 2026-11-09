@@ -181,6 +181,30 @@ listens for `update://progress` (download bytes) and `update://ready` (restart).
 
 </details>
 
+### Debug builds and stack size
+
+`install()` is one large state machine. Debug builds keep every temporary alive,
+so the future can need tens of megabytes of stack while it is being created —
+release builds inline it away. If your integration overflows the stack only in
+`cargo run` (not `--release`), run the update on a thread with a bigger stack
+instead of raising `RUST_MIN_STACK` globally:
+
+```rust
+let updater = updater.clone();
+let (tx, rx) = tokio::sync::oneshot::channel();
+std::thread::Builder::new()
+    .stack_size(16 * 1024 * 1024)
+    .spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(updater.install());
+        let _ = tx.send(result);
+    })?;
+let result = rx.await.map_err(|e| e.to_string())??;
+```
+
+The rule of thumb: debug builds need a bigger stack; release builds do not.
+`examples/simulate_update.rs` uses the same pattern (it hit this first).
+
 ## Cancellable updates (session)
 
 `install()` is a single call. When the UI needs to know each phase or offer a

@@ -1,10 +1,10 @@
 [workspace]
 # 核心 crate 与插件必须同版本、同一份依赖图：版本只在 workspace 里声明一次，
 # 避免两边手工同步导致 `cargo delta` 写出的插件版本不存在。
-members = [".", "plugin"]
-# 默认只构建核心 crate，保持既有 `cargo test --all-features` 的语义：
+members = [".", "plugin", "testkit"]
+# 默认构建核心 crate 与测试夹具，保持既有 `cargo test --all-features` 的语义：
 # 不会因为插件而拉入 Tauri / GTK / WebKit 系统依赖。
-default-members = ["."]
+default-members = [".", "testkit"]
 resolver = "2"
 # 独立工程：示例与 A/B 工具自带 lockfile，不参与工作区统一解析。
 exclude = ["examples/tauri-app/src-tauri", "tools/zucchini-ab"]
@@ -137,6 +137,8 @@ required-features = ["generator"]
 
 [dev-dependencies]
 tempfile = "3.8"
+# 测试夹具与外部接入者共用同一份实现（workspace 成员，不参与生产构建）
+tdx-testkit = { path = "testkit" }
 # 补丁链规划/路径校验的关键不变量用 property-based 测试覆盖随机组合
 proptest = "1"
 # 与主依赖保持同一精确版本，保证测试与生成工具行为一致

@@ -61,11 +61,14 @@ jobs:
           PLUGIN=$(cargo metadata --no-deps --format-version 1 \
             | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(p['version'] for p in d['packages'] if p['name']=='tauri-plugin-delta-updater'))")
           NPM=$(node -p "require('./plugin/package.json').version")
+          TESTKIT=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(p['version'] for p in d['packages'] if p['name']=='tdx-testkit'))")
           # 跳过 `## [Unreleased]`：发布前应把变更移动到真实版本小节。
           LOG=$(grep -m1 '^## \[[0-9]' CHANGELOG.md | cut -d'[' -f2 | cut -d']' -f1)
           fail() { echo "::error::$1"; exit 1; }
           [ "${{ inputs.version }}" = "$CORE" ] || fail "输入版本 (${{ inputs.version }}) 与 Cargo.toml ($CORE) 不一致"
           [ "$PLUGIN" = "$CORE" ] || fail "核心 crate ($CORE) 与插件 crate ($PLUGIN) 版本不一致"
+          [ "$TESTKIT" = "$CORE" ] || fail "核心 crate ($CORE) 与测试夹具 crate ($TESTKIT) 版本不一致"
           [ "$NPM" = "$CORE" ] || fail "核心 crate ($CORE) 与 npm 包 ($NPM) 版本不一致"
           [ "$LOG" = "$CORE" ] || fail "Cargo.toml ($CORE) 与 CHANGELOG 顶部版本 ($LOG) 不一致"
           echo "版本一致: $CORE"
@@ -92,7 +95,10 @@ jobs:
         run: cargo check --features tracing --locked
 
       - name: Package dry-run
-        run: cargo publish --dry-run --locked
+        run: |
+          cargo publish --dry-run --locked
+          # 测试夹具独立于核心发布，dry-run 不依赖注册表上的核心版本。
+          cargo publish --dry-run --manifest-path testkit/Cargo.toml --locked
 
       # 插件的 publish --dry-run 依赖 crates.io 上已存在的核心版本，
       # 核心发布前必然失败；这里只校验打包内容，真正的插件校验放在 publish job
@@ -101,7 +107,8 @@ jobs:
         run: |
           cargo package --list --allow-dirty > /tmp/core-files
           cargo package --list --manifest-path plugin/Cargo.toml --allow-dirty > /tmp/plugin-files
-          if grep -E '(^|/)target/|\.env$|node_modules/' /tmp/core-files /tmp/plugin-files; then
+          cargo package --list --manifest-path testkit/Cargo.toml --allow-dirty > /tmp/testkit-files
+          if grep -E '(^|/)target/|\.env$|node_modules/' /tmp/core-files /tmp/plugin-files /tmp/testkit-files; then
             echo "包内出现不应发布的文件"
             exit 1
           fi
@@ -168,6 +175,21 @@ jobs:
             echo "核心 $VERSION 已发布，跳过"
           else
             cargo publish --locked
+          fi
+
+      # 测试夹具不依赖核心 crate，可与核心并行发布；独立发布让接入方能在
+      # dev-dependencies 里按版本引用，而不是靠 path/git 钉住本仓库。
+      - name: Publish testkit
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(p['version'] for p in d['packages'] if p['name']=='tdx-testkit'))")
+          if curl -sf -H "User-Agent: tauri-delta-updater-release-ci" \
+            "https://crates.io/api/v1/crates/tdx-testkit/$VERSION" > /dev/null; then
+            echo "测试夹具 $VERSION 已发布，跳过"
+          else
+            cargo publish --manifest-path testkit/Cargo.toml --locked
           fi
 
       # 插件依赖核心 crate 的已发布版本：先发核心，等索引可见后再发插件。

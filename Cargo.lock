@@ -3429,6 +3429,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "similar",
+ "tdx-testkit",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3553,6 +3554,16 @@ dependencies = [
  "dunce",
  "embed-resource",
  "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "tdx-testkit"
+version = "0.5.0"
+dependencies = [
+ "base64 0.21.7",
+ "minisign",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

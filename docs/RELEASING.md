@@ -20,7 +20,7 @@
 
 1. 访问 `https://crates.io/api/v1/crates/tauri-delta-updater`，确认目标版本不存在；
 2. `0.4.0` 已发布且不可覆盖；目标版本 `0.5.0` 必须尚未发布；
-3. 插件与 npm 包已发布 `0.4.0`，`0.5.0` 随核心同步发布。
+3. 插件、测试夹具（`tdx-testkit`）与 npm 包随核心同步发布。
 
 ### 1.2 元数据
 
@@ -36,6 +36,7 @@
 ```bash
 cargo package --list --allow-dirty
 cargo package --list --manifest-path plugin/Cargo.toml --allow-dirty
+cargo package --list --manifest-path testkit/Cargo.toml --allow-dirty
 ```
 
 `plugin/dist-js` / `plugin/guest-js` 由 npm 包发布，**有意排除**在插件 crate
@@ -68,10 +69,10 @@ npm pack --dry-run --json   # 必须包含 dist-js/index.js、index.d.ts、packa
 
 **任何一项失败，禁止发布。**
 
-版本一致性由 CI 的 `versions` job 检查四处：核心 crate、插件 crate、
-`plugin/package.json`、`CHANGELOG.md` 第一个数字版本条目（`## [Unreleased]`
-不参与比较）。**发布前必须把 `Unreleased` 下的条目移到新版本小节**，
-否则发布说明会缺失这批变更。
+版本一致性由 CI 的 `versions` job 检查五处：核心 crate、插件 crate、
+测试夹具 crate（`tdx-testkit`）、`plugin/package.json`、`CHANGELOG.md` 第一个
+数字版本条目（`## [Unreleased]` 不参与比较）。**发布前必须把 `Unreleased`
+下的条目移到新版本小节**，否则发布说明会缺失这批变更。
 
 > 插件的 `cargo publish --dry-run` 校验时会从注册表解析核心 crate（不是本地
 > path 依赖）。核心未发布前它**必然失败**；预发布阶段只用 `cargo package --list`
@@ -144,6 +145,9 @@ done
 # 4. 插件：先 dry-run 确认能按注册表版本构建，再发布
 cargo publish --manifest-path plugin/Cargo.toml --registry crates-io --dry-run --locked
 cargo publish --manifest-path plugin/Cargo.toml --registry crates-io --locked
+
+# 4b. 测试夹具（不依赖核心，可与核心并行发布）
+cargo publish --manifest-path testkit/Cargo.toml --registry crates-io --locked
 
 # 5. npm 包（前端类型绑定；显式官方 registry，避免被本机镜像接管）
 cd plugin && npm publish --access public --registry https://registry.npmjs.org
@@ -244,7 +248,7 @@ cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.5.0
 | 项 | 状态 |
 |---|---|
 | `Cargo.toml` 版本 | `0.5.0`（2026-11-09 已发布） |
-| crates.io | 核心 `0.1.0` / `0.2.0` / `0.2.1` / `0.3.0` / `0.4.0` / `0.5.0`；插件 `0.2.1` / `0.3.0` / `0.4.0` / `0.5.0` |
+| crates.io | 核心 `0.1.0` / `0.2.0` / `0.2.1` / `0.3.0` / `0.4.0` / `0.5.0`；插件 `0.2.1` / `0.3.0` / `0.4.0` / `0.5.0`；测试夹具 `tdx-testkit` 自 0.6.0 起随核心发布 |
 | npm | `tauri-plugin-delta-updater@0.2.1` / `0.3.0` / `0.4.0` / `0.5.0` |
 | git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1`、`v0.3.0`、`v0.4.0`、`v0.5.0`（annotated + Release） |
 | docs.rs | `0.4.0` / `0.5.0` 均未从 docs.rs API 查到构建记录，需人工确认 |
@@ -300,9 +304,9 @@ GitHub Release 标题为 `vX.Y.Z — <一句用户可感知的变化>`。
 
 ### 6.4 发布检查清单
 
-- [ ] 版本四处一致：核心、插件、npm、CHANGELOG 顶部
+- [ ] 版本五处一致：核心、插件、测试夹具（`tdx-testkit`）、npm、CHANGELOG 顶部
 - [ ] `docs/releases/vX.Y.Z.md` 已按模板填写，且没有内部语言
 - [ ] annotated tag `vX.Y.Z` 已创建并推送
 - [ ] `release.yml` 三个 job 全绿（或手动三步均成功）
-- [ ] crates.io 核心/插件、npm 均可访问；docs.rs 已确认
+- [ ] crates.io 核心/插件/测试夹具、npm 均可访问；docs.rs 已确认
 - [ ] GitHub Release 正文与 `docs/releases/vX.Y.Z.md` 一致

@@ -1,0 +1,19 @@
+[package]
+name = "tdx-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Test fixtures for tauri-delta-updater integrators: a mock update server with Range support, minisign helpers and signed manifest builders."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords = ["tauri", "updater", "testing", "mock", "fixtures"]
+categories = ["development-tools"]
+readme = "README.md"
+
+[dependencies]
+# 与 tauri-delta-updater 的 generator 使用同一精确版本，生成的签名格式才能被引擎接受
+minisign = "=0.7.9"
+base64 = "0.21"
+serde_json = "1"
+sha2 = "0.10"

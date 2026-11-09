@@ -230,6 +230,15 @@ adds IPC, permissions and config loading.
 - [examples/full_cycle.rs](examples/full_cycle.rs) — local end-to-end harness (generate → apply → verify).
 - [examples/simulate_update.rs](examples/simulate_update.rs) — measure a real patch for your own binaries.
 
+Writing your own integration test? Use `tdx-testkit` (mock server with Range
+support, minisign helpers, signed manifest builders) instead of rebuilding the
+fixtures — first published with 0.6.0:
+
+```toml
+[dev-dependencies]
+tdx-testkit = "0.6"
+```
+
 ## What it handles
 
 - **Delta patches** — qbsdiff + zstd, multi-hop chains, per-patch verification on the publisher.
