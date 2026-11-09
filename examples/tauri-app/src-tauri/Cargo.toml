@@ -14,10 +14,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 # 仓库内开发用的 path 依赖。复制到真实项目后必须改成 crates.io 版本：
-#   tauri-plugin-delta-updater = "0.4"
+#   tauri-plugin-delta-updater = "0.5"
 # 发布构建不要保留 `path`，否则 CI 上没有本仓库目录时会解析失败。
 tauri-plugin-delta-updater = { path = "../../../plugin" }
-# 同上：真实项目用 `tauri-delta-updater = "0.4"`（仅宿主需要直接调用库时）。
+# 同上：真实项目用 `tauri-delta-updater = "0.5"`（仅宿主需要直接调用库时）。
 tauri-delta-updater = { path = "../../.." }
 # tauri::generate_context! 读取配置时需要它
 serde_json = "1"

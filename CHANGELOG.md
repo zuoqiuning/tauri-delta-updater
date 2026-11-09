@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-09
+
+### 兼容性
+
+**0.5.0 是 MINOR 版本：新增能力与可观测性，没有破坏性 API 变更。**
+
+1. `PatchInfo` 新增 `algorithm` 字段：该结构体自 0.4.0 起标记
+   `#[non_exhaustive]`，外部字面量构造本来就不允许；旧清单反序列化不受影响。
+2. `Diagnosis` 新增 `warning_keys` / `machine_lock_active` / `last_attempt`：
+   同样 `#[non_exhaustive]`，已有字段与 `warnings()` 行为不变。
+3. 新增 `WarningKey` / `AttemptOutcome` / `UpdateAttempt` / `ChainContext`
+   与 `configure_patch_concurrency()`：纯增量。
+4. TDXB1 是第三种补丁容器，只有 0.5.0 起的客户端能应用；发布端默认不生成
+   （`--large-file-delta`），且与 `--legacy-patch` 互斥。
+5. 发布端多基线并行生成：输出顺序与串行一致，清单除新增 `algorithm`
+   字段外不变。
+
 ### 新增
 
 - 发布端按基线并行生成补丁：内存按预估工作集加权（单位 256 MiB，默认预算

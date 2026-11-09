@@ -15,7 +15,7 @@
 
 ```toml
 [dependencies]
-tauri-delta-updater = "0.4"
+tauri-delta-updater = "0.5"
 ```
 
 Inside a Tauri app, `tauri-plugin-delta-updater` (the `plugin/` crate) wraps this
@@ -26,7 +26,7 @@ The library has **no default features**. If you need the `generate` CLI, enable 
 publisher tooling explicitly:
 
 ```toml
-tauri-delta-updater = { version = "0.4", features = ["generator"] }
+tauri-delta-updater = { version = "0.5", features = ["generator"] }
 ```
 
 `rust-version = "1.88"` (the real floor of the `reqwest 0.13` → `url` → `icu_*`

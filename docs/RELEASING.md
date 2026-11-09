@@ -20,8 +20,8 @@
 ### 1.1 版本号可用
 
 1. 访问 `https://crates.io/api/v1/crates/tauri-delta-updater`，确认目标版本不存在；
-2. `0.3.0` 已发布且不可覆盖；目标版本 `0.4.0` 必须尚未发布；
-3. 插件与 npm 包已发布 `0.3.0`，`0.4.0` 随核心同步发布。
+2. `0.4.0` 已发布且不可覆盖；目标版本 `0.5.0` 必须尚未发布；
+3. 插件与 npm 包已发布 `0.4.0`，`0.5.0` 随核心同步发布。
 
 ### 1.2 元数据
 
@@ -112,7 +112,7 @@ crates.io）：
 > `act` 只能覆盖 Linux 部分，不能替代。
 
 ```bash
-gh workflow run release.yml -f version=0.4.0 -f publish=false
+gh workflow run release.yml -f version=0.5.0 -f publish=false
 gh run watch
 ```
 
@@ -120,23 +120,23 @@ gh run watch
 
 **路径 A（本机执行）**：按下面的命令逐条执行。**路径 B（CI 执行）**：推送后
 在仓库配置 `CARGO_REGISTRY_TOKEN` / `NPM_TOKEN` 与 `release` environment
-审批人，然后 `gh workflow run release.yml -f version=0.4.0 -f publish=true`，
+审批人，然后 `gh workflow run release.yml -f version=0.5.0 -f publish=true`，
 不要再执行下面的 cargo/npm 命令。两条路径都使用 annotated tag。
 
 ```bash
 # 1. annotated tag（不要 lightweight tag）；release.yml 是 workflow_dispatch，
 #    推 tag 不会触发发布
-git tag -a v0.4.0 -m "tauri-delta-updater 0.4.0"
-git push origin v0.4.0
+git tag -a v0.5.0 -m "tauri-delta-updater 0.5.0"
+git push origin v0.5.0
 
-# 2. 核心 0.4.0（不可撤销）
+# 2. 核心 0.5.0（不可撤销）
 #    本机 registry 常被镜像替换，必须显式 --registry crates-io
 cargo publish --registry crates-io --locked
 
 # 3. 轮询索引：固定 sleep 在索引慢时不可靠
 for i in $(seq 1 15); do
   if curl -sf -H "User-Agent: tauri-delta-updater-release-ci" \
-    "https://crates.io/api/v1/crates/tauri-delta-updater/0.4.0" > /dev/null; then
+    "https://crates.io/api/v1/crates/tauri-delta-updater/0.5.0" > /dev/null; then
     break
   fi
   sleep 20
@@ -150,10 +150,10 @@ cargo publish --manifest-path plugin/Cargo.toml --registry crates-io --locked
 cd plugin && npm publish --access public --registry https://registry.npmjs.org
 
 # 6. GitHub Release：发布说明必须含 §2.1 的验证边界段
-#    直接用 CHANGELOG.md 会漏掉它；发布说明来自 docs/releases/v0.4.0.md
-gh release create v0.4.0 \
-  --title "v0.4.0 — 结构化失败原因、默认权限收窄与更安全的发布" \
-  --notes-file docs/releases/v0.4.0.md \
+#    直接用 CHANGELOG.md 会漏掉它；发布说明来自 docs/releases/v0.5.0.md
+gh release create v0.5.0 \
+  --title "v0.5.0 — 大文件增量、并行发布与可解释的诊断" \
+  --notes-file docs/releases/v0.5.0.md \
   --latest
 ```
 
@@ -186,20 +186,20 @@ gh release create v0.4.0 \
 ```bash
 # 核心可安装
 mkdir /tmp/tdx-verify && cd /tmp/tdx-verify && cargo init --bin
-cargo add tauri-delta-updater@0.4.0 && cargo build
+cargo add tauri-delta-updater@0.5.0 && cargo build
 
 # 插件可解析（需 Tauri 项目上下文）
 cd examples/tauri-app/src-tauri && cargo check
 
 # 线上桶确实是你刚发的版本（发布后验证的核心断言）
-cargo delta doctor <manifest-url> --pubkey <public-key> --expect-version 0.4.0
+cargo delta doctor <manifest-url> --pubkey <public-key> --expect-version 0.5.0
 
 # npm 可安装
-cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.4.0
+cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.5.0
 ```
 
-另需确认 `https://docs.rs/tauri-delta-updater/0.4.0` 与
-`https://docs.rs/tauri-plugin-delta-updater/0.4.0` 构建成功。
+另需确认 `https://docs.rs/tauri-delta-updater/0.5.0` 与
+`https://docs.rs/tauri-plugin-delta-updater/0.5.0` 构建成功。
 
 **发布状态快照**：归档本次的 `latest.json`、`latest.json.sig` 与
 `release-report.json`，记录 `platforms[].rollout` / `platforms[].min_os` 的生效值。
@@ -244,12 +244,12 @@ cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.4.0
 
 | 项 | 状态 |
 |---|---|
-| `Cargo.toml` 版本 | `0.4.0`（2026-11-09 已发布） |
+| `Cargo.toml` 版本 | `0.5.0`（已准备，尚未发布） |
 | crates.io | 核心 `0.1.0` / `0.2.0` / `0.2.1` / `0.3.0` / `0.4.0`；插件 `0.2.1` / `0.3.0` / `0.4.0` |
 | npm | `tauri-plugin-delta-updater@0.2.1` / `0.3.0` / `0.4.0` |
-| git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1`、`v0.3.0`、`v0.4.0`（annotated + Release） |
-| docs.rs | `0.4.0` 构建排队中，发布后需确认两个 crate 构建成功 |
-| 测试 | 发布门禁在 Actions `release.yml` 的 `verify` job 全绿 |
+| git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1`、`v0.3.0`、`v0.4.0`（annotated + Release）；`v0.5.0` 尚未创建 |
+| docs.rs | `0.4.0` 构建状态待回查；`0.5.0` 发布后需确认两个 crate |
+| 测试 | 本轮发布门禁已在本地跑通；正式发布前仍需 `release.yml` 的 `verify` job |
 | clippy / fmt | 两个 crate `-D warnings` 全绿 |
 | MSRV | 1.88 |
 | 下一版本前提 | 项目所有者明确书面授权（版本 + 内容摘要 + 时间）；`0.4.0` 已发布且不可覆盖 |

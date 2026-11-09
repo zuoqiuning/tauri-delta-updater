@@ -9,7 +9,7 @@ A high-performance, secure, and fault-tolerant delta update engine for Tauri v2 
 
 Version semantics: [VERSIONING.md](VERSIONING.md) · Release gates: [docs/RELEASING.md](docs/RELEASING.md) · Docs index: [docs/README.md](docs/README.md)
 
-**Maturity: early (0.4.x).** Single maintainer. Run one full update cycle on
+**Maturity: early (0.5.x).** Single maintainer. Run one full update cycle on
 each target platform ([DEVICE_TESTS.md](docs/DEVICE_TESTS.md)) before production
 use; CI covers static checks, synthetic scripts and end-to-end mocks, not
 code signing, UAC or Gatekeeper.
@@ -76,8 +76,8 @@ is written with `0600` on Unix, the public key to `<path>.pub`, and only the
 paths are printed. It never overwrites an existing key and refuses to combine
 with `--pubkey` / `--pubkey-file`.
 
-`init` writes `"0.4"` by default (patch updates within the minor are allowed).
-`--registry` pins the exact version (`"0.4.0"`) for pipelines that require the
+`init` writes `"0.5"` by default (patch updates within the minor are allowed).
+`--registry` pins the exact version (`"0.5.0"`) for pipelines that require the
 dependency to match the tool exactly. `--check` warns when a project still pins
 the git form, but keeps exit code 0 so existing integrations stay green.
 
@@ -117,7 +117,7 @@ bucket and every configured fallback endpoint without copying URLs or keys.
 
 ```toml
 [dependencies]
-tauri-plugin-delta-updater = "0.4"
+tauri-plugin-delta-updater = "0.5"
 # Local checkout: tauri-plugin-delta-updater = { path = "../plugin" }
 ```
 
@@ -128,11 +128,11 @@ gives you `invoke('plugin:delta-updater|...')` — not typed imports. Add the np
 package in your frontend when you want the bindings:
 
 ```bash
-npm install tauri-plugin-delta-updater   # current: 0.4.0
+npm install tauri-plugin-delta-updater   # current: 0.5.0
 ```
 
 The bundled `examples/tauri-app` uses `path = "../plugin"` for in-repo
-development; real projects should depend on `"0.4"` from crates.io.
+development; real projects should depend on `"0.5"` from crates.io.
 
 `src-tauri/capabilities/default.json`:
 

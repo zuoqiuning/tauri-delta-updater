@@ -25,9 +25,9 @@ npm run tauri dev
 **只用于本仓库开发/测试**。复制到真实项目后必须改为 crates.io 版本：
 
 ```toml
-tauri-plugin-delta-updater = "0.4"
+tauri-plugin-delta-updater = "0.5"
 # 只有宿主需要直接调用库时才加：
-# tauri-delta-updater = "0.4"
+# tauri-delta-updater = "0.5"
 ```
 
 保留 `path` 会让 CI（没有本仓库目录）解析失败。

@@ -112,4 +112,10 @@ still consume patches; switch back once they have been replaced.
   calling `installFull()` / `downloadFull()` / `checkCompat()` must also grant
   `delta-updater:full`. Existing capability files are not rewritten
   automatically; `cargo delta init --check` reports the gap.
+- **0.5.0 (no breaking API changes)**: `PatchInfo` gains an optional
+  `algorithm` field and `Diagnosis` gains `warning_keys`, `machine_lock_active`
+  and `last_attempt` (all on `#[non_exhaustive]` structs). TDXB1 patches are
+  only produced with `--large-file-delta` and can only be applied by 0.5.0+
+  clients; it conflicts with `--legacy-patch`. `cargo delta init` now writes
+  `"0.5"`.
 
