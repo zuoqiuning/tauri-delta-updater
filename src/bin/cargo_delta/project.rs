@@ -190,6 +190,47 @@ impl Project {
         Ok(root.pointer("/plugins/delta-updater").is_some())
     }
 
+    /// 项目里是否存在 Inno Setup 脚本（`*.iss`）。
+    ///
+    /// Inno 与 NSIS 的安装包同为 `.exe`；漏配 `installer_kind` 时只能在
+    /// 安装阶段静默按 NSIS 参数调用。接入时就提示比运行时踩坑便宜得多。
+    pub(crate) fn looks_like_inno_setup(&self) -> bool {
+        let tauri_dir = self.config_path.parent().unwrap_or(Path::new("."));
+        let root = if tauri_dir.file_name().and_then(|name| name.to_str()) == Some("src-tauri") {
+            tauri_dir.parent().unwrap_or(tauri_dir)
+        } else {
+            tauri_dir
+        };
+        walkdir::WalkDir::new(root)
+            .max_depth(3)
+            .into_iter()
+            .filter_entry(|entry| {
+                !matches!(
+                    entry.file_name().to_str(),
+                    Some("target" | "node_modules" | ".git")
+                )
+            })
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry.file_type().is_file()
+                    && entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("iss"))
+            })
+    }
+
+    /// 配置里是否已显式声明安装器类型。
+    pub(crate) fn installer_kind_configured(&self) -> Result<bool, String> {
+        let (_, root) = read_json_or(&self.config_path, json!({}))?;
+        Ok(root
+            .pointer("/plugins/delta-updater")
+            .or_else(|| root.pointer("/plugins/updater"))
+            .and_then(|config| config.get("installer_kind"))
+            .is_some())
+    }
+
     /// 依赖是否仍是 git 形式；插件发布后应改为版本依赖。
     pub(crate) fn dependency_is_git(&self) -> Result<bool, String> {
         let cargo = fs::read_to_string(&self.cargo_toml)

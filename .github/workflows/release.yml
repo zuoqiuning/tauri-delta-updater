@@ -44,6 +44,14 @@ jobs:
           fi
           echo "tag 校验通过: $TAG"
 
+      - name: Ensure clean working tree
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::工作树不干净，拒绝发布（发布产物必须与 tag 指向的提交一致）"
+            git status --porcelain
+            exit 1
+          fi
+
       # 发布走的是本工作流而不是 ci.yml，四处版本一致性必须在这里也校验一遍，
       # 否则 package.json / CHANGELOG 的漂移只会在发布当天暴露。
       - name: Verify versions are consistent

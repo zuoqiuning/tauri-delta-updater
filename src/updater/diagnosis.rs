@@ -25,6 +25,40 @@ pub struct ScriptEvent {
 /// 诊断快照里最多保留的事件条数：回滚是低频事件，保留最近 20 条足够排障。
 const MAX_SCRIPT_EVENTS: usize = 20;
 
+/// 诊断摘要的可本地化键。
+///
+/// 与 [`Diagnosis::user_message`] 的返回值一一对应，但只给出稳定的语义键；
+/// UI 应按 `MessageKey` 自行本地化，而不是直接展示硬编码中文。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum MessageKey {
+    /// 环境正常，可走增量。
+    EnvironmentOk,
+    /// 安全模式暂停更新。
+    SafeMode,
+    /// 需要先修复上次中断的替换。
+    NeedsRepair,
+    /// 工作目录不可写。
+    WorkDirNotWritable,
+    /// 当前环境不支持原地增量。
+    EnvironmentUnsupported,
+    /// 新版本启动超时后回滚。
+    StartupTimeout,
+    /// 新版本未进入宿主代码。
+    StartupNotStarted,
+    /// 新版本启动后崩溃。
+    StartupCrashed,
+    /// 宿主健康检查失败。
+    HealthCheckFailed,
+    /// 替换脚本执行失败。
+    UpdateFailed,
+    /// 已修复中断的替换。
+    RepairedPartialUpdate,
+    /// 未知回滚原因。
+    RollbackUnknown,
+}
+
 /// 环境诊断快照。
 ///
 /// 由 [`DeltaUpdater::diagnose`] 返回，只读、不发起网络请求。
@@ -134,28 +168,50 @@ impl Diagnosis {
     /// 返回的是**中文**摘要，适合快速调试/日志。面向多语言 UI 时应按
     /// `fallback_reason` / `last_rollback` / `safe_mode` 等结构化字段分支，
     /// 而不是直接展示本方法，否则会绑定中文文案。
+    #[deprecated(note = "use message_key() and localize in the UI")]
     pub fn user_message(&self) -> &'static str {
-        if self.safe_mode {
-            "增量更新已暂停；冷却后会自动重试，也可以手动下载完整安装包。"
-        } else if self.needs_repair {
-            "上次更新未完成，应用正在恢复旧版本；重启后无需再次操作。"
-        } else if let Some(reason) = self.last_rollback.as_deref() {
-            match reason {
-                "startup_timeout" => "新版本启动超时，已回滚到旧版本；请稍后重试。",
-                "startup_not_started" => "新版本未能启动，已回滚到旧版本；请稍后重试。",
-                "startup_crashed" => "新版本启动后退出，已回滚到旧版本；请稍后重试。",
-                "health_check_failed" => "新版本健康检查未通过，已回滚到旧版本。",
-                "update_failed" => "上次更新未能完成，已回滚到旧版本。",
-                "repaired_partial_update" => "已修复上次中断的更新。",
-                _ => "上次更新已回滚到旧版本。",
-            }
-        } else if !self.work_dir_writable {
-            "更新目录不可写，请检查权限后重试。"
-        } else if self.fallback_reason.is_some() && !self.bundle_capable {
-            "当前环境不支持原地增量更新，将使用完整安装包。"
-        } else {
-            "环境正常。"
+        match self.message_key() {
+            MessageKey::EnvironmentOk => "环境正常。",
+            MessageKey::SafeMode => "增量更新已暂停；冷却后会自动重试，也可以手动下载完整安装包。",
+            MessageKey::NeedsRepair => "上次更新未完成，应用正在恢复旧版本；重启后无需再次操作。",
+            MessageKey::StartupTimeout => "新版本启动超时，已回滚到旧版本；请稍后重试。",
+            MessageKey::StartupNotStarted => "新版本未能启动，已回滚到旧版本；请稍后重试。",
+            MessageKey::StartupCrashed => "新版本启动后退出，已回滚到旧版本；请稍后重试。",
+            MessageKey::HealthCheckFailed => "新版本健康检查未通过，已回滚到旧版本。",
+            MessageKey::UpdateFailed => "上次更新未能完成，已回滚到旧版本。",
+            MessageKey::RepairedPartialUpdate => "已修复上次中断的更新。",
+            MessageKey::RollbackUnknown => "上次更新已回滚到旧版本。",
+            MessageKey::WorkDirNotWritable => "更新目录不可写，请检查权限后重试。",
+            MessageKey::EnvironmentUnsupported => "当前环境不支持原地增量更新，将使用完整安装包。",
         }
+    }
+
+    /// 与 [`Self::user_message`] 等价的稳定语义键，供 UI 本地化。
+    pub fn message_key(&self) -> MessageKey {
+        if self.safe_mode {
+            return MessageKey::SafeMode;
+        }
+        if self.needs_repair {
+            return MessageKey::NeedsRepair;
+        }
+        if let Some(reason) = self.last_rollback.as_deref() {
+            return match reason {
+                "startup_timeout" => MessageKey::StartupTimeout,
+                "startup_not_started" => MessageKey::StartupNotStarted,
+                "startup_crashed" => MessageKey::StartupCrashed,
+                "health_check_failed" => MessageKey::HealthCheckFailed,
+                "update_failed" => MessageKey::UpdateFailed,
+                "repaired_partial_update" => MessageKey::RepairedPartialUpdate,
+                _ => MessageKey::RollbackUnknown,
+            };
+        }
+        if !self.work_dir_writable {
+            return MessageKey::WorkDirNotWritable;
+        }
+        if self.fallback_reason.is_some() && !self.bundle_capable {
+            return MessageKey::EnvironmentUnsupported;
+        }
+        MessageKey::EnvironmentOk
     }
 
     /// 启动阶段可操作的配置警告；空表示没有发现明显缺口。

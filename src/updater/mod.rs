@@ -31,7 +31,7 @@ mod simulate;
 mod staged;
 
 pub use config::{default_signature_url, FallbackPolicy, UpdateConfig};
-pub use diagnosis::{Diagnosis, ScriptEvent};
+pub use diagnosis::{Diagnosis, MessageKey, ScriptEvent};
 pub use outcome::{
     CheckOutcome, FallbackReason, OsRequirement, UpdateCheck, UpdateOutcome, UpdateResult,
 };
@@ -615,6 +615,7 @@ mod ui_result_tests {
     }
 
     /// 诊断页只需要一个结论：现在能不能走增量。
+    #[allow(deprecated)] // 该测试专门验证用户可见的中文文案
     #[test]
     fn diagnosis_reports_delta_eligibility() {
         let base = Diagnosis {

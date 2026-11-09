@@ -33,6 +33,11 @@
   （15s / 60s），弱网或黑洞端点不再无限挂起。
 - `DeltaUpdater::new` 在构造阶段拒绝非 http(s) 端点（清单、签名、备用与整包
   地址），不再等到第一次请求才返回难懂的 builder error。
+- `cargo delta init` 检测到项目里的 `.iss` 脚本时提示配置
+  `installer_kind: "inno"`，Inno 安装包不再被静默按 NSIS 参数调用。
+- `cargo delta migrate` 直接输出 `checkCompat()` 前端迁移片段，不再只提示
+  “进度监听需要改写”。
+- 发布工作流在打包前检查 `git status --porcelain`，工作树不干净时拒绝发布。
 - 从官方 updater 迁移时，`windows.installMode` / `windows.installerArgs`
   自动映射到 `install_mode` / `installer_args`；`dangerousInsecureTransportProtocol`
   仍只给出警告（HTTPS 部署不产生噪音），不会静默开启明文传输。

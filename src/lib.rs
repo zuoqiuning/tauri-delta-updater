@@ -288,7 +288,7 @@ pub use platform::PlatformUpdater;
 pub use platform::ScriptTimings;
 pub use updater::{
     default_signature_url, simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy,
-    FallbackReason, FullDownload, FullDownloadOutcome, OsRequirement, PendingArtifact,
+    FallbackReason, FullDownload, FullDownloadOutcome, MessageKey, OsRequirement, PendingArtifact,
     PendingUpdate, ScriptEvent, SimulationReport, Staged, StagedBundle, StagedFullInstaller,
     StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome, UpdateResult,
 };

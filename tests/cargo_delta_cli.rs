@@ -269,6 +269,20 @@ fn init_check_names_the_capability_file_it_uses() {
     );
 }
 
+/// 检测到 Inno Setup 脚本时，init 必须提示显式配置 installer_kind。
+#[test]
+fn init_warns_about_inno_setup() {
+    let (_dir, root) = project();
+    std::fs::write(root.join("installer.iss"), b"[Setup]").unwrap();
+
+    let (code, stdout, _stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0);
+    assert!(
+        stdout.contains("installer_kind"),
+        "必须提示 Inno 需要 installer_kind: {stdout}"
+    );
+}
+
 /// 迁移时保留官方配置键（不重命名）也必须能通过 --check：
 /// 插件运行时会在缺失 plugins.delta-updater 时回退读取 plugins.updater。
 #[test]
@@ -576,6 +590,10 @@ fn migrate_copies_and_can_remove_official() {
 
     let (code, stdout, stderr) = run(&root, &["migrate", "--apply"]);
     assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("checkCompat"),
+        "迁移必须输出前端兼容片段: {stdout}"
+    );
     let config: serde_json::Value = serde_json::from_str(&read(&root, "tauri.conf.json")).unwrap();
     assert_eq!(
         config["plugins"]["delta-updater"]["endpoints"][0],

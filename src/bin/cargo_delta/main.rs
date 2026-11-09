@@ -58,6 +58,11 @@ fn run(cli: Cli) -> Result<(), String> {
             check,
         } => {
             let project = Project::discover(cli.project.as_deref())?;
+            if project.looks_like_inno_setup() && !project.installer_kind_configured()? {
+                println!(
+                    "[WARN] 检测到 Inno Setup 脚本（.iss）：全量安装包需在 plugins.delta-updater 中设置 \"installer_kind\": \"inno\"，否则可能被按 NSIS 参数调用。"
+                );
+            }
             if let Some(name) = project.non_default_capability() {
                 println!(
                     "[WARN] 未找到 capabilities/default.json，改用 {name}；确认其 windows 覆盖主窗口。"
@@ -143,7 +148,13 @@ fn run(cli: Cli) -> Result<(), String> {
         println!(
             "  - fallback_policy 默认 transport：主端点 404 不会切到备用；需要旧行为请设 \"any\""
         );
-        println!("  - 前端进度监听需从 callback 改为 Channel 事件（命令签名不同）");
+        println!("  - 前端可改用兼容层，避免重写进度事件：");
+        println!("      import {{ checkCompat }} from 'tauri-plugin-delta-updater';");
+        println!("      const update = await checkCompat();");
+        println!(
+            "      if (update) await update.downloadAndInstall(/* Started/Progress/Finished */);"
+        );
+        println!("    需要自定义退出时机时再用 prepare() / launch()。");
     }
 
     print_next_steps(is_init);
