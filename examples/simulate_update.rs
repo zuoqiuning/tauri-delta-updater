@@ -9,10 +9,25 @@
 //! 不需要网络、不需要签名密钥，也不需要完整的 Tauri 应用。
 //! 它跑的是与真实客户端相同的路径：生成 → zstd 压缩 → 应用 → 双端哈希校验。
 
-use tauri_delta_updater::simulate_update;
+use tauri_delta_updater::{simulate_update, DeltaError, Result};
 
-#[tokio::main]
-async fn main() -> tauri_delta_updater::Result<()> {
+fn main() -> Result<()> {
+    // debug 构建的异步状态机在 Windows 主线程 1 MB 栈上可能溢出；
+    // 与发布 CLI 一样，把整条流水线放到独立的大栈线程里跑。
+    let worker = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Runtime::new()
+                .map_err(|e| DeltaError::WorkerFailed(format!("无法创建 tokio 运行时: {e}")))?
+                .block_on(run())
+        })
+        .map_err(|e| DeltaError::WorkerFailed(format!("无法创建验证线程: {e}")))?;
+    worker
+        .join()
+        .map_err(|_| DeltaError::WorkerFailed("验证线程异常退出".into()))?
+}
+
+async fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let old = args.next().unwrap_or_else(|| "old.exe".to_string());
     let new = args.next().unwrap_or_else(|| "new.exe".to_string());

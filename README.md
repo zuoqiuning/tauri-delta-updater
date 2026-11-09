@@ -13,6 +13,25 @@ each platform ([DEVICE_TESTS.md](docs/DEVICE_TESTS.md)) before production use;
 CI covers static checks, synthetic scripts and end-to-end mocks, not code
 signing, UAC or Gatekeeper.
 
+## Measured on Windows
+
+A real release pair, not a synthetic byte edit: this project's own Windows CLI
+(release build, AMD64), v0.4.0 → v0.5.0. Measured on 2026-11-09 with
+`cargo run --example simulate_update -- old.exe new.exe`, which generates,
+applies and SHA-256-verifies the patch through the same code path the client
+uses.
+
+| | Size |
+|---|---|
+| Full download (v0.5.0 executable) | **8.44 MB** |
+| Delta download (v0.4.0 → v0.5.0 patch) | **0.59 MB** |
+| Reduction | **93%** (patch = 7.0% of full) |
+
+The ratio depends on what changed between builds; run the same example on your
+own artifacts to get your number (see [Limits](#limits)). A bundled Tauri
+installer is larger than this bare executable, but the patch only carries the
+bytes that changed.
+
 ## Is this for you?
 
 - **Main executable only** → single-file patches are the sweet spot.
