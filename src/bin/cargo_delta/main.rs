@@ -7,7 +7,7 @@ mod project;
 use args::{Cli, Command};
 use project::{write_atomic, Change, Project};
 use similar::TextDiff;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
     tauri_delta_updater::release::enable_utf8_console();
@@ -52,6 +52,7 @@ fn run(cli: Cli) -> Result<(), String> {
             endpoint,
             pubkey,
             pubkey_file,
+            generate_key,
             bundle_endpoint,
             force,
             registry,
@@ -71,6 +72,9 @@ fn run(cli: Cli) -> Result<(), String> {
             if check {
                 if apply {
                     return Err("--check 不能与 --apply 同时使用".into());
+                }
+                if generate_key.is_some() {
+                    return Err("--check 不能与 --generate-key 同时使用".into());
                 }
                 let missing = project.init_status()?;
                 if missing.is_empty() {
@@ -104,17 +108,19 @@ fn run(cli: Cli) -> Result<(), String> {
             // 非 --check 时必须提供公钥；clap 不再拦截，以便在报错里直接给出
             // 生成密钥的命令（首次接入最常见的卡点）。
             let endpoint = endpoint.ok_or("--endpoint 必填（--check 除外）")?;
-            let pubkey = match (pubkey, pubkey_file) {
-                (Some(key), None) => key.trim().to_string(),
-                (None, Some(path)) => read_pubkey_file(&path)?,
-                (None, None) => {
-                    return Err("--pubkey 或 --pubkey-file 必填（--check 除外）。\n\
-                         如果还没有密钥对，先生成：\n  \
-                         minisign -G -p myapp.pub -s myapp.key\n\
-                         然后用 --pubkey-file myapp.pub 接入；私钥不要提交到 git。"
-                        .into())
-                }
-                (Some(_), Some(_)) => return Err("--pubkey 与 --pubkey-file 只能提供一个".into()),
+            let pubkey = match (pubkey, pubkey_file, generate_key) {
+                (Some(key), None, None) => key.trim().to_string(),
+                (None, Some(path), None) => read_pubkey_file(&path)?,
+                (None, None, Some(path)) => generate_keypair(&path, apply)?,
+                (None, None, None) => return Err(
+                    "--pubkey、--pubkey-file 或 --generate-key 必须提供一个（--check 除外）。\n\
+                         如果还没有密钥对，可以直接生成：\n  \
+                         cargo delta init --endpoint <URL> --generate-key myapp.key --apply\n\
+                         或者用 minisign 生成：minisign -G -p myapp.pub -s myapp.key\n\
+                         私钥不要提交到 git。"
+                        .into(),
+                ),
+                _ => return Err("--pubkey、--pubkey-file 与 --generate-key 只能提供一个".into()),
             };
             project.init_changes(
                 endpoint.trim(),
@@ -181,6 +187,91 @@ fn read_pubkey_file(path: &Path) -> Result<String, String> {
         return Ok(base64::engine::general_purpose::STANDARD.encode(trimmed.as_bytes()));
     }
     Ok(trimmed.to_string())
+}
+
+/// 生成一对 minisign 密钥；返回写入配置的 base64 公钥。
+///
+/// 私钥只在 `--apply` 时落盘，且**永不打印内容**；Unix 下权限为 `0600`。
+/// dry-run 仍会在内存中生成密钥，以便展示真实的配置 diff，但不写任何文件。
+fn generate_keypair(path: &Path, apply: bool) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let mut public_os = path.as_os_str().to_os_string();
+    public_os.push(".pub");
+    let public_path = PathBuf::from(public_os);
+    if path.exists() {
+        return Err(format!("私钥文件已存在，拒绝覆盖: {}", path.display()));
+    }
+    if public_path.exists() {
+        return Err(format!(
+            "公钥文件已存在，拒绝覆盖: {}",
+            public_path.display()
+        ));
+    }
+
+    let keypair = minisign::KeyPair::generate_unencrypted_keypair()
+        .map_err(|e| format!("生成密钥失败: {e}"))?;
+    let secret = keypair
+        .sk
+        .to_box(None)
+        .map_err(|e| format!("序列化私钥失败: {e}"))?
+        .into_string();
+    let public = keypair
+        .pk
+        .to_box()
+        .map_err(|e| format!("序列化公钥失败: {e}"))?
+        .to_string();
+
+    if apply {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建密钥目录 {} 失败: {e}", parent.display()))?;
+            }
+        }
+        write_private_key(path, &secret)?;
+        if let Err(e) = std::fs::write(&public_path, &public) {
+            // 公钥写失败时不要留下一个孤立私钥，避免用户误以为密钥已就绪。
+            let _ = std::fs::remove_file(path);
+            return Err(format!("写入公钥 {} 失败: {e}", public_path.display()));
+        }
+        println!(
+            "[OK] 已生成密钥对：\n  私钥: {}\n  公钥: {}\n[WARN] 私钥未加密：请妥善保管并加入 .gitignore，不要提交到版本库。",
+            path.display(),
+            public_path.display()
+        );
+    } else {
+        println!(
+            "[DRY] 将生成密钥对: {} 与 {}（加 --apply 才会落盘）",
+            path.display(),
+            public_path.display()
+        );
+    }
+    Ok(STANDARD.encode(public.as_bytes()))
+}
+
+/// 以只允许当前用户读写的方式创建私钥文件（Unix `0600`）。
+fn write_private_key(path: &Path, secret: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path);
+    let mut file = file.map_err(|e| format!("创建私钥文件 {} 失败: {e}", path.display()))?;
+    file.write_all(secret.as_bytes())
+        .map_err(|e| format!("写入私钥 {} 失败: {e}", path.display()))?;
+    file.flush()
+        .map_err(|e| format!("刷新私钥 {} 失败: {e}", path.display()))
 }
 
 fn print_diff(change: &Change) {

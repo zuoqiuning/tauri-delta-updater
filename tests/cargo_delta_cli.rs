@@ -68,6 +68,78 @@ fn init_without_pubkey_explains_key_generation() {
     );
 }
 
+/// `--generate-key` 一条命令完成密钥生成 + 配置写入，且绝不打印私钥。
+#[test]
+fn init_generates_keypair_and_keeps_secret_private() {
+    let (_dir, root) = project();
+    let key = root.join("keys").join("myapp.key");
+    let key_arg = key.to_string_lossy().to_string();
+    let public_path = PathBuf::from(format!("{key_arg}.pub"));
+
+    // dry-run：只展示计划，不落盘
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--generate-key",
+            &key_arg,
+        ],
+    );
+    assert_eq!(code, 0, "dry-run 必须成功: {stdout}\n{stderr}");
+    assert!(stdout.contains("[DRY]"), "{stdout}");
+    assert!(!key.exists(), "dry-run 不得写私钥");
+    assert!(!public_path.exists(), "dry-run 不得写公钥");
+
+    // --apply：落盘并写入配置
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--generate-key",
+            &key_arg,
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "--apply 必须成功: {stdout}\n{stderr}");
+    assert!(key.is_file(), "私钥必须落盘");
+    assert!(public_path.is_file(), "公钥必须落盘");
+    let secret = std::fs::read_to_string(&key).unwrap();
+    assert!(secret.contains("secret key"), "私钥格式必须正确");
+    assert!(
+        !stdout.contains("secret key") && !stderr.contains("secret key"),
+        "私钥内容绝不能出现在输出中"
+    );
+    let config = read(&root, "tauri.conf.json");
+    assert!(
+        config.contains("pubkey"),
+        "配置必须写入生成的公钥: {config}"
+    );
+
+    // 生成的配置必须能通过 --check（公钥格式与依赖都对）
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_eq!(code, 0, "生成的配置必须通过检查: {stdout}\n{stderr}");
+
+    // 已存在的私钥不得被覆盖
+    let (code, _stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--generate-key",
+            &key_arg,
+            "--apply",
+            "--force",
+        ],
+    );
+    assert_ne!(code, 0, "已存在的私钥必须拒绝覆盖");
+    assert!(stderr.contains("已存在"), "{stderr}");
+}
+
 /// 默认 dry-run：输出 diff，但不改任何文件。
 #[test]
 fn init_is_dry_run_by_default() {

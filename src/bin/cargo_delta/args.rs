@@ -61,6 +61,17 @@ pub(crate) enum Command {
         /// 原始 `.pub` 文件会被编码成 base64（与官方 updater 的配置写法一致）。
         #[arg(long, value_name = "PATH", conflicts_with = "pubkey")]
         pubkey_file: Option<PathBuf>,
+        /// 直接生成一对 minisign 密钥：私钥写入该路径（Unix 下 `0600`），
+        /// 公钥写入 `<PATH>.pub` 并自动写入配置。私钥内容不会打印。
+        ///
+        /// 与 `--pubkey` / `--pubkey-file` 互斥；只在 `--apply` 时落盘，
+        /// dry-run 只展示将要生成的文件与配置 diff。
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with_all = ["pubkey", "pubkey_file"]
+        )]
+        generate_key: Option<PathBuf>,
         /// 可选整包清单地址（`latest.bundle.json`）。
         #[arg(long)]
         bundle_endpoint: Option<String>,

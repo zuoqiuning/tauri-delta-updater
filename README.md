@@ -66,9 +66,15 @@ cargo delta init \
   --endpoint https://cdn.example.com/latest.json \
   --pubkey "RWQ..."              # dry-run: prints a unified diff, writes nothing
 # or: --pubkey-file ~/.tauri/myapp.pub   (raw .pub is converted to base64)
+# or: --generate-key myapp.key           (creates myapp.key + myapp.key.pub; --apply writes them)
 cargo delta init ... --apply     # writes the files
 cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
 ```
+
+`--generate-key` removes the need to install the `minisign` CLI: the private key
+is written with `0600` on Unix, the public key to `<path>.pub`, and only the
+paths are printed. It never overwrites an existing key and refuses to combine
+with `--pubkey` / `--pubkey-file`.
 
 `init` writes `"0.4"` by default (patch updates within the minor are allowed).
 `--registry` pins the exact version (`"0.4.0"`) for pipelines that require the

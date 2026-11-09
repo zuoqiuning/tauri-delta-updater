@@ -44,6 +44,9 @@
 - `DeltaError::AuthenticodeUnsigned` 的文案补充 `authenticode_policy: permissive`
   的离线证书链处置提示。
 - `cargo delta init` 缺少公钥时直接打印 `minisign -G` 生成命令；
+  新增 `--generate-key <PATH>`：一条命令生成密钥对（Unix 私钥 `0600`），
+  公钥写入 `<PATH>.pub` 并自动进配置，绝不打印私钥内容；已存在的密钥
+  拒绝覆盖，dry-run 不落盘。
   `cargo delta doctor` 新增 `--expect-version`，发布后可直接断言线上版本。
 - `checkCompat()` 的进度事件改为一次下载会话只发一个 `Started` / `Finished`：
   增量回退全量时不再重置进度上下文。
