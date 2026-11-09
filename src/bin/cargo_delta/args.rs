@@ -11,6 +11,7 @@ use tauri_delta_updater::release::ReleaseOptions;
     long_about = None,
     after_help = r#"示例：
   cargo delta init --endpoint https://cdn.example.com/latest.json --pubkey RWQ...
+  cargo delta init --endpoint https://cdn.example.com/latest.json --pubkey-file ~/.tauri/myapp.pub
   cargo delta init ... --apply
   cargo delta migrate                 # 输出 diff，不写文件
   cargo delta migrate --remove-official --apply
@@ -46,8 +47,18 @@ pub(crate) enum Command {
         #[arg(long, required_unless_present = "check")]
         endpoint: Option<String>,
         /// 固化在应用里的公钥（base64 或 `.pub` 内容）。`--check` 时无需提供。
-        #[arg(long, required_unless_present = "check")]
+        #[arg(long, required_unless_present_any = ["check", "pubkey_file"])]
         pubkey: Option<String>,
+        /// 公钥文件（`.pub` 内容或 base64 文本）；与 `--pubkey` 二选一。
+        ///
+        /// 原始 `.pub` 文件会被编码成 base64（与官方 updater 的配置写法一致）。
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with = "pubkey",
+            required_unless_present_any = ["check", "pubkey"]
+        )]
+        pubkey_file: Option<PathBuf>,
         /// 可选整包清单地址（`latest.bundle.json`）。
         #[arg(long)]
         bundle_endpoint: Option<String>,

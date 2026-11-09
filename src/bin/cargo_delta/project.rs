@@ -83,25 +83,26 @@ impl Project {
         let mut missing = Vec::new();
 
         let (_, root) = read_json_or(&self.config_path, json!({}))?;
-        let config_ok = root
+        // 插件在缺失 plugins.delta-updater 时会回退读取 plugins.updater；
+        // --check 必须承认这条迁移路径，否则“保留官方配置”会被误判为未接入。
+        let delta = root
             .pointer("/plugins/delta-updater")
-            .and_then(Value::as_object)
-            .is_some_and(|delta| {
-                delta
-                    .get("endpoints")
-                    .and_then(Value::as_array)
-                    .is_some_and(|endpoints| !endpoints.is_empty())
-                    && delta
-                        .get("pubkey")
-                        .and_then(Value::as_str)
-                        .is_some_and(|key| !key.trim().is_empty())
-            });
+            .or_else(|| root.pointer("/plugins/updater"))
+            .and_then(Value::as_object);
+        let config_ok = delta.is_some_and(|delta| {
+            delta
+                .get("endpoints")
+                .and_then(Value::as_array)
+                .is_some_and(|endpoints| !endpoints.is_empty())
+                && delta
+                    .get("pubkey")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| !key.trim().is_empty())
+        });
         if !config_ok {
-            missing.push("plugins.delta-updater（endpoints + pubkey）".to_string());
-        } else if let Some(delta) = root
-            .pointer("/plugins/delta-updater")
-            .and_then(Value::as_object)
-        {
+            missing
+                .push("plugins.delta-updater / plugins.updater（endpoints + pubkey）".to_string());
+        } else if let Some(delta) = delta {
             // 配置存在不代表可用：错误的 scheme、明文 HTTP 或占位符拼错
             // 都会在应用启动/首次检查时才暴露，CI 守卫应在这里拦下。
             let allow_insecure = delta
@@ -153,9 +154,16 @@ impl Project {
                         .any(|v| v.as_str() == Some("delta-updater:default"))
                 });
         if !capability_ok {
-            missing.push(
-                "capabilities/default.json（identifier + delta-updater:default）".to_string(),
-            );
+            // 报错必须点名实际使用的文件：多 capability 项目里写死
+            // default.json 会把用户引到错误的文件。
+            let label = self
+                .config_path
+                .parent()
+                .and_then(|base| self.capability_path.strip_prefix(base).ok())
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| self.capability_path.display().to_string())
+                .replace('\\', "/");
+            missing.push(format!("{label}（identifier + delta-updater:default）"));
         }
 
         let cargo = fs::read_to_string(&self.cargo_toml)
@@ -179,10 +187,16 @@ impl Project {
         (name != "default.json").then(|| name.to_string())
     }
 
-    /// 是否保留了官方 updater（双栈模式：本引擎增量 + 官方全量回退）。
+    /// 是否保留了官方 updater 配置（双栈模式或作为配置回退来源）。
     pub(crate) fn uses_official_updater(&self) -> Result<bool, String> {
         let (_, root) = read_json_or(&self.config_path, json!({}))?;
         Ok(root.pointer("/plugins/updater").is_some())
+    }
+
+    /// 是否已写入本插件专用配置键（而非回退使用 `plugins.updater`）。
+    pub(crate) fn has_delta_config(&self) -> Result<bool, String> {
+        let (_, root) = read_json_or(&self.config_path, json!({}))?;
+        Ok(root.pointer("/plugins/delta-updater").is_some())
     }
 
     /// 依赖是否仍是 git 形式；插件发布后应改为版本依赖。

@@ -14,6 +14,12 @@
 - `cargo delta init --check` 静态校验端点与公钥：非 `http(s)`、未显式允许的
   非回环明文 HTTP、占位符或截断的公钥直接失败，不再等到应用首次检查才暴露；
   多 capability 项目复用已有文件并提示实际写入目标。
+- `cargo delta init --check` 接受 `plugins.updater` 作为配置来源：
+  迁移时保留官方键、不重命名也能通过，与插件运行时的回退行为一致。
+- `cargo delta init` 支持 `--pubkey-file`：直接读取 `.pub` 文件并转成 base64
+  写入配置，避免手抄长串公钥。
+- `cargo delta init --check` 的 capability 错误点名实际使用的文件
+  （`main.json` 等），不再误导到 `default.json`。
 - 明文 HTTP 检查覆盖 `signature_url` 与 `bundle_endpoint`，避免清单走 HTTPS、
   签名走 HTTP 的降级窗口。
 - 插件配置 `proxy` / `headers` 自建客户端时恢复默认连接/读空闲超时

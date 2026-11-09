@@ -60,6 +60,7 @@ cd my-app
 cargo delta init \
   --endpoint https://cdn.example.com/latest.json \
   --pubkey "RWQ..."              # dry-run: prints a unified diff, writes nothing
+# or: --pubkey-file ~/.tauri/myapp.pub   (raw .pub is converted to base64)
 cargo delta init ... --apply     # writes the files
 cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
 ```
@@ -85,7 +86,9 @@ Keep `--check` in CI so the integration cannot silently rot:
 ```
 
 `--check` also reports whether `plugins.updater` is still present (dual-stack)
-or absent (single-stack, full fallback owned by `install_full`).
+or absent (single-stack, full fallback owned by `install_full`). During
+migration it accepts `plugins.updater` as the config source, so keeping the
+official key without renaming it still passes the guard.
 
 > [!IMPORTANT]
 > **Replacing the official updater is a decision, not an automatic default.**

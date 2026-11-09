@@ -249,6 +249,109 @@ fn init_check_is_a_ci_guard() {
     );
 }
 
+/// 自定义 capability 文件校验失败时，错误必须点名实际使用的文件，
+/// 而不是写死 default.json 把用户引到错误位置。
+#[test]
+fn init_check_names_the_capability_file_it_uses() {
+    let (_dir, root) = project();
+    std::fs::remove_file(root.join("src-tauri/capabilities/default.json")).unwrap();
+    std::fs::write(
+        root.join("src-tauri/capabilities/main.json"),
+        r#"{"permissions":["core:default"]}"#,
+    )
+    .unwrap();
+
+    let (code, _stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("capabilities/main.json"),
+        "错误必须点名实际使用的 capability: {stderr}"
+    );
+}
+
+/// 迁移时保留官方配置键（不重命名）也必须能通过 --check：
+/// 插件运行时会在缺失 plugins.delta-updater 时回退读取 plugins.updater。
+#[test]
+fn init_check_accepts_official_config_key() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            &pubkey(),
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    // 把配置键改成官方键，模拟“保留 plugins.updater”的迁移方式。
+    let path = root.join("src-tauri/tauri.conf.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("\"delta-updater\"", "\"updater\"")).unwrap();
+
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_eq!(code, 0, "--check 必须承认官方配置键: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("配置来源：plugins.updater"),
+        "必须说明配置来自官方键: {stdout}"
+    );
+}
+
+/// `--pubkey-file` 必须读取原始 `.pub` 文件并转成官方配置约定的 base64。
+#[test]
+fn init_accepts_pubkey_file() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let (_dir, root) = project();
+    let keypair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let raw = keypair.pk.to_box().unwrap().to_string();
+    let key_path = root.join("myapp.pub");
+    std::fs::write(&key_path, &raw).unwrap();
+    let key_arg = key_path.to_str().unwrap();
+
+    let (code, stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey-file",
+            key_arg,
+            "--apply",
+        ],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+
+    let config: serde_json::Value = serde_json::from_str(&read(&root, "tauri.conf.json")).unwrap();
+    assert_eq!(
+        config["plugins"]["delta-updater"]["pubkey"],
+        STANDARD.encode(raw.trim().as_bytes()),
+        "原始 .pub 文件必须编码为 base64 写入配置"
+    );
+
+    let (code, stdout, stderr) = run(&root, &["init", "--check"]);
+    assert_eq!(code, 0, "生成的公钥必须通过 --check: {stdout}\n{stderr}");
+
+    let (code, _stdout, stderr) = run(
+        &root,
+        &[
+            "init",
+            "--endpoint",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--pubkey-file",
+            key_arg,
+            "--apply",
+        ],
+    );
+    assert_ne!(code, 0, "--pubkey 与 --pubkey-file 不能同时使用");
+    assert!(stderr.contains("pubkey-file"), "{stderr}");
+}
+
 /// 依赖写成明显过期的版本时，`--check` 必须失败：它宣称守护“接入不腐烂”。
 #[test]
 fn init_check_rejects_stale_dependency_version() {

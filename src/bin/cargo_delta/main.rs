@@ -7,6 +7,7 @@ mod project;
 use args::{Cli, Command};
 use project::{write_atomic, Change, Project};
 use similar::TextDiff;
+use std::path::Path;
 
 fn main() {
     tauri_delta_updater::release::enable_utf8_console();
@@ -46,6 +47,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Init {
             endpoint,
             pubkey,
+            pubkey_file,
             bundle_endpoint,
             force,
             registry,
@@ -65,7 +67,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 if missing.is_empty() {
                     println!("接入配置完整。");
                     if project.uses_official_updater()? {
-                        println!("已检测到 plugins.updater：全量回退路径可用（双栈）。");
+                        if project.has_delta_config()? {
+                            println!("已检测到 plugins.updater：全量回退路径可用（双栈）。");
+                        } else {
+                            println!(
+                                "配置来源：plugins.updater（插件会自动回退读取，无需重命名）。"
+                            );
+                        }
                     } else {
                         println!(
                             "未检测到 plugins.updater：全量回退由 install_full 负责（单栈）。"
@@ -87,7 +95,12 @@ fn run(cli: Cli) -> Result<(), String> {
             // 非 --check 时 clap 已通过 required_unless_present 保证两者存在；
             // 这里仍给出明确错误，避免未来参数约束调整后出现 unwrap 崩溃。
             let endpoint = endpoint.ok_or("--endpoint 必填（--check 除外）")?;
-            let pubkey = pubkey.ok_or("--pubkey 必填（--check 除外）")?;
+            let pubkey = match (pubkey, pubkey_file) {
+                (Some(key), None) => key.trim().to_string(),
+                (None, Some(path)) => read_pubkey_file(&path)?,
+                (None, None) => return Err("--pubkey 或 --pubkey-file 必填（--check 除外）".into()),
+                (Some(_), Some(_)) => return Err("--pubkey 与 --pubkey-file 只能提供一个".into()),
+            };
             project.init_changes(
                 endpoint.trim(),
                 pubkey.trim(),
@@ -131,6 +144,22 @@ fn run(cli: Cli) -> Result<(), String> {
 
     print_next_steps(is_init);
     Ok(())
+}
+
+/// 读取公钥文件：原始 `.pub` 内容编码为 base64（官方配置写法）；
+/// 已经是 base64 的文本原样使用。
+fn read_pubkey_file(path: &Path) -> Result<String, String> {
+    use base64::Engine as _;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("读取公钥文件 {} 失败: {e}", path.display()))?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(format!("公钥文件 {} 为空", path.display()));
+    }
+    if trimmed.starts_with("untrusted comment:") {
+        return Ok(base64::engine::general_purpose::STANDARD.encode(trimmed.as_bytes()));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn print_diff(change: &Change) {
