@@ -17,11 +17,16 @@ cargo delta release --from old_binaries --to 0.1.1 \
 
 cargo delta doctor https://cdn.example.com/latest.json \
   --pubkey "$EMBEDDED_PUBKEY" --deep
+
+# 或直接复用项目配置（端点、公钥、签名地址、整包地址与请求头）：
+cargo delta doctor --from-config --project ./my-app
 ```
 
 `cargo delta release` shares the same implementation as `generate`
 (`release::run_release`); `cargo delta doctor` validates a published bucket
-(signature, sizes, patch hashes, chain reachability). `--help` is always the
+(signature, sizes, patch hashes, chain reachability). `--from-config` reads
+`plugins.delta-updater` (falling back to `plugins.updater`), expands official
+placeholders and uses the configured trust policy. `--help` is always the
 authoritative argument list; the reference below is kept for offline reading.
 
 ## Publisher CLI

@@ -88,7 +88,9 @@ Keep `--check` in CI so the integration cannot silently rot:
 `--check` also reports whether `plugins.updater` is still present (dual-stack)
 or absent (single-stack, full fallback owned by `install_full`). During
 migration it accepts `plugins.updater` as the config source, so keeping the
-official key without renaming it still passes the guard.
+official key without renaming it still passes the guard. After publishing,
+`cargo delta doctor --from-config` reuses the same config to validate the live
+bucket without copying URLs or keys.
 
 > [!IMPORTANT]
 > **Replacing the official updater is a decision, not an automatic default.**

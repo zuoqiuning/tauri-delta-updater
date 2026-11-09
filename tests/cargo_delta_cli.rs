@@ -644,6 +644,62 @@ fn doctor_keeps_query_parameters_in_signature_url() {
     assert!(stdout.contains("清单签名有效"), "{stdout}");
 }
 
+/// `doctor --from-config` 必须读取项目配置（含官方键回退与占位符展开）并完成体检。
+#[test]
+fn doctor_reads_project_config() {
+    use common::MockServer;
+    use std::collections::HashMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let server = MockServer::start(HashMap::new());
+    let (sk, pk) = common::signing_keypair();
+    let platform = tauri_delta_updater::current_platform();
+
+    let manifest = serde_json::json!({
+        "version": "0.1.1",
+        "notes": "from config",
+        "pub_date": "2026-01-01T00:00:00Z",
+        "platforms": {
+            platform: { "signature": "dummy", "url": server.url("/full.exe") }
+        },
+        "patches": {}
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    let signature = common::sign_bound(&sk, &manifest_bytes, "tdu:v=0.1.1");
+    server.set("/stable/latest.json", manifest_bytes);
+    server.set("/stable/latest.json.sig", signature.into_bytes());
+    server.set("/full.exe", b"installer".to_vec());
+
+    let tauri = root.join("src-tauri");
+    std::fs::create_dir_all(tauri.join("capabilities")).unwrap();
+    let config = serde_json::json!({
+        "productName": "Demo",
+        "plugins": {
+            "updater": {
+                "endpoints": [server.url("/{{channel}}/latest.json")],
+                "pubkey": pk,
+                "channel": "stable"
+            }
+        }
+    });
+    std::fs::write(
+        tauri.join("tauri.conf.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        tauri.join("Cargo.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(tauri.join("capabilities/default.json"), "{}").unwrap();
+
+    let (code, stdout, stderr) = run(root, &["doctor", "--from-config", "--project", "."]);
+    assert_eq!(code, 0, "体检必须通过: {stdout}\n{stderr}");
+    assert!(stdout.contains("清单签名有效"), "{stdout}");
+}
+
 /// 全局参数被无关子命令接受但静默忽略，会让用户误以为它生效。
 #[test]
 fn release_and_doctor_reject_irrelevant_global_flags() {
@@ -661,8 +717,18 @@ fn release_and_doctor_reject_irrelevant_global_flags() {
     assert_ne!(code, 0, "doctor 不接受 --apply");
     assert!(stderr.contains("--apply"), "{stderr}");
 
-    let (code, _stdout, stderr) = run(&root, &["doctor", "--project", ".", "--pubkey", "PK"]);
-    assert_ne!(code, 0, "doctor 不接受 --project");
+    let (code, _stdout, stderr) = run(
+        &root,
+        &[
+            "doctor",
+            "https://cdn.example.com/latest.json",
+            "--pubkey",
+            "PK",
+            "--project",
+            ".",
+        ],
+    );
+    assert_ne!(code, 0, "--project 只允许与 --from-config 一起使用");
     assert!(stderr.contains("--project"), "{stderr}");
 }
 

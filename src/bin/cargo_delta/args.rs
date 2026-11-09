@@ -7,7 +7,7 @@ use tauri_delta_updater::release::ReleaseOptions;
 #[derive(Parser)]
 #[command(
     name = "cargo-delta",
-    about = "配置与发布 tauri-delta-updater：init / migrate / release",
+    about = "配置、发布与体检 tauri-delta-updater：init / migrate / release / doctor",
     long_about = None,
     after_help = r#"示例：
   cargo delta init --endpoint https://cdn.example.com/latest.json --pubkey RWQ...
@@ -15,15 +15,18 @@ use tauri_delta_updater::release::ReleaseOptions;
   cargo delta init ... --apply
   cargo delta migrate                 # 输出 diff，不写文件
   cargo delta migrate --remove-official --apply
+  cargo delta doctor https://cdn.example.com/latest.json --pubkey RWQ...
+  cargo delta doctor --from-config --project ../my-app
   cargo delta release --from old_binaries --to 0.3.0 \
     --app-binary target/release/app.exe --installer dist/app_0.3.0_x64-setup.exe \
     --base-url https://cdn.example.com/releases
 
 init / migrate 默认只打印 diff；显式加 --apply 才落盘。
-release 直接生成清单与补丁，--dry-run 只打印计划。"#
+release 直接生成清单与补丁，--dry-run 只打印计划。
+doctor --from-config 读取项目 tauri.conf.json 的端点与公钥。"#
 )]
 pub(crate) struct Cli {
-    /// 项目根目录（init / migrate 使用，默认当前目录）。
+    /// 项目根目录（init / migrate / doctor --from-config 使用，默认当前目录）。
     #[arg(long, global = true)]
     pub(crate) project: Option<PathBuf>,
 
@@ -90,13 +93,38 @@ pub(crate) enum Command {
 /// `cargo delta doctor` 的参数。
 #[derive(clap::Args, Debug)]
 pub(crate) struct DoctorArgs {
-    /// 清单地址（`latest.json`）。
-    #[arg(value_name = "URL")]
-    pub(crate) endpoint: String,
+    /// 清单地址（`latest.json`）。使用 `--from-config` 时从项目配置读取。
+    #[arg(
+        value_name = "URL",
+        required_unless_present = "from_config",
+        conflicts_with = "from_config"
+    )]
+    pub(crate) endpoint: Option<String>,
 
     /// 受信任公钥（可重复）：base64 或 `.pub` 文件内容。
-    #[arg(long = "pubkey", value_name = "KEY", required = true)]
+    #[arg(
+        long = "pubkey",
+        value_name = "KEY",
+        required_unless_present = "from_config",
+        conflicts_with = "from_config"
+    )]
     pub(crate) pubkey: Vec<String>,
+
+    /// 从项目 `tauri.conf.json` 读取端点、公钥、签名地址与整包地址。
+    ///
+    /// 兼容 `plugins.delta-updater` 与官方 `plugins.updater`；
+    /// 端点里的 `{{target}}` / `{{arch}}` / `{{channel}}` 会自动展开，
+    /// `{{current_version}}` 需要 `--current-version`。
+    #[arg(long)]
+    pub(crate) from_config: bool,
+
+    /// 展开 `{{current_version}}` 时使用的版本号。
+    #[arg(long = "current-version", value_name = "VERSION")]
+    pub(crate) current_version: Option<String>,
+
+    /// 可选：清单签名地址（默认按清单地址同名 + `.sig` 推导）。
+    #[arg(long = "signature-url", value_name = "URL")]
+    pub(crate) signature_url: Option<String>,
 
     /// 可选：整包清单地址（`latest.bundle.json`），校验整包补丁与文件清单。
     #[arg(long = "bundle-url", value_name = "URL")]
@@ -119,8 +147,8 @@ pub(crate) struct DoctorArgs {
     pub(crate) headers: Vec<String>,
 
     /// 多钥信任策略：`any`（默认，任意一把有效签名）或 `all`（必须全部签名）。
-    #[arg(long = "trust-policy", value_name = "any|all", default_value = "any")]
-    pub(crate) trust_policy: String,
+    #[arg(long = "trust-policy", value_name = "any|all")]
+    pub(crate) trust_policy: Option<String>,
 
     /// 接受旧版（legacy）minisign 签名。
     ///

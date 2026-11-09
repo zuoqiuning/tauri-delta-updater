@@ -27,7 +27,11 @@ fn run(cli: Cli) -> Result<(), String> {
             return Err("--apply 只用于 init / migrate；release 总是写文件，doctor 只读".into());
         }
         if cli.project.is_some() {
-            return Err("--project 只用于 init / migrate".into());
+            // doctor --from-config 需要项目配置；其余 release/doctor 用法不接受它。
+            let from_config = matches!(&cli.command, Command::Doctor(args) if args.from_config);
+            if !from_config {
+                return Err("--project 只用于 init / migrate / doctor --from-config".into());
+            }
         }
         if matches!(&cli.command, Command::Doctor(_)) && cli.dry_run {
             return Err("--dry-run 只用于 init / migrate / release".into());
@@ -43,7 +47,7 @@ fn run(cli: Cli) -> Result<(), String> {
             tauri_delta_updater::release::run_release_blocking(options)?;
             return Ok(());
         }
-        Command::Doctor(args) => return doctor::run(args),
+        Command::Doctor(args) => return doctor::run(args, cli.project.as_deref()),
         Command::Init {
             endpoint,
             pubkey,

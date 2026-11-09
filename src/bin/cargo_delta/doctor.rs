@@ -4,6 +4,7 @@
 //! 而不是等客户端下载失败才发现漏传了补丁或清单。
 
 use crate::args::DoctorArgs;
+use crate::project::Project;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RANGE};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -29,7 +30,8 @@ struct Verdict {
 }
 
 /// 执行体检并决定退出码：有任何错误时返回 `Err`。
-pub(crate) fn run(args: DoctorArgs) -> Result<(), String> {
+pub(crate) fn run(mut args: DoctorArgs, project_root: Option<&Path>) -> Result<(), String> {
+    resolve_from_config(&mut args, project_root)?;
     let worker = std::thread::Builder::new()
         .name("delta-doctor".into())
         .stack_size(16 * 1024 * 1024)
@@ -55,6 +57,252 @@ pub(crate) fn run(args: DoctorArgs) -> Result<(), String> {
             report.warnings.len()
         ))
     }
+}
+
+/// 从项目配置填充体检参数（`--from-config`）。
+fn resolve_from_config(args: &mut DoctorArgs, project_root: Option<&Path>) -> Result<(), String> {
+    if !args.from_config {
+        if args.current_version.is_some() {
+            return Err("--current-version 只用于 --from-config".into());
+        }
+        if args.endpoint.is_none() {
+            return Err("缺少清单地址（或改用 --from-config）".into());
+        }
+        if args.pubkey.is_empty() {
+            return Err("缺少 --pubkey（或改用 --from-config）".into());
+        }
+        return Ok(());
+    }
+
+    let project = Project::discover(project_root)?;
+    let config = read_project_config(&project)?;
+    let platform = tauri_delta_updater::current_platform();
+    let version = args.current_version.clone().unwrap_or_default();
+    let main = config
+        .endpoints
+        .first()
+        .ok_or_else(|| "plugins.delta-updater.endpoints 不能为空".to_string())?;
+    args.endpoint = Some(expand_endpoint(
+        main,
+        platform,
+        &version,
+        &config.channel,
+        config.bundle_type.as_deref(),
+    )?);
+    args.pubkey = std::iter::once(config.pubkey)
+        .chain(config.additional_pubkeys)
+        .collect();
+
+    if args.signature_url.is_none() {
+        args.signature_url = config
+            .signature_url
+            .map(|url| {
+                expand_endpoint(
+                    &url,
+                    platform,
+                    &version,
+                    &config.channel,
+                    config.bundle_type.as_deref(),
+                )
+            })
+            .transpose()?;
+    }
+    if args.bundle_url.is_none() {
+        args.bundle_url = config
+            .bundle_endpoint
+            .map(|url| {
+                expand_endpoint(
+                    &url,
+                    platform,
+                    &version,
+                    &config.channel,
+                    config.bundle_type.as_deref(),
+                )
+            })
+            .transpose()?;
+    }
+    if args.trust_policy.is_none() {
+        if let Some(policy) = config.trust_policy.as_deref() {
+            let normalized = match policy.trim().to_ascii_lowercase().as_str() {
+                "any" | "any_of" => "any",
+                "all" | "all_of" => "all",
+                other => {
+                    return Err(format!(
+                        "plugins.delta-updater.trust_policy 非法: {other}（any / all）"
+                    ))
+                }
+            };
+            args.trust_policy = Some(normalized.to_string());
+        }
+    }
+    args.allow_legacy |= config.allow_legacy;
+
+    // CLI --header 覆盖配置：配置头先放，命令行同名头后放会覆盖它。
+    let mut headers: Vec<String> = config
+        .headers
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    headers.append(&mut args.headers);
+    args.headers = headers;
+    Ok(())
+}
+
+/// 体检需要的项目配置子集（与插件 `FileConfig` 的读取语义一致）。
+struct ProjectConfig {
+    endpoints: Vec<String>,
+    pubkey: String,
+    additional_pubkeys: Vec<String>,
+    signature_url: Option<String>,
+    bundle_endpoint: Option<String>,
+    bundle_type: Option<String>,
+    channel: String,
+    trust_policy: Option<String>,
+    allow_legacy: bool,
+    headers: Vec<(String, String)>,
+}
+
+fn read_project_config(project: &Project) -> Result<ProjectConfig, String> {
+    let text = std::fs::read_to_string(&project.config_path)
+        .map_err(|e| format!("读取 {} 失败: {e}", project.config_path.display()))?;
+    let root: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("解析 {} 失败: {e}", project.config_path.display()))?;
+    let raw = root
+        .pointer("/plugins/delta-updater")
+        .or_else(|| root.pointer("/plugins/updater"))
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            "tauri.conf.json 缺少 plugins.delta-updater（或 plugins.updater）".to_string()
+        })?;
+
+    let endpoints = raw
+        .get("endpoints")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "plugins.delta-updater.endpoints 必须是数组".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "plugins.delta-updater.endpoints 必须是字符串数组".to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if endpoints.is_empty() {
+        return Err("plugins.delta-updater.endpoints 不能为空".to_string());
+    }
+
+    let pubkey = raw
+        .get("pubkey")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| "plugins.delta-updater.pubkey 不能为空".to_string())?
+        .to_string();
+
+    let additional_pubkeys = raw
+        .get("additional_pubkeys")
+        .and_then(serde_json::Value::as_array)
+        .map(|keys| {
+            keys.iter()
+                .map(|value| {
+                    value.as_str().map(str::to_string).ok_or_else(|| {
+                        "plugins.delta-updater.additional_pubkeys 必须是字符串数组".to_string()
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let headers = raw
+        .get("headers")
+        .and_then(serde_json::Value::as_object)
+        .map(|map| {
+            map.iter()
+                .map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|value| (name.clone(), value.to_string()))
+                        .ok_or_else(|| format!("plugins.delta-updater.headers.{name} 必须是字符串"))
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let channel = raw
+        .get("channel")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|channel| !channel.is_empty())
+        .unwrap_or("stable")
+        .to_string();
+
+    Ok(ProjectConfig {
+        endpoints,
+        pubkey,
+        additional_pubkeys,
+        signature_url: raw
+            .get("signature_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        bundle_endpoint: raw
+            .get("bundle_endpoint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        bundle_type: raw
+            .get("bundle_type")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+            .map(str::to_string),
+        channel,
+        trust_policy: raw
+            .get("trust_policy")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        allow_legacy: raw
+            .get("allow_legacy_signatures")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        headers,
+    })
+}
+
+/// 展开官方 updater 的端点占位符（与插件运行时的规则一致）。
+fn expand_endpoint(
+    url: &str,
+    platform: &str,
+    current_version: &str,
+    channel: &str,
+    bundle_type: Option<&str>,
+) -> Result<String, String> {
+    if url.contains("{{current_version}}") && current_version.is_empty() {
+        return Err(format!(
+            "端点使用 {{{{current_version}}}}，请加 --current-version: {url}"
+        ));
+    }
+    if url.contains("{{bundle_type}}") && bundle_type.is_none() {
+        return Err(format!(
+            "端点使用 {{{{bundle_type}}}}，但 plugins.delta-updater 没有配置 bundle_type: {url}"
+        ));
+    }
+    let needs_platform = url.contains("{{target}}") || url.contains("{{arch}}");
+    if needs_platform && platform.contains("unknown") {
+        return Err(format!(
+            "无法识别当前平台（{platform}），不能展开 {{{{target}}}} / {{{{arch}}}}"
+        ));
+    }
+    let (target, arch) = platform.split_once('-').unwrap_or((platform, ""));
+    let mut expanded = url
+        .replace("{{target}}", target)
+        .replace("{{arch}}", arch)
+        .replace("{{current_version}}", current_version)
+        .replace("{{channel}}", channel);
+    if let Some(kind) = bundle_type {
+        expanded = expanded.replace("{{bundle_type}}", kind);
+    }
+    Ok(expanded)
 }
 
 struct Report {
@@ -126,7 +374,11 @@ impl Report {
 }
 
 async fn check(args: DoctorArgs) -> Result<Report, String> {
-    let verdict = match args.trust_policy.as_str() {
+    let Some(endpoint) = args.endpoint.clone() else {
+        return Err("缺少清单地址（或改用 --from-config）".into());
+    };
+    let policy = args.trust_policy.as_deref().unwrap_or("any");
+    let verdict = match policy {
         "any" => Verdict {
             policy: TrustPolicy::AnyOf,
             allow_legacy: args.allow_legacy,
@@ -143,7 +395,7 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
     };
 
     let mut report = Report {
-        endpoint: args.endpoint.clone(),
+        endpoint: endpoint.clone(),
         version: None,
         checks: 0,
         errors: Vec::new(),
@@ -158,34 +410,26 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
         report.warn("体检要求所有公钥都签名（AllOf）；客户端默认 AnyOf，请确认发布端确实双签");
     }
 
-    if !is_http_url(&args.endpoint) {
-        report.fail(format!("清单地址必须是 http(s) URL: {}", args.endpoint));
+    if !is_http_url(&endpoint) {
+        report.fail(format!("清单地址必须是 http(s) URL: {endpoint}"));
         return Ok(report);
     }
-    if args.endpoint.starts_with("http://") && !is_loopback(&args.endpoint) {
+    if endpoint.starts_with("http://") && !is_loopback(&endpoint) {
         report.warn(format!(
-            "清单使用明文 HTTP: {}（生产环境应使用 HTTPS）",
-            args.endpoint
+            "清单使用明文 HTTP: {endpoint}（生产环境应使用 HTTPS）"
         ));
     }
 
     let client = build_client(&args)?;
 
-    let Some(manifest_bytes) = fetch_or_fail(
-        &client,
-        &args.endpoint,
-        MAX_MANIFEST_BYTES,
-        "清单",
-        &mut report,
-    )
-    .await
+    let Some(manifest_bytes) =
+        fetch_or_fail(&client, &endpoint, MAX_MANIFEST_BYTES, "清单", &mut report).await
     else {
         return Ok(report);
     };
     report.ok(format!(
-        "清单可下载（{} 字节）: {}",
+        "清单可下载（{} 字节）: {endpoint}",
         manifest_bytes.len(),
-        args.endpoint
     ));
 
     let manifest: UpdateManifest = match serde_json::from_slice(&manifest_bytes) {
@@ -219,7 +463,7 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
     let keys: Vec<&str> = args.pubkey.iter().map(String::as_str).collect();
     check_manifest_signature(
         &client,
-        &args.endpoint,
+        &args,
         &manifest_bytes,
         &manifest,
         &keys,
@@ -259,15 +503,21 @@ fn build_client(args: &DoctorArgs) -> Result<reqwest::Client, String> {
 
 async fn check_manifest_signature(
     client: &reqwest::Client,
-    endpoint: &str,
+    args: &DoctorArgs,
     manifest_bytes: &[u8],
     manifest: &UpdateManifest,
     keys: &[&str],
     verdict: Verdict,
     report: &mut Report,
 ) {
-    // 与客户端同一条推导规则：把 `.sig` 追加在路径末尾，查询参数保留。
-    let sig_url = default_signature_url(endpoint);
+    // 与客户端同一条推导规则：把 `.sig` 追加在路径末尾，查询参数保留；
+    // 配置了独立签名地址时优先使用它。
+    let endpoint = args.endpoint.as_deref().unwrap_or_default();
+    let sig_url = args
+        .signature_url
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| default_signature_url(endpoint));
     let Some(signature_bytes) =
         fetch_or_fail(client, &sig_url, MAX_SIGNATURE_BYTES, "清单签名", report).await
     else {
@@ -843,7 +1093,10 @@ fn is_safe_bundle_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_http_url, is_safe_bundle_path, is_sha256_hex, unreachable_start_versions};
+    use super::{
+        expand_endpoint, is_http_url, is_safe_bundle_path, is_sha256_hex,
+        unreachable_start_versions,
+    };
     use tauri_delta_updater::PatchInfo;
 
     fn patch(from: &str, to: &str) -> PatchInfo {
@@ -856,6 +1109,47 @@ mod tests {
             "scope": "main_executable_only"
         }))
         .expect("测试补丁必须可反序列化")
+    }
+
+    /// 项目配置里的官方占位符必须与插件运行时一致地展开。
+    #[test]
+    fn expands_project_config_placeholders() {
+        assert_eq!(
+            expand_endpoint(
+                "https://cdn/{{target}}/{{arch}}/{{channel}}/{{current_version}}.json",
+                "windows-x86_64",
+                "1.2.3",
+                "beta",
+                None,
+            )
+            .unwrap(),
+            "https://cdn/windows/x86_64/beta/1.2.3.json"
+        );
+        assert!(expand_endpoint(
+            "https://cdn/{{current_version}}.json",
+            "linux-x86_64",
+            "",
+            "stable",
+            None,
+        )
+        .unwrap_err()
+        .contains("--current-version"));
+        assert!(expand_endpoint(
+            "https://cdn/{{bundle_type}}.json",
+            "linux-x86_64",
+            "1.0.0",
+            "stable",
+            None,
+        )
+        .is_err());
+        assert!(expand_endpoint(
+            "https://cdn/{{target}}.json",
+            "unknown-unknown",
+            "1.0.0",
+            "stable",
+            None,
+        )
+        .is_err());
     }
 
     /// 链前缀可达；孤立补丁与超过跳数上限的起点必须被指出。
