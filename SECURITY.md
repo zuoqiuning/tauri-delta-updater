@@ -7,8 +7,9 @@ code-execution path on every installed copy. Reports are taken seriously.
 
 | Version | Supported |
 |---|---|
-| 0.3.x | Yes |
-| 0.2.x | No (security fixes land on 0.3.x; upgrade first) |
+| 0.4.x | Yes |
+| 0.3.x | No (security fixes land on 0.4.x; upgrade first) |
+| 0.2.x | No (security fixes land on 0.4.x; upgrade first) |
 | < 0.2 | No (upgrade first) |
 
 Security fixes are released as patch versions on the latest minor line.

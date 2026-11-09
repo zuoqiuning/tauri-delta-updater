@@ -103,4 +103,12 @@ still consume patches; switch back once they have been replaced.
   (`ReleaseOptions` / `run_release`), rollback notices, `generate --sha256sums`,
   `generate --legacy-patch`, `Diagnosis::rollback_history` and
   `installer_kind`. Details: [CHANGELOG.md](../CHANGELOG.md).
+- **0.4.0 (breaking)**: `UpdateOutcome::SafeMode` / `UpdateResult::SafeMode` now
+  carry a `reason`; `FallbackReason::EnvironmentUnsupported` carries an
+  `EnvironmentReason`; `DeltaError::FullInstallFailed` carries an
+  `InstallFailureKind` (also exposed as `install_failure` in the plugin error
+  DTO). `delta-updater:default` now grants only the incremental path — windows
+  calling `installFull()` / `downloadFull()` / `checkCompat()` must also grant
+  `delta-updater:full`. Existing capability files are not rewritten
+  automatically; `cargo delta init --check` reports the gap.
 

@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
 ### 修复
 
 - `cargo delta init --check` 可无参数运行；缺少 capability 文件时生成合法的
@@ -144,7 +146,8 @@
   更新说明/rawJson + `downloadAndInstall`），进度使用官方
   `Started` / `Progress` / `Finished` 事件，并自动接管全量回退。
 - 插件新增 `delta-updater:read` / `delta-updater:update` / `delta-updater:full`
-  最小权限集（`default` 行为不变）。
+  最小权限集；`delta-updater:default` 收窄为 read + update（全量安装需显式
+  授予 `delta-updater:full`，见上）。
 - 文档拆分：README 保留快速接入，新增 `docs/USAGE.md`、`docs/PUBLISHING.md`、
   `docs/TROUBLESHOOTING.md`。
 

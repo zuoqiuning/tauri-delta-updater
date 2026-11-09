@@ -65,8 +65,8 @@ cargo delta init ... --apply     # writes the files
 cargo delta init ... --check     # CI guard: non-zero if config/capability/dependency missing
 ```
 
-`init` writes `"0.3"` by default (patch updates within the minor are allowed).
-`--registry` pins the exact version (`"0.3.0"`) for pipelines that require the
+`init` writes `"0.4"` by default (patch updates within the minor are allowed).
+`--registry` pins the exact version (`"0.4.0"`) for pipelines that require the
 dependency to match the tool exactly. `--check` warns when a project still pins
 the git form, but keeps exit code 0 so existing integrations stay green.
 
@@ -106,7 +106,7 @@ bucket and every configured fallback endpoint without copying URLs or keys.
 
 ```toml
 [dependencies]
-tauri-plugin-delta-updater = "0.3"
+tauri-plugin-delta-updater = "0.4"
 # Local checkout: tauri-plugin-delta-updater = { path = "../plugin" }
 ```
 
@@ -117,11 +117,11 @@ gives you `invoke('plugin:delta-updater|...')` — not typed imports. Add the np
 package in your frontend when you want the bindings:
 
 ```bash
-npm install tauri-plugin-delta-updater   # current: 0.3.0
+npm install tauri-plugin-delta-updater   # current: 0.4.0
 ```
 
 The bundled `examples/tauri-app` uses `path = "../plugin"` for in-repo
-development; real projects should depend on `"0.3"` from crates.io.
+development; real projects should depend on `"0.4"` from crates.io.
 
 `src-tauri/capabilities/default.json`:
 

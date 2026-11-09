@@ -4,7 +4,7 @@
 > 补救流程见 [`docs/RELEASING.md`](docs/RELEASING.md)。两者若有冲突：版本判定以本文件为准，
 > 操作步骤以 `docs/RELEASING.md` 为准。
 >
-> 生效日期：2026-11-06；最后更新：2026-11-07
+> 生效日期：2026-11-06；最后更新：2026-11-09
 
 ---
 
@@ -25,7 +25,8 @@
 所有者在 issue / commit / 对话中的明确文字确认；默认同意、惯例推断均无效。
 授权记录由项目所有者私下维护，不入库。
 
-`0.2.1` 已于 2026-11-07 发布，不可覆盖。
+`0.3.0` 已于 2026-11-08 发布，不可覆盖。`0.4.0` 已进入发布准备，正式发布仍需
+所有者按三要素授权并完成发布门禁。
 
 ---
 
@@ -94,6 +95,25 @@
 此后新增公开字段不再破坏下游；代价是外部字面量构造需要改为 serde 反序列化
 或 builder。新增公开结构体字段不再按 PATCH 处理。
 
+### 1.5 0.4.0 的破坏性判定
+
+`0.4.0` 按 MINOR 发布，破坏性变更集中在已有变体的形状与默认权限：
+
+- `UpdateOutcome::SafeMode` / `UpdateResult::SafeMode` 从单元变体改为结构体变体，
+  新增 `reason: SafeModeReason`；
+- `FallbackReason::EnvironmentUnsupported(&'static str)` 改为携带
+  `EnvironmentReason`；
+- `DeltaError::FullInstallFailed(String)` 改为
+  `{ kind: InstallFailureKind, message }`；
+- `DeltaError` / `UpdateOutcome` / `UpdateResult` / `FallbackReason` 均已标记
+  `#[non_exhaustive]`，新增变体本身不构成破坏；
+- `delta-updater:default` 收窄为 read + update，全量安装命令需要显式
+  `delta-updater:full`（默认行为变化）；
+- `ReleaseOptions` 新增公开字段 `allow_http`（字面量构造需改用
+  `ReleaseOptions::new` 后逐字段覆盖）。
+
+新增 `authenticode_policy` / `lock_scope` 等可选配置不单独构成破坏性变更。
+
 ---
 
 ## 2. 当前版本状态
@@ -102,10 +122,10 @@
 
 | 制品 | 状态 |
 |---|---|
-| 核心 crate | `0.1.0`（2026-11-06）、`0.2.0`、`0.2.1`（2026-11-07）、`0.3.0`（2026-11-08）已发布 |
-| 插件 crate | `0.2.1`（2026-11-07）、`0.3.0`（2026-11-08）已发布 |
-| npm 包 | `0.2.1`（2026-11-07）、`0.3.0`（2026-11-08）已发布 |
-| git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1`、`v0.3.0` |
+| 核心 crate | `0.1.0`（2026-11-06）、`0.2.0`、`0.2.1`（2026-11-07）、`0.3.0`（2026-11-08）已发布；`0.4.0` 已准备，尚未发布 |
+| 插件 crate | `0.2.1`（2026-11-07）、`0.3.0`（2026-11-08）已发布；`0.4.0` 已准备 |
+| npm 包 | `0.2.1`（2026-11-07）、`0.3.0`（2026-11-08）已发布；`0.4.0` 已准备 |
+| git tag / Release | `v0.1.0`、`v0.2.0`、`v0.2.1`、`v0.3.0`；`v0.4.0` 尚未创建 |
 
 `0.2.1` 相对 `0.2.0` 的新增面（全部为可选 API，见 `CHANGELOG.md`）：
 

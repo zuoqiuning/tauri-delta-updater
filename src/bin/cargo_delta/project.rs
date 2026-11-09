@@ -790,8 +790,8 @@ fn remove_plugin(config: &str, name: &str) -> Result<String, String> {
 
 /// 在 `[dependencies]` 下补齐插件依赖；已存在时不改动。
 ///
-/// 默认写 `"0.3"`（允许同 minor 内 patch 升级）；`--registry` 写精确版本
-/// `"0.3.0"`，用于必须与工具版本一致的宿主。
+/// 默认写 `"0.4"`（允许同 minor 内 patch 升级）；`--registry` 写精确版本
+/// `"0.4.0"`，用于必须与工具版本一致的宿主。
 fn ensure_dependency(text: &str, registry: bool) -> String {
     if has_dependency(text) {
         return text.to_string();
@@ -822,7 +822,7 @@ fn ensure_dependency(text: &str, registry: bool) -> String {
 
 /// 插件依赖声明。
 ///
-/// 默认只约束到 minor（`"0.3"`），让宿主拿到同系列补丁；`registry` 写精确
+/// 默认只约束到 minor（`"0.4"`），让宿主拿到同系列补丁；`registry` 写精确
 /// 版本，适合要求"依赖版本必须等于发布工具版本"的流水线。
 fn dependency_line(registry: bool) -> String {
     if registry {
@@ -832,7 +832,7 @@ fn dependency_line(registry: bool) -> String {
     }
 }
 
-/// 从工具版本推导 minor 约束（`0.3.0` → `0.3`）。
+/// 从工具版本推导 minor 约束（`0.4.0` → `0.4`）。
 fn minor_requirement() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let mut parts = version.split('.');

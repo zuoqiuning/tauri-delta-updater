@@ -3409,7 +3409,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-delta-updater"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.21.7",
  "chrono",
@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-delta-updater"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "reqwest",
  "serde",
