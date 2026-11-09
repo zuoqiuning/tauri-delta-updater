@@ -199,4 +199,28 @@ mod tests {
             0
         );
     }
+
+    /// 无条件确认会**丢弃**待确认记录且不计失败——这是宿主必须改用
+    /// `confirm_startup_success_if_pending` 的原因。
+    ///
+    /// 在每次普通启动都调用无条件变体的宿主上，全量安装失败的信号会被静默
+    /// 抹掉，新安全网等于不存在。记录此契约，避免以后误以为它会保留记录。
+    #[tokio::test]
+    async fn unconditional_confirm_discards_pending_without_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        super::write(dir.path(), "0.5.0");
+        let updater = test_updater(dir.path(), "0.4.0");
+
+        updater.confirm_startup_success().unwrap();
+
+        assert!(
+            super::read(dir.path()).is_none(),
+            "无条件确认会清掉全量待确认记录"
+        );
+        assert_eq!(
+            crate::core::safety::get_failed_attempts(dir.path()).await,
+            0,
+            "记录被丢弃且不计失败：失败信号没有留下任何痕迹"
+        );
+    }
 }
