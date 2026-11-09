@@ -140,6 +140,9 @@ pub const BUNDLE_JOURNAL_FILE: &str = "tdx_bundle_journal.txt";
 /// 跨重启待安装记录（`prepare` 成功后落盘，`launch`/下次启动时消费）。
 pub const PENDING_FILE: &str = "tdx_pending.json";
 
+/// 上一次更新尝试的结构化结果（`diagnose().last_attempt` 读取）。
+pub const LAST_ATTEMPT_FILE: &str = "tdx_last_attempt.json";
+
 /// 启动状态指针：`staged` → `booting` → `committed`，回滚时写 `rolled_back`。
 ///
 /// 替换脚本在启动新版本前写 `staged`；新版本启动早期写 `booting`；

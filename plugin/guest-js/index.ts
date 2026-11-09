@@ -206,6 +206,32 @@ export type WarningKey =
   | 'machine_lock_fallback'
   | 'privilege_tools_missing';
 
+/** 最后一次更新尝试的结果分类。 */
+export type AttemptOutcome =
+  | 'patched'
+  | 'bundled'
+  | 'repair'
+  | 'up_to_date'
+  | 'deferred'
+  | 'unsupported_os'
+  | 'fallback_to_full_download'
+  | 'safe_mode'
+  | 'cancelled'
+  | 'failed';
+
+/** 一次更新尝试的可持久化快照（`diagnose()` 读取）。 */
+export interface UpdateAttempt {
+  /** 完成时间（Unix 秒）；按本地时区自行格式化。 */
+  timestamp_unix_secs: number;
+  duration_secs: number;
+  outcome: AttemptOutcome;
+  current_version: string;
+  /** 目标版本；失败或修复时为 `null`。 */
+  target_version: string | null;
+  /** 失败时的稳定错误码（与插件错误 DTO 的 `code` 一致）。 */
+  error_code: string | null;
+}
+
 /** `diagnose()` 的只读快照（不发起网络请求）。 */
 export interface Diagnosis {
   executable: string;
@@ -239,6 +265,8 @@ export interface Diagnosis {
   warning_keys: WarningKey[];
   /** 跨用户锁是否生效；`null` 表示未配置 `lock_scope: install_dir`。 */
   machine_lock_active: boolean | null;
+  /** 最近一次更新尝试；没有记录或记录损坏时为 `null`。 */
+  last_attempt: UpdateAttempt | null;
   /** 显式声明的全量安装器类型；`null` 表示按文件后缀推断。 */
   installer_kind: InstallerKind | null;
 }

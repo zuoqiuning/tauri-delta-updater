@@ -36,6 +36,9 @@
   客户端遇到不认识的算法值会跳过该补丁（回退全量），而不是下载后失败。
 - `Diagnosis` 新增结构化 `warning_keys`（`WarningKey`）与
   `machine_lock_active`；跨用户锁降级会写标记文件并在诊断中报告。
+- `Diagnosis` 新增 `last_attempt`：每次 `update()` / `install()` / `prepare()`
+  结束都会原子写入 `tdx_last_attempt.json`（时间、耗时、结果分类、目标版本、
+  失败错误码），诊断页不必解析日志或事件流。
 - `DeltaError::chain_context()` 返回 `ChainContext { hop, total, from, to }`，
   UI 无需解析错误文案即可显示"第 N/M 跳失败"。
 - `DeltaError::AuthenticodeUnsigned` 的文案补充 `authenticode_policy: permissive`

@@ -16,6 +16,7 @@ use crate::error::{DeltaError, Result};
 use crate::session::UpdateEvent;
 use std::path::{Path, PathBuf};
 
+mod attempt;
 mod bundle_flow;
 mod config;
 mod delta;
@@ -30,6 +31,7 @@ mod rollout;
 mod simulate;
 mod staged;
 
+pub use attempt::{AttemptOutcome, UpdateAttempt};
 pub use config::{default_signature_url, FallbackPolicy, LockScope, UpdateConfig};
 pub use diagnosis::{Diagnosis, MessageKey, ScriptEvent, WarningKey};
 pub use outcome::{
@@ -671,6 +673,7 @@ mod ui_result_tests {
             insecure_endpoint: None,
             warning_keys: Vec::new(),
             machine_lock_active: None,
+            last_attempt: None,
             installer_kind: None,
         };
         assert!(base.can_use_delta());

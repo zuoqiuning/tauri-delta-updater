@@ -500,7 +500,30 @@ impl DeltaUpdater {
     /// - `on_progress`：只关心字节数的简单 UI；
     /// - `on_event`：需要阶段事件的会话/UI；
     /// - 两者同时提供时以 `on_event` 为准，进度由事件的 `Downloading` 承载。
+    ///
+    /// 结果会写入 `tdx_last_attempt.json`（尽力而为），供诊断页直接回答
+    /// "上次为什么失败"，不必解析日志。
     async fn run_entry(
+        &self,
+        launch: bool,
+        on_progress: Option<Box<dyn FnMut(u64, u64) + Send + '_>>,
+        on_event: Option<Box<dyn FnMut(UpdateEvent) + Send + '_>>,
+        cancel: Option<&crate::core::cancel::CancelToken>,
+    ) -> Result<UpdateOutcome> {
+        let started = std::time::Instant::now();
+        // 整包流程的状态机在 debug 构建下很大；把它放到堆上，
+        // 避免多包一层 async 后在测试线程（默认较小栈）上溢出。
+        let result = Box::pin(self.run_entry_inner(launch, on_progress, on_event, cancel)).await;
+        super::attempt::record(
+            &self.work_dir,
+            &self.config.current_version,
+            started,
+            &result,
+        );
+        result
+    }
+
+    async fn run_entry_inner(
         &self,
         launch: bool,
         on_progress: Option<Box<dyn FnMut(u64, u64) + Send + '_>>,

@@ -160,6 +160,11 @@ pub struct Diagnosis {
     /// `Some(false)` 表示安装目录不可写、已退回工作目录锁：per-machine 安装的
     /// 多个用户账户仍可能并发替换（诊断页应提示）。
     pub machine_lock_active: Option<bool>,
+    /// 最近一次更新尝试的结构化结果（成功、取消、失败都能区分）。
+    ///
+    /// 由 `update()` / `install()` / `prepare()` 结束时写入；记录缺失或损坏时
+    /// 为 `None`。比解析 `script_events` 更直接：一眼看出"上次为什么失败"。
+    pub last_attempt: Option<super::UpdateAttempt>,
     /// 配置显式声明的全量安装器类型；`None` 表示按文件后缀推断。
     ///
     /// 用 Inno Setup 打包的宿主必须显式配置，否则排障时无法从诊断页看出
@@ -442,6 +447,7 @@ impl DeltaUpdater {
                         .exists()
                 },
             ),
+            last_attempt: super::attempt::read(&self.work_dir),
             installer_kind: self.config.installer_kind,
         };
         // 键由最终字段推导，避免构造顺序造成的漂移。

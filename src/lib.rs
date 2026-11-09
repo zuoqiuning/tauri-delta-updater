@@ -291,9 +291,9 @@ pub use platform::target::{
 pub use platform::ScriptTimings;
 pub use platform::{AuthenticodePolicy, PlatformUpdater};
 pub use updater::{
-    default_signature_url, simulate_update, CheckOutcome, DeltaUpdater, Diagnosis, FallbackPolicy,
-    FallbackReason, FullDownload, FullDownloadOutcome, LockScope, MessageKey, OsRequirement,
-    PendingArtifact, PendingUpdate, SafeModeReason, ScriptEvent, SimulationReport, Staged,
-    StagedBundle, StagedFullInstaller, StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome,
-    UpdateResult, WarningKey,
+    default_signature_url, simulate_update, AttemptOutcome, CheckOutcome, DeltaUpdater, Diagnosis,
+    FallbackPolicy, FallbackReason, FullDownload, FullDownloadOutcome, LockScope, MessageKey,
+    OsRequirement, PendingArtifact, PendingUpdate, SafeModeReason, ScriptEvent, SimulationReport,
+    Staged, StagedBundle, StagedFullInstaller, StagedRepair, UpdateAttempt, UpdateCheck,
+    UpdateConfig, UpdateOutcome, UpdateResult, WarningKey,
 };
