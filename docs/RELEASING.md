@@ -130,7 +130,8 @@ git tag -a v0.4.0 -m "tauri-delta-updater 0.4.0"
 git push origin v0.4.0
 
 # 2. 核心 0.4.0（不可撤销）
-cargo publish --locked
+#    本机 registry 常被镜像替换，必须显式 --registry crates-io
+cargo publish --registry crates-io --locked
 
 # 3. 轮询索引：固定 sleep 在索引慢时不可靠
 for i in $(seq 1 15); do
@@ -142,11 +143,11 @@ for i in $(seq 1 15); do
 done
 
 # 4. 插件：先 dry-run 确认能按注册表版本构建，再发布
-cargo publish --manifest-path plugin/Cargo.toml --dry-run --locked
-cargo publish --manifest-path plugin/Cargo.toml --locked
+cargo publish --manifest-path plugin/Cargo.toml --registry crates-io --dry-run --locked
+cargo publish --manifest-path plugin/Cargo.toml --registry crates-io --locked
 
-# 5. npm 包（前端类型绑定）
-cd plugin && npm publish --access public
+# 5. npm 包（前端类型绑定；显式官方 registry，避免被本机镜像接管）
+cd plugin && npm publish --access public --registry https://registry.npmjs.org
 
 # 6. GitHub Release：发布说明必须含 §2.1 的验证边界段
 #    直接用 CHANGELOG.md 会漏掉它；发布说明来自 docs/releases/v0.4.0.md
