@@ -132,6 +132,16 @@ pub(crate) fn plan_single<'a>(
     }
 }
 
+/// 客户端能应用的补丁容器；`None` 表示历史清单，必须继续支持。
+///
+/// 未来新增容器时，旧客户端会在这里跳过它并回退全量，而不是下载后失败。
+fn patch_algorithm_supported(patch: &PatchInfo) -> bool {
+    match patch.algorithm.as_deref() {
+        None | Some("bsdiff40") | Some("zstd-bsdiff40") | Some("tdxb1") => true,
+        Some(_) => false,
+    }
+}
+
 /// 在补丁列表里找一条从 `current` 到 `target` 的最短路径。
 ///
 /// 每一跳都必须严格版本递增且落在 `(current, target]` 内，否则链可能先降级
@@ -151,6 +161,11 @@ pub(crate) fn plan_chain<'a>(
     // 先过滤出位于 (current, target] 区间内的递增边，避免 BFS 反复解析版本号。
     let mut edges: Vec<(semver::Version, semver::Version, usize)> = Vec::new();
     for (index, patch) in patches.iter().enumerate() {
+        // 不认识的容器格式不能进入链：下载后才发现无法应用，只会变成一次
+        // "更新失败 → 回滚"。跳过它，让规划回退到全量或其它路径。
+        if !patch_algorithm_supported(patch) {
+            continue;
+        }
         let (Ok(from), Ok(to)) = (
             semver::Version::parse(normalize_version(&patch.from_version)),
             semver::Version::parse(normalize_version(&patch.to_version)),
@@ -298,6 +313,29 @@ mod tests {
         );
     }
 
+    /// 不认识的补丁容器必须在规划阶段跳过，而不是下载后才发现无法应用。
+    #[test]
+    fn skips_patches_with_unknown_algorithm() {
+        let mut unknown = patch("0.1.0", "0.2.0", None);
+        unknown.algorithm = Some("future-format".into());
+        let unknown_manifest = manifest("0.2.0", vec![unknown.clone()], Some(1000));
+        assert!(
+            matches!(
+                plan_single(&unknown_manifest, "windows-x86_64", "0.1.0"),
+                PlanOutcome::Unreachable
+            ),
+            "未知容器必须让规划退回全量"
+        );
+
+        // 已知算法（含缺省的旧清单）仍然可规划
+        unknown.algorithm = Some("tdxb1".into());
+        let known_manifest = manifest("0.2.0", vec![unknown], Some(1000));
+        assert!(matches!(
+            plan_single(&known_manifest, "windows-x86_64", "0.1.0"),
+            PlanOutcome::Direct(_)
+        ));
+    }
+
     fn patch(from: &str, to: &str, size: Option<u64>) -> PatchInfo {
         PatchInfo {
             from_version: from.into(),
@@ -307,6 +345,7 @@ mod tests {
             target_hash: "target".into(),
             patch_size: size,
             scope: Some(PatchScope::MainExecutableOnly),
+            algorithm: None,
         }
     }
 

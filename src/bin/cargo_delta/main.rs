@@ -101,13 +101,19 @@ fn run(cli: Cli) -> Result<(), String> {
                     missing.join("\n  - ")
                 ));
             }
-            // 非 --check 时 clap 已通过 required_unless_present 保证两者存在；
-            // 这里仍给出明确错误，避免未来参数约束调整后出现 unwrap 崩溃。
+            // 非 --check 时必须提供公钥；clap 不再拦截，以便在报错里直接给出
+            // 生成密钥的命令（首次接入最常见的卡点）。
             let endpoint = endpoint.ok_or("--endpoint 必填（--check 除外）")?;
             let pubkey = match (pubkey, pubkey_file) {
                 (Some(key), None) => key.trim().to_string(),
                 (None, Some(path)) => read_pubkey_file(&path)?,
-                (None, None) => return Err("--pubkey 或 --pubkey-file 必填（--check 除外）".into()),
+                (None, None) => {
+                    return Err("--pubkey 或 --pubkey-file 必填（--check 除外）。\n\
+                         如果还没有密钥对，先生成：\n  \
+                         minisign -G -p myapp.pub -s myapp.key\n\
+                         然后用 --pubkey-file myapp.pub 接入；私钥不要提交到 git。"
+                        .into())
+                }
                 (Some(_), Some(_)) => return Err("--pubkey 与 --pubkey-file 只能提供一个".into()),
             };
             project.init_changes(

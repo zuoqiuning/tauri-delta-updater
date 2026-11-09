@@ -229,6 +229,14 @@ pub struct PatchInfo {
     /// 需要发布端显式标注，客户端据此提示"本次增量不覆盖附加资源"。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<PatchScope>,
+    /// 【扩展字段】补丁容器格式。
+    ///
+    /// 缺省表示历史清单（`BSDIFF40` 或 zstd 容器），客户端必须继续支持。
+    /// 已知值：`bsdiff40`、`zstd-bsdiff40`、`tdxb1`。客户端遇到不认识的
+    /// 值应**跳过该补丁**（回退全量），而不是下载后才发现无法应用；
+    /// 这样未来新增容器不会让旧版本客户端进入"下载 → 应用失败 → 回滚"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
 }
 
 /// 补丁覆盖范围。

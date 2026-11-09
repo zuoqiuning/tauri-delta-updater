@@ -31,7 +31,6 @@
 //! ops_len u32
 //! old_len u64
 //! new_len u64
-//! chunk_avg u32
 //! ops[ops_len]
 //! zstd(literal stream)
 //! ```
@@ -53,8 +52,11 @@ use std::path::{Path, PathBuf};
 const MAGIC: &[u8; 5] = b"TDXB1";
 /// 当前格式版本。
 const FORMAT_VERSION: u8 = 1;
-/// 固定头长度：magic + version + ops_len + old_len + new_len + chunk_avg。
-const HEADER_LEN: usize = 5 + 1 + 4 + 8 + 8 + 4;
+/// 固定头长度：magic + version + ops_len + old_len + new_len。
+///
+/// 头里**不允许**出现任何"仅作信息"的字段：容器每个字节都必须参与校验，
+/// 否则"翻转任意字节必定失败"就不再成立。
+const HEADER_LEN: usize = 5 + 1 + 4 + 8 + 8;
 /// 分块下限：避免把连续小改动切得过碎。
 const MIN_CHUNK: usize = 2 * 1024;
 /// 分块上限：控制单次 COPY/LITERAL 的内存与指令粒度。
@@ -72,6 +74,10 @@ const MAX_OFFSETS_PER_KEY: usize = 1024;
 /// 缺口越大，bsdiff 的内存（约 17×）与耗时越高；4 MiB 对应约 68 MiB，
 /// 在"低内存"路径里仍然可接受，超出则退回字面量。
 const MAX_GAP_PATCH: usize = 4 * 1024 * 1024;
+/// 缺口补丁字节的上限：生成端只接受小于缺口本身的补丁，再加固定余量。
+const MAX_GAP_PATCH_BYTES: u32 = (MAX_GAP_PATCH + 64 * 1024) as u32;
+/// 解压后产物的固定余量，与 zstd 补丁的 `decompress_to_temp` 保持一致。
+const EXPAND_HEADROOM_BYTES: u64 = 128 * 1024 * 1024;
 
 /// 第一遍扫描得到的区间：可整体复制的旧内容，或需要重建的缺口。
 enum Segment {
@@ -119,8 +125,27 @@ pub(crate) async fn is_block_delta_file(path: &Path) -> Result<bool> {
 ///
 /// 与 [`crate::create_patch`] 不同，这里没有 `17n` 的工作集要求：
 /// 内存只与分块索引相关，因此超大单文件也能生成增量补丁。
-/// 代价是补丁体积通常略大于 bsdiff（改动密集时明显更大），
-/// 发布端仍应优先尝试 bsdiff，仅在超限时回退。
+///
+/// # 什么时候该用它
+///
+/// 发布流水线应**先尝试 bsdiff**，只有它因工作集超限被拒绝时才回退到这里
+/// （`cargo delta generate --large-file-delta` 已内置该决策）。它不是
+/// bsdiff 的替代品：大段连续内容移动、少量分散修改的场景下，bsdiff 的
+/// 补丁通常小一个数量级；TDXB1 的收益是"bsdiff 根本跑不了"的大文件。
+///
+/// # 内存上界
+///
+/// - 分块索引：约 `old_size / 8 KiB × 40 B`（2 GB 文件约 10 MB）；
+/// - 单次缺口补丁：bsdiff 输入 ≤ 4 MiB，约 68 MiB；
+/// - 字面量流：zstd 编码器缓冲，与输入块大小同阶。
+///
+/// 与文件总大小基本无关。
+///
+/// # 完整性
+///
+/// 容器本身**不是**签名产物：它的完整性由外层清单里的 `patch_hash` 与
+/// 产物 `target_hash` 保证，与 `BSDIFF40` 的威胁模型一致。解析器仍会对
+/// 每条指令做越界与总量校验，见 `docs/BLOCK_DELTA_THREAT_MODEL.md`。
 pub async fn create_patch_block_delta<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     old_file: P1,
     new_file: P2,
@@ -334,7 +359,6 @@ fn generate_sync(
         out.write_all(&(ops.len() as u32).to_le_bytes())?;
         out.write_all(&old_len.to_le_bytes())?;
         out.write_all(&new_len.to_le_bytes())?;
-        out.write_all(&((MIN_CHUNK + MAX_CHUNK) as u32 / 2).to_le_bytes())?;
         out.write_all(&ops)?;
         let mut literals = std::fs::File::open(&literal_path)?;
         std::io::copy(&mut literals, &mut out)?;
@@ -354,6 +378,16 @@ fn generate_sync(
 ///
 /// 必须在 [`run_blocking`] 的独立线程中调用；产物哈希由外层
 /// [`crate::apply_patch`] 统一校验。
+///
+/// # 校验顺序
+///
+/// 1. 头部字段与文件长度自洽（版本、指令区、声明大小）；
+/// 2. 产物大小不超过 `2 × 旧文件 + 128 MiB`（与 zstd 补丁同口径）；
+/// 3. 旧文件实际大小必须与头部一致；
+/// 4. 每条 `COPY` / `PATCH` 的源区间必须落在旧文件内，`LITERAL` 总量
+///    必须精确等于声明的产物大小。
+///
+/// 任何一项不满足都返回错误，不会 panic，也不会写出越界内容。
 pub(crate) fn apply_block_delta(old_path: &Path, patch_path: &Path, out_path: &Path) -> Result<()> {
     let mut reader = BufReader::new(
         std::fs::File::open(patch_path)
@@ -384,10 +418,25 @@ pub(crate) fn apply_block_delta(old_path: &Path, patch_path: &Path, out_path: &P
             "分块补丁指令区过大（{ops_len} 字节）"
         )));
     }
+    let patch_file_len = std::fs::metadata(patch_path).map_err(DeltaError::Io)?.len();
+    if ops_len.saturating_add(HEADER_LEN as u64) > patch_file_len {
+        return Err(DeltaError::PatchApplyFailed(
+            "分块补丁指令区超出文件长度".into(),
+        ));
+    }
     if new_len > MAX_BLOCK_DELTA_BYTES {
         return Err(DeltaError::PatchApplyFailed(format!(
             "分块补丁声明的产物过大（{new_len} 字节）"
         )));
+    }
+    // 与 zstd 补丁一致的上限：防止一个签名清单把磁盘写到溢出。
+    let max_expanded = old_len
+        .saturating_mul(2)
+        .saturating_add(EXPAND_HEADROOM_BYTES);
+    if new_len > max_expanded {
+        return Err(DeltaError::PatchExpandedTooLarge {
+            max_bytes: max_expanded,
+        });
     }
     let actual_old = std::fs::metadata(old_path).map_err(DeltaError::Io)?.len();
     if actual_old != old_len {
@@ -500,6 +549,11 @@ fn parse_ops(bytes: &[u8], old_file_len: u64, new_len: u64) -> Result<Vec<Op>> {
                 let patch_len = u32::from_le_bytes(fields[16..20].try_into().expect("长度已校验"));
                 if old_offset.saturating_add(u64::from(old_len)) > old_file_len {
                     return Err(DeltaError::PatchApplyFailed("分块补丁 PATCH 越界".into()));
+                }
+                if patch_len > MAX_GAP_PATCH_BYTES {
+                    return Err(DeltaError::PatchApplyFailed(format!(
+                        "分块补丁缺口补丁字节数异常（{patch_len}）"
+                    )));
                 }
                 total = total.saturating_add(u64::from(out_len));
                 ops.push(Op::Patch {
@@ -808,6 +862,148 @@ mod tests {
             patch_size < new.len() as u64 / 10,
             "散点修改应由缺口补丁压缩到很小，实际 {patch_size}"
         );
+    }
+
+    fn raw_patch(ops: &[u8], old_len: u64, new_len: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"TDXB1");
+        bytes.push(1);
+        bytes.extend_from_slice(&(ops.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&old_len.to_le_bytes());
+        bytes.extend_from_slice(&new_len.to_le_bytes());
+        bytes.extend_from_slice(ops);
+        bytes
+    }
+
+    /// `COPY` 的源区间越界必须在解析阶段拒绝，不能依赖索引可信。
+    #[test]
+    fn rejects_out_of_bounds_copy() {
+        let dir = TempDir::new();
+        let old_path = dir.path("old.bin");
+        std::fs::write(&old_path, pseudo_random(8192, 1)).unwrap();
+
+        let mut ops = Vec::new();
+        super::push_copy(&mut ops, 8193, 10);
+        let patch_path = dir.path("patch.tdxb");
+        std::fs::write(&patch_path, raw_patch(&ops, 8192, 10)).unwrap();
+        let err = apply_block_delta(&old_path, &patch_path, &dir.path("out.bin")).unwrap_err();
+        assert!(
+            err.to_string().contains("越界"),
+            "必须报告越界，实际: {err}"
+        );
+
+        // 长度字段为 u32::MAX 的 COPY 同样被拦截
+        let mut ops = Vec::new();
+        super::push_copy(&mut ops, 0, u32::MAX);
+        std::fs::write(&patch_path, raw_patch(&ops, 8192, u32::MAX as u64)).unwrap();
+        assert!(apply_block_delta(&old_path, &patch_path, &dir.path("out2.bin")).is_err());
+    }
+
+    /// 声明一个 4 GB 的 LITERAL 不能在分配或写盘前放行。
+    #[test]
+    fn rejects_huge_literal_before_allocating() {
+        let dir = TempDir::new();
+        let old_path = dir.path("old.bin");
+        std::fs::write(&old_path, pseudo_random(8192, 1)).unwrap();
+
+        let mut ops = Vec::new();
+        super::push_literal(&mut ops, u32::MAX);
+        let patch_path = dir.path("patch.tdxb");
+        std::fs::write(&patch_path, raw_patch(&ops, 8192, u32::MAX as u64)).unwrap();
+        let err = apply_block_delta(&old_path, &patch_path, &dir.path("out.bin")).unwrap_err();
+        assert!(
+            matches!(err, crate::DeltaError::PatchExpandedTooLarge { .. }),
+            "必须命中展开大小上限，实际: {err}"
+        );
+    }
+
+    /// 指令区声明的长度超过文件本身时立即失败（不预分配 64 MB）。
+    #[test]
+    fn rejects_ops_len_beyond_file() {
+        let dir = TempDir::new();
+        let old_path = dir.path("old.bin");
+        std::fs::write(&old_path, pseudo_random(1024, 1)).unwrap();
+
+        let mut bytes = raw_patch(&[], 1024, 0);
+        // 把 ops_len 改成 1 MiB，但文件只包含头部
+        bytes[6..10].copy_from_slice(&(1024u32 * 1024).to_le_bytes());
+        let patch_path = dir.path("patch.tdxb");
+        std::fs::write(&patch_path, &bytes).unwrap();
+        assert!(apply_block_delta(&old_path, &patch_path, &dir.path("out.bin")).is_err());
+    }
+
+    /// `PATCH` 指令的旧内容区间同样必须落在旧文件内。
+    #[test]
+    fn rejects_out_of_bounds_gap_patch() {
+        let dir = TempDir::new();
+        let old_path = dir.path("old.bin");
+        std::fs::write(&old_path, pseudo_random(8192, 1)).unwrap();
+
+        let mut ops = vec![2u8];
+        ops.extend_from_slice(&8192u64.to_le_bytes()); // old_offset = EOF
+        ops.extend_from_slice(&100u32.to_le_bytes()); // old_len
+        ops.extend_from_slice(&100u32.to_le_bytes()); // out_len
+        ops.extend_from_slice(&10u32.to_le_bytes()); // patch_len
+        let patch_path = dir.path("patch.tdxb");
+        std::fs::write(&patch_path, raw_patch(&ops, 8192, 100)).unwrap();
+        let err = apply_block_delta(&old_path, &patch_path, &dir.path("out.bin")).unwrap_err();
+        assert!(
+            err.to_string().contains("越界"),
+            "必须报告越界，实际: {err}"
+        );
+    }
+
+    /// 任意字节翻转都必须导致"报错或产物不同"，不能静默重建出旧内容。
+    #[tokio::test]
+    async fn any_byte_flip_is_detected() {
+        let dir = TempDir::new();
+        let old_path = dir.path("old.bin");
+        let new_path = dir.path("new.bin");
+        let patch_path = dir.path("patch.tdxb");
+        let old = pseudo_random(64 * 1024, 41);
+        let mut new = old.clone();
+        new[1000..1200].copy_from_slice(&pseudo_random(200, 43));
+        std::fs::write(&old_path, &old).unwrap();
+        std::fs::write(&new_path, &new).unwrap();
+        create_patch_block_delta(&old_path, &new_path, &patch_path, 19)
+            .await
+            .unwrap();
+
+        let original = std::fs::read(&patch_path).unwrap();
+        let mut checked = 0;
+        for index in (0..original.len()).step_by(37) {
+            let mut tampered = original.clone();
+            tampered[index] ^= 0xFF;
+            let tampered_path = dir.path("tampered.tdxb");
+            std::fs::write(&tampered_path, &tampered).unwrap();
+
+            let out_path = dir.path("flip-out.bin");
+            let _ = std::fs::remove_file(&out_path);
+            if apply_block_delta(&old_path, &tampered_path, &out_path).is_ok() {
+                let produced = std::fs::read(&out_path).unwrap();
+                assert_ne!(produced, new, "翻转第 {index} 字节后仍静默重建出正确内容");
+            }
+            checked += 1;
+        }
+        assert!(checked > 10, "样本太少，测试没有意义");
+    }
+
+    /// 属性测试：随机旧/新内容 + 随机改动都必须往返一致。
+    #[tokio::test]
+    async fn property_roundtrips_random_edits() {
+        for seed in 0..10u64 {
+            let size = 4096 + (seed as usize * 4099) % (96 * 1024);
+            let old = pseudo_random(size, seed + 1);
+            let mut new = old.clone();
+            let edits = 1 + (seed as usize % 5);
+            for edit in 0..edits {
+                let pos = (seed as usize * 7919 + edit * 104729) % new.len();
+                let len = 1 + ((seed as usize + edit) % 97).min(new.len() - pos - 1);
+                new[pos..pos + len].copy_from_slice(&pseudo_random(len, seed * 31 + edit as u64));
+            }
+            let (restored, _) = roundtrip(&old, &new).await;
+            assert_eq!(restored, new, "seed={seed} 往返失败");
+        }
     }
 
     #[test]

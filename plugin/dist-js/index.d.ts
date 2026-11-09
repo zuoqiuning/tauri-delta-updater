@@ -223,6 +223,8 @@ export interface ScriptEvent {
 }
 /** 启动状态指针。 */
 export type StartupState = 'staged' | 'booting' | 'committed' | 'failed' | 'rolled_back';
+/** 配置警告的稳定语义键；UI 应据此本地化，而不是匹配中文文案。 */
+export type WarningKey = 'work_dir_not_writable' | 'environment_unsupported' | 'insecure_transport' | 'machine_lock_fallback' | 'privilege_tools_missing';
 /** `diagnose()` 的只读快照（不发起网络请求）。 */
 export interface Diagnosis {
     executable: string;
@@ -252,6 +254,10 @@ export interface Diagnosis {
     insecure_transport: boolean;
     /** 第一个明文 HTTP 端点；展示前请自行脱敏（可能包含 CDN token）。 */
     insecure_endpoint: string | null;
+    /** 配置警告的结构化键，与 Rust 的 `Diagnosis::warnings()` 顺序一致。 */
+    warning_keys: WarningKey[];
+    /** 跨用户锁是否生效；`null` 表示未配置 `lock_scope: install_dir`。 */
+    machine_lock_active: boolean | null;
     /** 显式声明的全量安装器类型；`null` 表示按文件后缀推断。 */
     installer_kind: InstallerKind | null;
 }

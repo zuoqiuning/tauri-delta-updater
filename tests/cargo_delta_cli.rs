@@ -52,6 +52,22 @@ fn pubkey() -> String {
     common::signing_keypair().1
 }
 
+/// 缺少公钥时必须直接给出生成命令，而不是只说"必填"。
+#[test]
+fn init_without_pubkey_explains_key_generation() {
+    let (_dir, root) = project();
+    let (code, stdout, stderr) = run(
+        &root,
+        &["init", "--endpoint", "https://cdn.example.com/latest.json"],
+    );
+    assert_ne!(code, 0, "缺少公钥必须失败");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("minisign -G"),
+        "失败信息必须包含生成命令: {combined}"
+    );
+}
+
 /// 默认 dry-run：输出 diff，但不改任何文件。
 #[test]
 fn init_is_dry_run_by_default() {
@@ -1014,6 +1030,36 @@ fn doctor_validates_published_bucket_and_detects_tampering() {
         serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
     assert_eq!(report["ok"], true);
     assert_eq!(report["errors"].as_array().unwrap().len(), 0);
+
+    // --expect-version：发布后验证必须能断言"线上就是刚发的版本"。
+    let (code, stdout, stderr) = run(
+        root,
+        &[
+            "doctor",
+            &endpoint,
+            "--pubkey",
+            &pk,
+            "--expect-version",
+            "0.1.1",
+        ],
+    );
+    assert_eq!(code, 0, "期望版本匹配必须通过: {stdout}\n{stderr}");
+    let (code, stdout, stderr) = run(
+        root,
+        &[
+            "doctor",
+            &endpoint,
+            "--pubkey",
+            &pk,
+            "--expect-version",
+            "0.1.2",
+        ],
+    );
+    assert_ne!(code, 0, "期望版本不一致必须失败");
+    assert!(
+        format!("{stdout}{stderr}").contains("0.1.2"),
+        "错误必须指出期望版本: {stdout}\n{stderr}"
+    );
 
     // 线上补丁被替换：清单签名仍然有效，但哈希必须对不上。
     server.set("/0.1.0_to_0.1.1.patch", b"tampered".to_vec());

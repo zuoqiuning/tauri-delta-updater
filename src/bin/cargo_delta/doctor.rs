@@ -467,6 +467,19 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
     };
     report.version = Some(manifest.version.clone());
 
+    // 发布后验证的核心断言：线上桶必须正是这次发布的版本。
+    if let Some(expected) = &args.expect_version {
+        let expected = normalize_version(expected);
+        if normalize_version(&manifest.version) == expected {
+            report.ok(format!("目标版本与期望一致（{expected}）"));
+        } else {
+            report.fail(format!(
+                "目标版本与期望不一致：期望 {expected}，实际 {}",
+                manifest.version
+            ));
+        }
+    }
+
     if semver::Version::parse(normalize_version(&manifest.version)).is_ok() {
         report.ok(format!("目标版本 {} 是合法语义化版本", manifest.version));
     } else {

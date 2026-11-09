@@ -28,7 +28,9 @@ cargo delta doctor --from-config --project ./my-app
 `plugins.delta-updater` (falling back to `plugins.updater`), expands official
 placeholders, uses the configured trust policy and checks every configured
 fallback endpoint (manifest signature plus primary/fallback version consistency).
-`--fallback-url` tests extra mirrors explicitly. `--help` is always the
+`--fallback-url` tests extra mirrors explicitly. `--expect-version X.Y.Z` turns
+the post-publish check into an assertion: the published bucket must report that
+exact version, otherwise `doctor` exits non-zero. `--help` is always the
 authoritative argument list; the reference below is kept for offline reading.
 
 ## Publisher CLI

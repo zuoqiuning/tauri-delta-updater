@@ -162,7 +162,7 @@ pub enum DeltaError {
     /// 内容哈希可能完全正确，但在开启 AppLocker / WDAC / SmartScreen 严格模式
     /// 的机器上，未签名程序会被直接拒绝启动——替换后应用等于变砖。
     /// 这通常意味着发布端漏签了新版本；调用方应回退全量或联系发布方。
-    #[error("更新产物缺少有效的 Authenticode 签名（原版本已签名），已阻断更新")]
+    #[error("更新产物缺少有效的 Authenticode 签名（原版本已签名），已阻断更新；离线或证书链未缓存时可改用 authenticode_policy: permissive 仅告警")]
     AuthenticodeUnsigned,
 
     /// 全量安装器执行失败：启动失败、用户取消提权、安装器不接受空参数等。
@@ -305,9 +305,46 @@ impl DeltaError {
 /// 增量更新操作的结果类型。
 pub type Result<T> = std::result::Result<T, DeltaError>;
 
+/// 多跳补丁链中某一跳的上下文。
+///
+/// 由 [`DeltaError::chain_context`] 返回：UI 可以直接显示"第 2/5 跳失败"，
+/// 不必解析错误文案。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainContext {
+    /// 失败的跳数（从 1 开始）。
+    pub hop: usize,
+    /// 链的总跳数。
+    pub total: usize,
+    /// 该跳的起始版本。
+    pub from: String,
+    /// 该跳的目标版本。
+    pub to: String,
+}
+
+impl DeltaError {
+    /// 若错误来自多跳链的某一跳，返回结构化上下文；否则为 `None`。
+    pub fn chain_context(&self) -> Option<ChainContext> {
+        match self {
+            DeltaError::ChainHopFailed {
+                hop,
+                total,
+                from,
+                to,
+                ..
+            } => Some(ChainContext {
+                hop: *hop,
+                total: *total,
+                from: from.clone(),
+                to: to.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::DeltaError;
+    use super::{ChainContext, DeltaError};
 
     /// 每个变体各构造一个实例：新增变体时这里没跟着加就会编译失败，
     /// 强迫作者显式决定它的错误码。
@@ -407,6 +444,19 @@ mod tests {
             security.to_string().contains("第 2/3 跳"),
             "错误文案必须指出失败跳数: {security}"
         );
+        assert_eq!(
+            security.chain_context(),
+            Some(ChainContext {
+                hop: 2,
+                total: 3,
+                from: "0.1.0".into(),
+                to: "0.2.0".into(),
+            }),
+            "UI 必须能结构化拿到跳数，而不是解析文案"
+        );
+        assert!(DeltaError::Network("timeout".into())
+            .chain_context()
+            .is_none());
 
         let transient = DeltaError::ChainHopFailed {
             hop: 1,

@@ -31,7 +31,7 @@ mod simulate;
 mod staged;
 
 pub use config::{default_signature_url, FallbackPolicy, LockScope, UpdateConfig};
-pub use diagnosis::{Diagnosis, MessageKey, ScriptEvent};
+pub use diagnosis::{Diagnosis, MessageKey, ScriptEvent, WarningKey};
 pub use outcome::{
     CheckOutcome, FallbackReason, OsRequirement, SafeModeReason, UpdateCheck, UpdateOutcome,
     UpdateResult,
@@ -478,7 +478,7 @@ pub(super) async fn download_and_verify_patch<'a>(
 mod ui_result_tests {
     use super::{
         DeltaUpdater, Diagnosis, FallbackReason, MessageKey, SafeModeReason, UpdateConfig,
-        UpdateOutcome, UpdateResult,
+        UpdateOutcome, UpdateResult, WarningKey,
     };
     use crate::platform::target::EnvironmentReason;
     use std::path::PathBuf;
@@ -669,12 +669,24 @@ mod ui_result_tests {
             privilege_tools_available: None,
             insecure_transport: false,
             insecure_endpoint: None,
+            warning_keys: Vec::new(),
+            machine_lock_active: None,
             installer_kind: None,
         };
         assert!(base.can_use_delta());
         assert_eq!(base.user_message(), "环境正常。");
         assert_eq!(base.message_key(), MessageKey::EnvironmentOk);
         assert!(base.warnings().is_empty(), "正常环境不应有配置警告");
+        assert!(base.warning_keys().is_empty());
+
+        assert_eq!(
+            Diagnosis {
+                fallback_reason: Some(EnvironmentReason::MacOsBundle),
+                ..base.clone()
+            }
+            .warning_keys(),
+            vec![WarningKey::EnvironmentUnsupported]
+        );
 
         assert_eq!(
             Diagnosis {
@@ -691,6 +703,15 @@ mod ui_result_tests {
             }
             .warnings(),
             vec!["更新工作目录不可写：请检查目录权限，否则所有更新都会失败。"]
+        );
+
+        assert_eq!(
+            Diagnosis {
+                machine_lock_active: Some(false),
+                ..base.clone()
+            }
+            .warning_keys(),
+            vec![WarningKey::MachineLockFallback]
         );
 
         assert!(!Diagnosis {

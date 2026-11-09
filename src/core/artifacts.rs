@@ -212,6 +212,12 @@ pub const LOCK_FILE: &str = ".update.lock";
 /// 目录只读（需要提权）时无法创建，引擎会退回仅工作目录锁并告警。
 pub const MACHINE_LOCK_FILE: &str = "tdx_machine.lock";
 
+/// 跨用户锁降级的标记：内容为失败原因（安装目录路径）。
+///
+/// 安装目录只读时无法建立机器级锁，只能退回工作目录锁；诊断页读取本文件
+/// 说明"跨用户锁没有生效"，而不是让宿主自己猜测。
+pub const MACHINE_LOCK_FALLBACK_FILE: &str = "tdx_machine_lock_fallback";
+
 /// 连续失败多少次后停止尝试增量更新。
 pub const MAX_FAILED_ATTEMPTS: u32 = 3;
 

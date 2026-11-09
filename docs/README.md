@@ -3,6 +3,7 @@
 | 路径 | 用途 |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 模块边界、主流程、不可破坏的不变量与失败恢复矩阵 |
+| [BLOCK_DELTA_THREAT_MODEL.md](BLOCK_DELTA_THREAT_MODEL.md) | TDXB1 容器的信任边界、越界/谎报/翻转攻击的处置与守护测试 |
 | [USAGE.md](USAGE.md) | 按场景划分的接入索引、客户端接入、前端结果处理、可取消会话与库 API 分层 |
 | [CONFIG_CHEATSHEET.md](CONFIG_CHEATSHEET.md) | 配置决策树、插件字段速查、权限集与发布参数 |
 | [PUBLISHING.md](PUBLISHING.md) | `generate` / `cargo delta release` / `doctor` 参数与发布流程 |

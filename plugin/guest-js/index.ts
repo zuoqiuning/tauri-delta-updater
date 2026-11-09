@@ -198,6 +198,14 @@ export type StartupState =
   | 'failed'
   | 'rolled_back';
 
+/** 配置警告的稳定语义键；UI 应据此本地化，而不是匹配中文文案。 */
+export type WarningKey =
+  | 'work_dir_not_writable'
+  | 'environment_unsupported'
+  | 'insecure_transport'
+  | 'machine_lock_fallback'
+  | 'privilege_tools_missing';
+
 /** `diagnose()` 的只读快照（不发起网络请求）。 */
 export interface Diagnosis {
   executable: string;
@@ -227,6 +235,10 @@ export interface Diagnosis {
   insecure_transport: boolean;
   /** 第一个明文 HTTP 端点；展示前请自行脱敏（可能包含 CDN token）。 */
   insecure_endpoint: string | null;
+  /** 配置警告的结构化键，与 Rust 的 `Diagnosis::warnings()` 顺序一致。 */
+  warning_keys: WarningKey[];
+  /** 跨用户锁是否生效；`null` 表示未配置 `lock_scope: install_dir`。 */
+  machine_lock_active: boolean | null;
   /** 显式声明的全量安装器类型；`null` 表示按文件后缀推断。 */
   installer_kind: InstallerKind | null;
 }
@@ -369,19 +381,22 @@ function asCompatError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 
-/** 把阶段事件映射成官方 `Started` / `Progress` / `Finished`。 */
+/**
+ * 把阶段事件映射成官方 `Started` / `Progress` / `Finished`。
+ *
+ * 官方契约是**一次 downloadAndInstall 只发一次 `Started` 和一次 `Finished`**。
+ * 增量失败切到全量安装时只重置下载计数，不重新发 `Started`——否则 UI 会看到
+ * 两个下载会话，进度条从 0 重新开始。
+ */
 function progressEvents(onEvent?: (event: CompatDownloadEvent) => void) {
   let started = false;
+  let finished = false;
   let downloaded = 0;
-  const finish = () => {
-    if (!started) return;
-    started = false;
-    onEvent?.({ event: 'Finished' });
-  };
   const onStage = (event: UpdateEvent) => {
     switch (event.stage) {
       case 'downloading':
       case 'downloading_full': {
+        if (finished) break;
         if (!started) {
           started = true;
           downloaded = 0;
@@ -399,13 +414,24 @@ function progressEvents(onEvent?: (event: CompatDownloadEvent) => void) {
       }
       case 'applying':
       case 'ready':
-        finish();
+        // 不在这里结束：增量可能被判定为 `requires_full_download`，
+        // 整个 downloadAndInstall 只允许一个 Finished。
         break;
       default:
         break;
     }
   };
-  return { onStage, finish };
+  /** 从增量切到全量：丢弃已下载字节的计数，但保留同一个 Started 上下文。 */
+  const resetForFull = () => {
+    downloaded = 0;
+  };
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    if (!started) return;
+    onEvent?.({ event: 'Finished' });
+  };
+  return { onStage, resetForFull, finish };
 }
 
 /**
@@ -442,7 +468,8 @@ export async function checkCompat(): Promise<CompatUpdate | null> {
       try {
         let result = await install(progress.onStage);
         if (result.kind === 'requires_full_download') {
-          progress.finish();
+          // 同一个下载会话：不结束、不重发 Started，只重置已下载计数。
+          progress.resetForFull();
           result = await installFull(progress.onStage);
         }
         progress.finish();

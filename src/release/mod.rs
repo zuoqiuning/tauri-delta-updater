@@ -536,6 +536,15 @@ fn prepare_manifest(
 pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, String> {
     println!("[INFO] 开始生成更新清单...");
 
+    // 两者互斥：旧客户端只认 BSDIFF40，产出 TDXB1 会让它们全部失败。
+    // CLI 已用 clap 拦截；库调用方也必须得到同样的结论。
+    if options.legacy_patch && options.large_file_delta {
+        return Err(
+            "--legacy-patch 与 --large-file-delta 不能同时使用：前者只产出 BSDIFF40 供旧客户端消费，后者产出 TDXB1（旧客户端无法应用）"
+                .into(),
+        );
+    }
+
     // 并发预算必须在第一次补丁操作之前确定；显式参数优先于环境变量默认值。
     let wants_custom_budget = options.jobs.is_some() || options.patch_memory_budget_mb.is_some();
     if wants_custom_budget

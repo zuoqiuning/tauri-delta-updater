@@ -261,6 +261,7 @@ async fn process_candidate(
     }
 
     println!("[INFO] 生成补丁: {old_version} -> {new_version}");
+    let mut used_block_delta = false;
     let created = if legacy_patch {
         create_patch_uncompressed(path, app_binary, &patch_path).await
     } else {
@@ -282,6 +283,7 @@ async fn process_candidate(
                     println!("[SKIP] {file_name}: {reason}");
                     return Ok(CandidateOutcome::skipped(file_name, reason));
                 }
+                used_block_delta = true;
             }
             // 未开启分块差分时跳过该基线，走全量分发，
             // 而不是让发布流水线在分配失败时直接 abort。
@@ -344,6 +346,8 @@ async fn process_candidate(
         // 补丁基底与产物都是主程序，显式标注覆盖范围。
         // 使用 sidecar/resources 的应用据此提示"本次增量不覆盖附加资源"。
         scope: Some(PatchScope::MainExecutableOnly),
+        // 只有分块差分才写算法：普通补丁保持缺省，旧清单字节不变。
+        algorithm: used_block_delta.then(|| "tdxb1".to_string()),
     }))
 }
 
@@ -442,6 +446,7 @@ mod tests {
             target_hash: "target".into(),
             patch_size: None,
             scope: Some(PatchScope::MainExecutableOnly),
+            algorithm: None,
         }
     }
 

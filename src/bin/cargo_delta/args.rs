@@ -50,17 +50,16 @@ pub(crate) enum Command {
         #[arg(long, required_unless_present = "check")]
         endpoint: Option<String>,
         /// 固化在应用里的公钥（base64 或 `.pub` 内容）。`--check` 时无需提供。
-        #[arg(long, required_unless_present_any = ["check", "pubkey_file"])]
+        ///
+        /// 还没有密钥对？先运行
+        /// `minisign -G -p myapp.pub -s myapp.key`，再用 `--pubkey-file myapp.pub`。
+        /// 必填校验放在命令实现里，报错时会一并给出这条命令。
+        #[arg(long)]
         pubkey: Option<String>,
         /// 公钥文件（`.pub` 内容或 base64 文本）；与 `--pubkey` 二选一。
         ///
         /// 原始 `.pub` 文件会被编码成 base64（与官方 updater 的配置写法一致）。
-        #[arg(
-            long,
-            value_name = "PATH",
-            conflicts_with = "pubkey",
-            required_unless_present_any = ["check", "pubkey"]
-        )]
+        #[arg(long, value_name = "PATH", conflicts_with = "pubkey")]
         pubkey_file: Option<PathBuf>,
         /// 可选整包清单地址（`latest.bundle.json`）。
         #[arg(long)]
@@ -121,6 +120,10 @@ pub(crate) struct DoctorArgs {
     /// 展开 `{{current_version}}` 时使用的版本号。
     #[arg(long = "current-version", value_name = "VERSION")]
     pub(crate) current_version: Option<String>,
+
+    /// 断言线上清单的目标版本；不一致时体检失败（发布后验证用）。
+    #[arg(long = "expect-version", value_name = "VERSION")]
+    pub(crate) expect_version: Option<String>,
 
     /// 可选：清单签名地址（默认按清单地址同名 + `.sig` 推导）。
     #[arg(long = "signature-url", value_name = "URL")]
@@ -269,7 +272,7 @@ pub(crate) struct ReleaseArgs {
     pub(crate) sha256sums: Option<PathBuf>,
 
     /// 生成未压缩的 `BSDIFF40` 补丁，供旧引擎客户端消费。
-    #[arg(long = "legacy-patch")]
+    #[arg(long = "legacy-patch", conflicts_with = "large_file_delta")]
     pub(crate) legacy_patch: bool,
 
     /// bsdiff 工作集超限时退回分块差分（TDXB1），支持超大单文件。

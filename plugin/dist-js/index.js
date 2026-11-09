@@ -115,20 +115,23 @@ function asCompatError(value) {
     }
     return value instanceof Error ? value : new Error(String(value));
 }
-/** 把阶段事件映射成官方 `Started` / `Progress` / `Finished`。 */
+/**
+ * 把阶段事件映射成官方 `Started` / `Progress` / `Finished`。
+ *
+ * 官方契约是**一次 downloadAndInstall 只发一次 `Started` 和一次 `Finished`**。
+ * 增量失败切到全量安装时只重置下载计数，不重新发 `Started`——否则 UI 会看到
+ * 两个下载会话，进度条从 0 重新开始。
+ */
 function progressEvents(onEvent) {
     let started = false;
+    let finished = false;
     let downloaded = 0;
-    const finish = () => {
-        if (!started)
-            return;
-        started = false;
-        onEvent?.({ event: 'Finished' });
-    };
     const onStage = (event) => {
         switch (event.stage) {
             case 'downloading':
             case 'downloading_full': {
+                if (finished)
+                    break;
                 if (!started) {
                     started = true;
                     downloaded = 0;
@@ -146,13 +149,26 @@ function progressEvents(onEvent) {
             }
             case 'applying':
             case 'ready':
-                finish();
+                // 不在这里结束：增量可能被判定为 `requires_full_download`，
+                // 整个 downloadAndInstall 只允许一个 Finished。
                 break;
             default:
                 break;
         }
     };
-    return { onStage, finish };
+    /** 从增量切到全量：丢弃已下载字节的计数，但保留同一个 Started 上下文。 */
+    const resetForFull = () => {
+        downloaded = 0;
+    };
+    const finish = () => {
+        if (finished)
+            return;
+        finished = true;
+        if (!started)
+            return;
+        onEvent?.({ event: 'Finished' });
+    };
+    return { onStage, resetForFull, finish };
 }
 /**
  * 官方 updater 迁移兼容层。
@@ -188,7 +204,8 @@ export async function checkCompat() {
             try {
                 let result = await install(progress.onStage);
                 if (result.kind === 'requires_full_download') {
-                    progress.finish();
+                    // 同一个下载会话：不结束、不重发 Started，只重置已下载计数。
+                    progress.resetForFull();
                     result = await installFull(progress.onStage);
                 }
                 progress.finish();

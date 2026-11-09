@@ -531,6 +531,38 @@ fn test_generate_cli_parallel_baselines() {
     );
 }
 
+/// `--legacy-patch` 与 `--large-file-delta` 互斥：混用必须直接失败。
+#[test]
+fn test_generate_cli_rejects_conflicting_patch_modes() {
+    let dir = tempdir();
+    let (old_exe, new_exe) = make_pair(&dir);
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+
+    let args: Vec<String> = [
+        "--old-binary".to_string(),
+        s(&old_exe),
+        "--app-binary".into(),
+        s(&new_exe),
+        "--version".into(),
+        "0.1.1".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--legacy-patch".into(),
+        "--large-file-delta".into(),
+    ]
+    .to_vec();
+    let (code, _stdout, stderr) = run_generate(&args, &dir);
+    assert_ne!(code, 0, "互斥参数必须失败: {stderr}");
+    assert!(
+        stderr.contains("large-file-delta"),
+        "stderr 必须点名冲突参数: {stderr}"
+    );
+}
+
 /// `--dry-run` 只规划与验证，不写任何文件。
 #[test]
 fn test_generate_cli_dry_run_writes_nothing() {

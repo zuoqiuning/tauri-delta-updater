@@ -191,6 +191,9 @@ cargo add tauri-delta-updater@0.4.0 && cargo build
 # 插件可解析（需 Tauri 项目上下文）
 cd examples/tauri-app/src-tauri && cargo check
 
+# 线上桶确实是你刚发的版本（发布后验证的核心断言）
+cargo delta doctor <manifest-url> --pubkey <public-key> --expect-version 0.4.0
+
 # npm 可安装
 cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.4.0
 ```

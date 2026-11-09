@@ -9,6 +9,11 @@ A high-performance, secure, and fault-tolerant delta update engine for Tauri v2 
 
 Version semantics: [VERSIONING.md](VERSIONING.md) · Release gates: [docs/RELEASING.md](docs/RELEASING.md) · Docs index: [docs/README.md](docs/README.md)
 
+**Maturity: early (0.4.x).** Single maintainer. Run one full update cycle on
+each target platform ([DEVICE_TESTS.md](docs/DEVICE_TESTS.md)) before production
+use; CI covers static checks, synthetic scripts and end-to-end mocks, not
+code signing, UAC or Gatekeeper.
+
 ### Is this for you?
 
 Seven questions, asked before the long docs:
@@ -541,9 +546,11 @@ A patch is always verified against both hashes, so a poor-ratio patch is still *
 
 ### Memory and file size limits
 
-`qbsdiff` needs the old and new files available while computing or applying a patch; its working memory is roughly `max(17 × old_size, 9 × old_size + new_size)`, which is why large files are rejected rather than attempted. Single files larger than `MAX_INCREMENTAL_FILE_BYTES` (2 GB) are rejected with `DeltaError::IncrementalNotApplicable`; **generating** a patch additionally rejects any baseline whose estimated working set exceeds 4 GiB with `DeltaError::PatchWorkingSetTooLarge`, so `generate` skips it instead of aborting on an allocation failure. Old files and patches are memory-mapped, the merged result is streamed to disk, and decompressed patch size is capped at `2 × old_size + 128 MB`.
+`qbsdiff` needs the old and new files available while computing or applying a patch; its working memory is roughly `max(17 × old_size, 9 × old_size + new_size)`, which is why large files are rejected rather than attempted. Single files larger than `MAX_INCREMENTAL_FILE_BYTES` (2 GB) are rejected with `DeltaError::IncrementalNotApplicable`; **generating** a patch additionally rejects any baseline whose estimated working set exceeds 4 GiB with `DeltaError::PatchWorkingSetTooLarge`, so `generate` skips it (or falls back to TDXB1 with `--large-file-delta`) instead of aborting on an allocation failure. Old files and patches are memory-mapped, the merged result is streamed to disk, and decompressed patch size is capped at `2 × old_size + 128 MB`.
 
-Each patch task runs on a dedicated thread that reserves a **512 MB stack** (64 MB on 32-bit targets; bsdiff recursion depth scales with file size). That is virtual address space, not RSS, but it means **do not run two patch generations concurrently in one process**. Applying a patch is the same constraint.
+Each patch task runs on a dedicated thread that reserves a **512 MB stack** (64 MB on 32-bit targets; bsdiff recursion depth scales with file size). That is virtual address space, not RSS. Tasks inside one process are admitted by a **memory-weighted limiter**: every job declares its estimated working set, one unit is 256 MiB, and the default budget is 4 GiB with CPU concurrency capped at the core count. Small baselines therefore run in parallel while memory stays bounded; a single oversized job still runs alone. Tune with `--jobs` / `--patch-memory-budget-mb`, `TDX_PATCH_JOBS` / `TDX_PATCH_MEMORY_BUDGET_MB`, or `configure_patch_concurrency()`.
+
+`--large-file-delta` lifts the generation ceiling: a baseline whose bsdiff working set would exceed the budget falls back to a **TDXB1 block delta** (content-defined chunking, then a bounded ≤4 MiB bsdiff per gap). Memory no longer scales with file size, so multi-GB single files can still ship a delta. TDXB1 is a new container: only clients that support it can apply it, the flag is off by default, and it conflicts with `--legacy-patch`. See [docs/BLOCK_DELTA_THREAT_MODEL.md](docs/BLOCK_DELTA_THREAT_MODEL.md).
 
 To measure your own app: build two releases and run
 `cargo run --example simulate_update -- old.exe new.exe target/delta-sim`.

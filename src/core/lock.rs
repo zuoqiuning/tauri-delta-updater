@@ -47,11 +47,21 @@ impl UpdateLock {
         let path = install_dir.join(artifacts::MACHINE_LOCK_FILE);
         match File::create(&path) {
             Ok(file) => match file.try_lock_exclusive() {
-                Ok(true) => lock._files.push(file),
+                Ok(true) => {
+                    // 机器级锁生效：清掉上一次的降级标记。
+                    let _ =
+                        std::fs::remove_file(work_dir.join(artifacts::MACHINE_LOCK_FALLBACK_FILE));
+                    lock._files.push(file);
+                }
                 Ok(false) => return Err(DeltaError::UpdateInProgress),
                 Err(e) => return Err(DeltaError::Io(e)),
             },
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // 记录降级，诊断页据此报告"跨用户锁未生效"。
+                let _ = std::fs::write(
+                    work_dir.join(artifacts::MACHINE_LOCK_FALLBACK_FILE),
+                    path.display().to_string(),
+                );
                 #[cfg(feature = "tracing")]
                 tracing::warn!(
                     target: "tauri_delta_updater",

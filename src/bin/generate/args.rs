@@ -181,7 +181,7 @@ pub(crate) struct Args {
     ///
     /// 旧客户端不认 zstd 容器，会把补丁判成 "not a valid patch"；跨代际过渡期
     /// 用本开关，等旧客户端都被替换后关掉。未压缩补丁体积明显更大。
-    #[arg(long)]
+    #[arg(long, conflicts_with = "large_file_delta")]
     pub(crate) legacy_patch: bool,
 
     /// bsdiff 工作集超限时退回分块差分（TDXB1），支持超大单文件。

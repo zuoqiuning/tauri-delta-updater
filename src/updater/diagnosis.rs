@@ -150,6 +150,16 @@ pub struct Diagnosis {
     ///
     /// 只给宿主排障用：端点可能包含私有 CDN token，展示前请自行脱敏。
     pub insecure_endpoint: Option<String>,
+    /// 配置警告的结构化键，与 [`Self::warnings`] 一一对应、顺序一致。
+    ///
+    /// UI 应按 key 本地化；`warnings()` 的中文文案只适合日志与调试。
+    /// 由 [`DeltaUpdater::diagnose`] 填充。
+    pub warning_keys: Vec<WarningKey>,
+    /// 跨用户锁是否真正生效；`None` 表示未配置 `lock_scope: install_dir`。
+    ///
+    /// `Some(false)` 表示安装目录不可写、已退回工作目录锁：per-machine 安装的
+    /// 多个用户账户仍可能并发替换（诊断页应提示）。
+    pub machine_lock_active: Option<bool>,
     /// 配置显式声明的全量安装器类型；`None` 表示按文件后缀推断。
     ///
     /// 用 Inno Setup 打包的宿主必须显式配置，否则排障时无法从诊断页看出
@@ -231,25 +241,75 @@ impl Diagnosis {
     /// 与 [`Self::user_message`] 的区别：这里只报告**配置/环境**问题，
     /// 不包含"上次为什么回滚"这类历史事件。插件在注册时会把它们打到
     /// 启动日志，让接入方第一次运行就看到问题，而不是等用户触发更新。
+    ///
+    /// 返回的是中文文案；面向多语言 UI 请使用 [`Self::warning_keys`]。
     pub fn warnings(&self) -> Vec<&'static str> {
-        let mut warnings = Vec::new();
+        self.warning_keys()
+            .into_iter()
+            .map(WarningKey::text)
+            .collect()
+    }
+
+    /// 配置警告的结构化键：UI 可据此本地化，不必匹配中文文案。
+    pub fn warning_keys(&self) -> Vec<WarningKey> {
+        let mut keys = Vec::new();
         if !self.work_dir_writable {
-            warnings.push("更新工作目录不可写：请检查目录权限，否则所有更新都会失败。");
+            keys.push(WarningKey::WorkDirNotWritable);
         }
         if self.fallback_reason.is_some() && !self.bundle_capable {
-            warnings
-                .push("当前环境不支持单文件增量，且未配置整包清单：更新将回退为完整安装包下载。");
+            keys.push(WarningKey::EnvironmentUnsupported);
         }
         if self.insecure_transport {
-            warnings.push(
-                "清单端点使用明文 HTTP：完整性仍由签名保证，但版本信息会暴露在传输中，生产环境请改用 HTTPS。",
-            );
+            keys.push(WarningKey::InsecureTransport);
+        }
+        if self.machine_lock_active == Some(false) {
+            keys.push(WarningKey::MachineLockFallback);
         }
         #[cfg(target_os = "linux")]
         if self.privilege_tools_available == Some(false) {
-            warnings.push("未找到 runuser 或 su：提权更新后可能无法降权回原用户。");
+            keys.push(WarningKey::PrivilegeToolsMissing);
         }
-        warnings
+        keys
+    }
+}
+
+/// 配置警告的稳定语义键。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum WarningKey {
+    /// 工作目录不可写：所有更新都会失败。
+    WorkDirNotWritable,
+    /// 当前环境不支持单文件增量，且未配置整包清单。
+    EnvironmentUnsupported,
+    /// 清单端点使用明文 HTTP（非回环）。
+    InsecureTransport,
+    /// 配置了 `lock_scope: install_dir`，但安装目录只读、跨用户锁未生效。
+    MachineLockFallback,
+    /// Linux 上缺少 `runuser` / `su`，提权后无法降权。
+    PrivilegeToolsMissing,
+}
+
+impl WarningKey {
+    /// 面向开发者日志的中文说明。
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::WorkDirNotWritable => {
+                "更新工作目录不可写：请检查目录权限，否则所有更新都会失败。"
+            }
+            Self::EnvironmentUnsupported => {
+                "当前环境不支持单文件增量，且未配置整包清单：更新将回退为完整安装包下载。"
+            }
+            Self::InsecureTransport => {
+                "清单端点使用明文 HTTP：完整性仍由签名保证，但版本信息会暴露在传输中，生产环境请改用 HTTPS。"
+            }
+            Self::MachineLockFallback => {
+                "已配置跨用户锁，但安装目录不可写：已退回工作目录锁，多用户同时更新仍可能冲突。"
+            }
+            Self::PrivilegeToolsMissing => {
+                "未找到 runuser 或 su：提权更新后可能无法降权回原用户。"
+            }
+        }
     }
 }
 
@@ -345,7 +405,7 @@ impl DeltaUpdater {
         } else {
             None
         };
-        Diagnosis {
+        let mut diagnosis = Diagnosis {
             executable: self.executable_path.clone(),
             work_dir: self.work_dir.clone(),
             platform: self.config.platform.clone(),
@@ -373,8 +433,20 @@ impl DeltaUpdater {
             privilege_tools_available: privilege_tools_available(),
             insecure_transport: self.config.uses_insecure_transport(),
             insecure_endpoint: self.config.insecure_endpoint().map(str::to_string),
+            warning_keys: Vec::new(),
+            machine_lock_active: (self.config.lock_scope == crate::LockScope::InstallDir).then(
+                || {
+                    !self
+                        .work_dir
+                        .join(crate::core::artifacts::MACHINE_LOCK_FALLBACK_FILE)
+                        .exists()
+                },
+            ),
             installer_kind: self.config.installer_kind,
-        }
+        };
+        // 键由最终字段推导，避免构造顺序造成的漂移。
+        diagnosis.warning_keys = diagnosis.warning_keys();
+        diagnosis
     }
 }
 

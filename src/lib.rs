@@ -229,7 +229,7 @@ pub mod session;
 /// 高层更新流程。
 pub mod updater;
 
-pub use error::{DeltaError, Result};
+pub use error::{ChainContext, DeltaError, Result};
 pub use models::{
     PatchInfo, PatchScope, PlatformInfo, Rollout, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
 };
@@ -295,5 +295,5 @@ pub use updater::{
     FallbackReason, FullDownload, FullDownloadOutcome, LockScope, MessageKey, OsRequirement,
     PendingArtifact, PendingUpdate, SafeModeReason, ScriptEvent, SimulationReport, Staged,
     StagedBundle, StagedFullInstaller, StagedRepair, UpdateCheck, UpdateConfig, UpdateOutcome,
-    UpdateResult,
+    UpdateResult, WarningKey,
 };

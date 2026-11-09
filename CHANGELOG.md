@@ -25,6 +25,26 @@
 - 整包补丁的临时归档改为进程内唯一命名，多个基线并行生成时不再互相覆盖。
 - 文档：`SECURITY.md` 增加 CVE-2026-95625（官方清单未签名）的对照与
   四层阻断说明；`ARCHITECTURE.md` 补充补丁容器与并发预算矩阵。
+- TDXB1 安全加固（见
+  [docs/BLOCK_DELTA_THREAT_MODEL.md](docs/BLOCK_DELTA_THREAT_MODEL.md)）：
+  头部去掉"仅作信息"字段，所有字节都参与校验；`COPY` / `PATCH` 源区间、
+  `patch_len`、`ops_len` 与展开后大小（`2 × 旧文件 + 128 MiB`）全部在
+  写盘前校验。新增越界、长度谎报、任意字节翻转与随机往返测试。
+- `--legacy-patch` 与 `--large-file-delta` 显式互斥（CLI 与库两层）：
+  避免把 TDXB1 发给只认 `BSDIFF40` 的旧客户端。
+- 清单 `patches[].algorithm` 新增容器标识：分块补丁写 `tdxb1`；
+  客户端遇到不认识的算法值会跳过该补丁（回退全量），而不是下载后失败。
+- `Diagnosis` 新增结构化 `warning_keys`（`WarningKey`）与
+  `machine_lock_active`；跨用户锁降级会写标记文件并在诊断中报告。
+- `DeltaError::chain_context()` 返回 `ChainContext { hop, total, from, to }`，
+  UI 无需解析错误文案即可显示"第 N/M 跳失败"。
+- `DeltaError::AuthenticodeUnsigned` 的文案补充 `authenticode_policy: permissive`
+  的离线证书链处置提示。
+- `cargo delta init` 缺少公钥时直接打印 `minisign -G` 生成命令；
+  `cargo delta doctor` 新增 `--expect-version`，发布后可直接断言线上版本。
+- `checkCompat()` 的进度事件改为一次下载会话只发一个 `Started` / `Finished`：
+  增量回退全量时不再重置进度上下文。
+- README 增加成熟度声明，并更新并发预算与大文件边界的说明。
 
 ## [0.4.0] - 2026-11-09
 
