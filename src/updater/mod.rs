@@ -462,7 +462,8 @@ pub(super) async fn download_and_verify_patch<'a>(
 #[cfg(test)]
 mod ui_result_tests {
     use super::{
-        DeltaUpdater, Diagnosis, FallbackReason, UpdateConfig, UpdateOutcome, UpdateResult,
+        DeltaUpdater, Diagnosis, FallbackReason, MessageKey, UpdateConfig, UpdateOutcome,
+        UpdateResult,
     };
     use std::path::PathBuf;
 
@@ -642,6 +643,7 @@ mod ui_result_tests {
         };
         assert!(base.can_use_delta());
         assert_eq!(base.user_message(), "环境正常。");
+        assert_eq!(base.message_key(), MessageKey::EnvironmentOk);
         assert!(base.warnings().is_empty(), "正常环境不应有配置警告");
 
         assert_eq!(
