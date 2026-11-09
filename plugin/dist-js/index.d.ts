@@ -100,6 +100,34 @@ export type FullDownloadDto = {
     required: string;
     current: string;
 };
+/** 官方 `@tauri-apps/plugin-updater` 的下载进度事件形状（迁移兼容层）。 */
+export type CompatDownloadEvent = {
+    event: 'Started';
+    data: {
+        contentLength: number | null;
+    };
+} | {
+    event: 'Progress';
+    data: {
+        chunkLength: number;
+    };
+} | {
+    event: 'Finished';
+};
+/**
+ * 与官方 `Update` 对象兼容的最小接口，供迁移期直接替换 `downloadAndInstall`。
+ *
+ * 只覆盖最常见的 `check()` → `downloadAndInstall()` 流程；需要自定义退出时机时
+ * 请改用本包的 `prepare()` / `launch()`。全量回退由 `installFull()` 自动接管。
+ */
+export interface CompatUpdate {
+    currentVersion: string;
+    version: string;
+    date: string;
+    body: string;
+    rawJson: Record<string, unknown>;
+    downloadAndInstall(onEvent?: (event: CompatDownloadEvent) => void): Promise<void>;
+}
 /** 跨重启待安装记录（`pending()` 返回值）；路径留在 Rust 侧。 */
 export interface PendingUpdate {
     version: string;
@@ -254,3 +282,15 @@ export declare function discardPending(): Promise<boolean>;
 export declare function installPending(): Promise<boolean>;
 /** 手动退出安全模式（UI 提供"重试"按钮时使用）。 */
 export declare function resetSafety(): Promise<void>;
+/**
+ * 官方 updater 迁移兼容层。
+ *
+ * 返回与 `@tauri-apps/plugin-updater` 的 `Update` 相同的最小形状：
+ * `check()` → `update.downloadAndInstall(callback)`。进度回调使用官方的
+ * `Started` / `Progress` / `Finished` 事件形状；增量不可用时自动切换到
+ * `installFull()`。没有可用更新、灰度未命中或系统版本过低时返回 `null`。
+ *
+ * 只覆盖最常见的 `downloadAndInstall` 流程；需要自定义退出时机时使用
+ * `prepare()` / `launch()`。
+ */
+export declare function checkCompat(): Promise<CompatUpdate | null>;

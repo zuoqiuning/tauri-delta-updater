@@ -4,6 +4,7 @@
 //! `Channel` 的生命周期由调用方持有（事件回调只在本次调用期间有效）。
 
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 
 /** 增量不可用的原因（与 `FallbackReason` 一致）。 */
 export type FallbackReason =
@@ -60,6 +61,29 @@ export type FullDownloadDto =
   | { kind: 'up_to_date'; version: string }
   | { kind: 'deferred'; version: string; percentage: number }
   | { kind: 'unsupported_os'; required: string; current: string };
+
+/** 官方 `@tauri-apps/plugin-updater` 的下载进度事件形状（迁移兼容层）。 */
+export type CompatDownloadEvent =
+  | { event: 'Started'; data: { contentLength: number | null } }
+  | { event: 'Progress'; data: { chunkLength: number } }
+  | { event: 'Finished' };
+
+/**
+ * 与官方 `Update` 对象兼容的最小接口，供迁移期直接替换 `downloadAndInstall`。
+ *
+ * 只覆盖最常见的 `check()` → `downloadAndInstall()` 流程；需要自定义退出时机时
+ * 请改用本包的 `prepare()` / `launch()`。全量回退由 `installFull()` 自动接管。
+ */
+export interface CompatUpdate {
+  currentVersion: string;
+  version: string;
+  date: string;
+  body: string;
+  rawJson: Record<string, unknown>;
+  downloadAndInstall(
+    onEvent?: (event: CompatDownloadEvent) => void,
+  ): Promise<void>;
+}
 
 /** 跨重启待安装记录（`pending()` 返回值）；路径留在 Rust 侧。 */
 export interface PendingUpdate {
@@ -292,4 +316,100 @@ export function installPending(): Promise<boolean> {
 /** 手动退出安全模式（UI 提供"重试"按钮时使用）。 */
 export function resetSafety(): Promise<void> {
   return invoke('plugin:delta-updater|reset_safety');
+}
+
+/** 把插件错误 DTO 转成官方 updater 风格的 `Error`（保留 `code`）。 */
+function asCompatError(value: unknown): Error {
+  if (isUpdaterError(value)) {
+    const error = new Error(value.message);
+    (error as Error & { code?: string }).code = value.code;
+    return error;
+  }
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/** 把阶段事件映射成官方 `Started` / `Progress` / `Finished`。 */
+function progressEvents(onEvent?: (event: CompatDownloadEvent) => void) {
+  let started = false;
+  let downloaded = 0;
+  const finish = () => {
+    if (!started) return;
+    started = false;
+    onEvent?.({ event: 'Finished' });
+  };
+  const onStage = (event: UpdateEvent) => {
+    switch (event.stage) {
+      case 'downloading':
+      case 'downloading_full': {
+        if (!started) {
+          started = true;
+          downloaded = 0;
+          onEvent?.({
+            event: 'Started',
+            data: { contentLength: event.total > 0 ? event.total : null },
+          });
+        }
+        const chunk = event.downloaded - downloaded;
+        if (chunk > 0) {
+          downloaded = event.downloaded;
+          onEvent?.({ event: 'Progress', data: { chunkLength: chunk } });
+        }
+        break;
+      }
+      case 'applying':
+      case 'ready':
+        finish();
+        break;
+      default:
+        break;
+    }
+  };
+  return { onStage, finish };
+}
+
+/**
+ * 官方 updater 迁移兼容层。
+ *
+ * 返回与 `@tauri-apps/plugin-updater` 的 `Update` 相同的最小形状：
+ * `check()` → `update.downloadAndInstall(callback)`。进度回调使用官方的
+ * `Started` / `Progress` / `Finished` 事件形状；增量不可用时自动切换到
+ * `installFull()`。没有可用更新、灰度未命中或系统版本过低时返回 `null`。
+ *
+ * 只覆盖最常见的 `downloadAndInstall` 流程；需要自定义退出时机时使用
+ * `prepare()` / `launch()`。
+ */
+export async function checkCompat(): Promise<CompatUpdate | null> {
+  let info: CheckOutcome;
+  try {
+    info = await check();
+  } catch (err) {
+    throw asCompatError(err);
+  }
+  if (!info.is_newer || info.deferred_by_rollout || info.unsupported_os) {
+    return null;
+  }
+
+  const currentVersion = await getVersion().catch(() => '');
+  return {
+    currentVersion,
+    version: info.version,
+    date: info.pub_date,
+    body: info.notes,
+    rawJson: info.manifest as unknown as Record<string, unknown>,
+    async downloadAndInstall(onEvent) {
+      const progress = progressEvents(onEvent);
+      try {
+        let result = await install(progress.onStage);
+        if (result.kind === 'requires_full_download') {
+          progress.finish();
+          result = await installFull(progress.onStage);
+        }
+        progress.finish();
+        // updated / repair_required 由插件负责退出进程；其余结果无需处理。
+        void result;
+      } catch (err) {
+        throw asCompatError(err);
+      }
+    },
+  };
 }

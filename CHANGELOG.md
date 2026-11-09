@@ -72,6 +72,9 @@
 - 新增 `UpdateResult::requires_exit()`：`Updated` / `RepairRequired` 为 `true`，
   宿主不必再自行维护需要退出的变体列表。
 - npm 绑定新增 `requiresExit(result)`，与 Rust 的 `requires_exit()` 对齐。
+- npm 绑定新增 `checkCompat()`：返回官方 updater 形状的 `Update`（版本/日期/
+  更新说明/rawJson + `downloadAndInstall`），进度使用官方
+  `Started` / `Progress` / `Finished` 事件，并自动接管全量回退。
 - 插件新增 `delta-updater:read` / `delta-updater:update` / `delta-updater:full`
   最小权限集（`default` 行为不变）。
 - 文档拆分：README 保留快速接入，新增 `docs/USAGE.md`、`docs/PUBLISHING.md`、

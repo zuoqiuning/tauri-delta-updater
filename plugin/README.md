@@ -82,6 +82,37 @@ staged artifact across restarts.
 Other exports: `launch`, `installFull`, `downloadFull`, `pending`,
 `discardPending`, `installPending`, `diagnose`, `cancel`, `resetSafety`.
 
+## Migrating from `@tauri-apps/plugin-updater`
+
+`checkCompat()` returns the common shape of the official `Update` object, so the
+usual `check()` → `downloadAndInstall()` flow does not need a frontend rewrite:
+
+```ts
+import { checkCompat } from 'tauri-plugin-delta-updater';
+
+const update = await checkCompat(); // null when nothing applies
+if (update) {
+  await update.downloadAndInstall((event) => {
+    switch (event.event) {
+      case 'Started':
+        console.log('total', event.data.contentLength);
+        break;
+      case 'Progress':
+        console.log('chunk', event.data.chunkLength);
+        break;
+      case 'Finished':
+        console.log('download finished');
+        break;
+    }
+  });
+}
+```
+
+The adapter maps this engine's stage events to the official
+`Started` / `Progress` / `Finished` shape and automatically falls back to
+`installFull()` when no delta is available. The split `download()` + `install()`
+flow still needs `prepare()` / `launch()` (documented above).
+
 ## Events and errors
 
 Stage events arrive through a `Channel` (`{ stage: 'downloading', downloaded,

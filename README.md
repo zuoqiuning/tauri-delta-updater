@@ -232,8 +232,8 @@ exits the process once the swap is ready. Errors arrive as
 
 The npm package exports `check`, `install`, `prepare`, `launch`, `downloadFull`,
 `installFull`, `pending`, `discardPending`, `installPending`, `diagnose`,
-`configWarnings`, `cancel`, `resetSafety`, `requiresExit`, plus `UpdateEvent` /
-`UpdateResult` / `ErrorDto` types.
+`configWarnings`, `cancel`, `resetSafety`, `requiresExit`, `checkCompat`, plus
+`UpdateEvent` / `UpdateResult` / `ErrorDto` / `CompatUpdate` types.
 
 > [!WARNING]
 > **Single-instance apps: test the exit path once per platform.** The plugin
@@ -288,13 +288,17 @@ same `platforms[].signature`. Known boundaries:
   startup warning and keeps its safe default; use `allow_insecure_transport`
   instead.
 
-**Migration cost vs benefit.** The migration is mostly a **frontend rewrite**:
+**Migration cost vs benefit.** The migration is mostly a frontend change:
 this plugin streams `{ stage, ... }` events over a `Channel`, while
-`@tauri-apps/plugin-updater` uses a `(downloaded, total)` callback — the
-progress UI has to be adapted, not just re-imported. Checklist:
+`@tauri-apps/plugin-updater` uses a `(downloaded, total)` callback. The npm
+package's `checkCompat()` returns the common official `Update` shape
+(`version` / `date` / `body` plus `downloadAndInstall` with
+`Started` / `Progress` / `Finished`), so the usual one-call flow only changes
+the import and the check call. The split `download()` + `install()` flow still
+maps to `prepare()` / `launch()`. Checklist:
 
 1. replace the capability with `delta-updater:default`;
-2. rewrite the progress listener to stage events;
+2. use `checkCompat()` or adapt the progress listener to stage events;
 3. exit after `Updated` / `RepairRequired` (the script waits for the old process);
 4. set `bundle_endpoint` if you ship sidecars or resources.
 
