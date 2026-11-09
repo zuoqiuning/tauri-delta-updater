@@ -863,18 +863,19 @@ mod tests {
     }
 
     /// 跨平台类型不匹配时必须明确报错，而不是尝试执行（CI 各平台都会跑）。
+    ///
+    /// 选一个**本平台不认识**的后缀：macOS 上 `.tar.gz` 是合法产物，
+    /// 会走解包而不是 PlatformMismatch，所以 macOS 用 Windows 的 `.msi`。
     #[test]
     fn mismatched_platform_kind_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
+        #[cfg(target_os = "macos")]
+        let file = dir.path().join("MyApp_1.2.3_x64_en-US.msi");
+        #[cfg(not(target_os = "macos"))]
         let file = dir.path().join("MyApp_1.2.3.tar.gz");
-        std::fs::write(&file, b"not a real archive").unwrap();
+        std::fs::write(&file, b"not a real installer").unwrap();
         let exe = dir.path().join("app");
 
-        #[cfg(target_os = "windows")]
-        let err = install(&exe, &file, dir.path(), ScriptTimings::default()).unwrap_err();
-        #[cfg(target_os = "linux")]
-        let err = install(&exe, &file, dir.path(), ScriptTimings::default()).unwrap_err();
-        #[cfg(target_os = "macos")]
         let err = install(&exe, &file, dir.path(), ScriptTimings::default()).unwrap_err();
 
         assert!(
