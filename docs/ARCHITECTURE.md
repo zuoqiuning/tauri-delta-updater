@@ -85,12 +85,20 @@ install()
 
 ## 7. 发布端
 
-`generate` 与 `cargo delta release` 共用 `release::run_release`：
+`generate` 与 `cargo delta release` 共用 `release::run_release`，按五阶段执行：
+
+1. `prepare_context`：校验参数、规范化版本/通道、加载密钥、计算哈希；
+2. `prepare_manifest`：读取旧清单并写入本次平台条目；
+3. 补丁生成：单文件补丁逐个真实应用验证；
+4. `finalize_manifest`：合并历史补丁链、签名安装包与清单；
+5. `write_outputs`：写清单/签名/公钥/SHA256SUMS/报告/归档。
 
 - 每个补丁真实应用并校验产物哈希，坏补丁在 CI 失败；
 - 清单签名覆盖最终内容，`tdu:v=` 写入 trusted comment；
 - 整包补丁写入独立签名的 `latest.bundle.json`；
 - `doctor` 在发布后验证线上桶（签名、体积、哈希、链可达性）。
+- 互斥锁默认只覆盖用户工作目录；`lock_scope = "install_dir"` 会在安装目录
+  额外加一把跨用户锁（目录只读时退回并告警）。
 
 ## 8. 安全边界（摘要）
 
