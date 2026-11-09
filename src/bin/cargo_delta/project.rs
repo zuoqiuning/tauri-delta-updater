@@ -121,21 +121,12 @@ impl Project {
                     }
                 }
             }
-            if let Some(signature) = delta.get("signature_url").and_then(Value::as_str) {
-                if let Some(issue) = endpoint_issue(signature, allow_insecure) {
-                    missing.push(format!("signature_url: {issue}"));
-                }
-            }
-            if let Some(bundle) = delta.get("bundle_endpoint").and_then(Value::as_str) {
-                if let Some(issue) = endpoint_issue(bundle, allow_insecure) {
-                    missing.push(format!("bundle_endpoint: {issue}"));
-                }
-            }
             if let Some(pubkey) = delta.get("pubkey").and_then(Value::as_str) {
                 if let Some(issue) = pubkey_issue(pubkey) {
                     missing.push(format!("pubkey: {issue}"));
                 }
             }
+            missing.extend(config_value_issues(delta, allow_insecure));
         }
 
         let (_, capability) = read_json_or(&self.capability_path, json!({}))?;
@@ -443,6 +434,241 @@ fn pubkey_issue(input: &str) -> Option<String> {
         .map(|err| err.to_string())
 }
 
+/// 配置字段的类型、枚举与占位符依赖校验。
+///
+/// 接受范围与插件启动时的反序列化保持一致；这里只做保守校验，
+/// 目的是让 CI 在接入阶段就发现写错的值，而不是等应用启动后
+/// 变成“更新器不可用”。
+fn config_value_issues(delta: &Map<String, Value>, allow_insecure: bool) -> Vec<String> {
+    let mut issues = Vec::new();
+
+    for key in ["work_dir", "install_id"] {
+        match delta.get(key) {
+            None => {}
+            Some(Value::String(text)) if text.trim().is_empty() => {
+                issues.push(format!("{key} 不能为空"))
+            }
+            Some(Value::String(_)) => {}
+            Some(_) => issues.push(format!("{key} 必须是字符串")),
+        }
+    }
+
+    for (key, what) in [
+        ("signature_url", "签名地址"),
+        ("bundle_endpoint", "整包清单地址"),
+    ] {
+        match delta.get(key) {
+            None => {}
+            Some(Value::String(url)) => {
+                if let Some(issue) = endpoint_issue(url, allow_insecure) {
+                    issues.push(format!("{key}: {issue}"));
+                }
+            }
+            Some(_) => issues.push(format!("{key} 必须是字符串（{what}）")),
+        }
+    }
+
+    match delta.get("additional_pubkeys") {
+        None => {}
+        Some(Value::Array(keys)) => {
+            for (index, key) in keys.iter().enumerate() {
+                match key.as_str() {
+                    Some(key) => {
+                        if let Some(issue) = pubkey_issue(key) {
+                            issues.push(format!("additional_pubkeys[{index}]: {issue}"));
+                        }
+                    }
+                    None => issues.push(format!("additional_pubkeys[{index}] 不是字符串")),
+                }
+            }
+        }
+        Some(_) => issues.push("additional_pubkeys 必须是字符串数组".to_string()),
+    }
+
+    for key in [
+        "allow_legacy_signatures",
+        "allow_insecure_transport",
+        "install_on_next_launch",
+        "rollback_notice",
+        "dangerousInsecureTransportProtocol",
+    ] {
+        if delta.get(key).is_some_and(|value| !value.is_boolean()) {
+            issues.push(format!("{key} 必须是布尔值"));
+        }
+    }
+
+    for key in ["wait_timeout_secs", "confirm_timeout_secs"] {
+        match delta.get(key) {
+            None => {}
+            Some(value) => match value.as_u64() {
+                Some(0) => issues.push(format!("{key} 必须大于 0")),
+                Some(_) => {}
+                None => issues.push(format!("{key} 必须是正整数")),
+            },
+        }
+    }
+
+    if let Some(value) = delta.get("headers") {
+        match value.as_object() {
+            Some(headers) => {
+                for (name, value) in headers {
+                    if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                        issues.push(format!("headers.{name} 不是合法的请求头名"));
+                    }
+                    if value.as_str().is_none() {
+                        issues.push(format!("headers.{name} 必须是字符串"));
+                    }
+                }
+            }
+            None => issues.push("headers 必须是对象（字符串到字符串）".to_string()),
+        }
+    }
+
+    if let Some(value) = delta.get("proxy") {
+        match value.as_str() {
+            Some(proxy) if !proxy.trim().is_empty() => {
+                if let Err(err) = reqwest::Proxy::all(proxy.trim()) {
+                    issues.push(format!("proxy 非法: {err}"));
+                }
+            }
+            Some(_) => {}
+            None => issues.push("proxy 必须是字符串".to_string()),
+        }
+    }
+
+    if let Some(value) = delta.get("installer_args") {
+        issues.extend(string_array_issues(value, "installer_args"));
+    }
+
+    check_enum(
+        delta,
+        "trust_policy",
+        &["any", "any_of", "all", "all_of"],
+        &mut issues,
+    );
+    check_enum(
+        delta,
+        "fallback_policy",
+        &["transport", "on_transport_error", "any", "on_any_failure"],
+        &mut issues,
+    );
+    check_enum(
+        delta,
+        "install_mode",
+        &["passive", "basicui", "basic_ui", "basic", "quiet", "silent"],
+        &mut issues,
+    );
+    check_enum(
+        delta,
+        "installer_kind",
+        &["inno", "nsis", "msi"],
+        &mut issues,
+    );
+
+    if let Some(value) = delta.get("channel") {
+        match value.as_str() {
+            // 插件启动时会先转小写再校验，这里必须接受同样的写法。
+            Some(channel) if channel.trim().is_empty() => {}
+            Some(channel)
+                if channel.trim().to_ascii_lowercase().chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'
+                }) => {}
+            Some(channel) => issues.push(format!(
+                "channel 非法: {channel:?}（只允许字母、数字、- 与 _）"
+            )),
+            None => issues.push("channel 必须是字符串".to_string()),
+        }
+    }
+
+    match delta.get("bundle_type") {
+        None => {}
+        Some(Value::String(text)) if text.trim().is_empty() => {
+            issues.push("bundle_type 不能为空".to_string())
+        }
+        Some(Value::String(_)) => {}
+        Some(_) => issues.push("bundle_type 必须是字符串".to_string()),
+    }
+
+    // 官方 windows 嵌套字段：插件会自动迁移，类型错误同样应在 CI 拦下。
+    if let Some(windows) = delta.get("windows") {
+        match windows.as_object() {
+            Some(windows) => {
+                if let Some(value) = windows.get("installMode") {
+                    match value.as_str() {
+                        Some(mode) => {
+                            let normalized = mode.trim().to_ascii_lowercase();
+                            if !["passive", "basicui", "basic_ui", "basic", "quiet", "silent"]
+                                .contains(&normalized.as_str())
+                            {
+                                issues.push(format!("windows.installMode 非法: {mode:?}"));
+                            }
+                        }
+                        None => issues.push("windows.installMode 必须是字符串".to_string()),
+                    }
+                }
+                if let Some(value) = windows.get("installerArgs") {
+                    issues.extend(string_array_issues(value, "windows.installerArgs"));
+                }
+            }
+            None => issues.push("windows 必须是对象".to_string()),
+        }
+    }
+
+    // {{bundle_type}} 依赖显式的 bundle_type；否则运行时请求会带着花括号。
+    let has_bundle_type = delta
+        .get("bundle_type")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty());
+    let mut urls: Vec<&str> = Vec::new();
+    if let Some(endpoints) = delta.get("endpoints").and_then(Value::as_array) {
+        urls.extend(endpoints.iter().filter_map(Value::as_str));
+    }
+    for key in ["signature_url", "bundle_endpoint"] {
+        if let Some(url) = delta.get(key).and_then(Value::as_str) {
+            urls.push(url);
+        }
+    }
+    if !has_bundle_type && urls.iter().any(|url| url.contains("{{bundle_type}}")) {
+        issues.push(
+            "端点使用 {{bundle_type}}，但缺少 bundle_type 配置（nsis / msi / appimage / app）"
+                .to_string(),
+        );
+    }
+
+    issues
+}
+
+/// 枚举字段校验（大小写不敏感，空值不算缺失）。
+fn check_enum(delta: &Map<String, Value>, key: &str, allowed: &[&str], issues: &mut Vec<String>) {
+    let Some(value) = delta.get(key) else {
+        return;
+    };
+    match value.as_str() {
+        Some(text) if allowed.contains(&text.trim().to_ascii_lowercase().as_str()) => {}
+        Some(text) => issues.push(format!(
+            "{key} 非法: {text:?}（可选: {}）",
+            allowed.join(" / ")
+        )),
+        None => issues.push(format!("{key} 必须是字符串")),
+    }
+}
+
+/// 字符串数组校验（含 NUL 检查）。
+fn string_array_issues(value: &Value, label: &str) -> Vec<String> {
+    match value.as_array() {
+        Some(items) => items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| match item.as_str() {
+                Some(arg) if arg.contains('\0') => Some(format!("{label}[{index}] 不能包含 NUL")),
+                Some(_) => None,
+                None => Some(format!("{label}[{index}] 不是字符串")),
+            })
+            .collect(),
+        None => vec![format!("{label} 必须是字符串数组")],
+    }
+}
+
 fn read_json_or(path: &Path, default: Value) -> Result<(String, Value), String> {
     if !path.is_file() {
         return Ok((String::new(), default));
@@ -631,9 +857,10 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        dependency_is_stale, endpoint_issue, ensure_dependency, has_dependency, minor_requirement,
-        pick_capability, pubkey_issue,
+        config_value_issues, dependency_is_stale, endpoint_issue, ensure_dependency,
+        has_dependency, minor_requirement, pick_capability, pubkey_issue,
     };
+    use serde_json::json;
 
     /// 端点静态校验必须在离线 CI 中拦下错 scheme 与非回环明文 HTTP。
     #[test]
@@ -663,6 +890,84 @@ mod tests {
         assert!(pubkey_issue("PK").is_some());
         assert!(pubkey_issue("BASE64_PUBLIC_KEY").is_some());
         assert!(pubkey_issue("   ").is_some());
+    }
+
+    /// 合法配置不得被 schema 校验误报。
+    #[test]
+    fn accepts_valid_config_values() {
+        let value = json!({
+            "endpoints": ["https://cdn.example.com/{{channel}}/latest.json"],
+            "trust_policy": "all_of",
+            "fallback_policy": "on_any_failure",
+            "install_mode": "basicUi",
+            "installer_kind": "inno",
+            "channel": "Beta",
+            "bundle_type": "nsis",
+            "allow_legacy_signatures": false,
+            "allow_insecure_transport": false,
+            "install_on_next_launch": true,
+            "rollback_notice": false,
+            "wait_timeout_secs": 20,
+            "confirm_timeout_secs": 120,
+            "work_dir": "/tmp/tdx",
+            "install_id": "host-id",
+            "signature_url": "http://127.0.0.1:8080/latest.json.sig",
+            "bundle_endpoint": "https://cdn.example.com/latest.bundle.json",
+            "headers": { "X-Auth": "token" },
+            "proxy": "http://127.0.0.1:7890",
+            "installer_args": ["/NORESTART", "/LANG=en"],
+            "windows": {
+                "installMode": "quiet",
+                "installerArgs": ["/LANG=en"]
+            }
+        });
+        let map = value.as_object().unwrap().clone();
+        assert_eq!(config_value_issues(&map, false), Vec::<String>::new());
+    }
+
+    /// 类型、枚举、代理与占位符依赖写错时，必须一次列清楚。
+    #[test]
+    fn reports_invalid_config_values() {
+        let value = json!({
+            "endpoints": ["https://cdn.example.com/{{bundle_type}}/latest.json"],
+            "trust_policy": "majority",
+            "fallback_policy": "sometimes",
+            "install_mode": "silentish",
+            "installer_kind": "innosetup",
+            "channel": "be ta",
+            "proxy": "http://[",
+            "headers": { "X-Auth": 1, "Bad Header": "x" },
+            "additional_pubkeys": ["PK"],
+            "installer_args": ["bad\0arg"],
+            "wait_timeout_secs": 0,
+            "windows": {
+                "installMode": "weird",
+                "installerArgs": [42]
+            }
+        });
+        let map = value.as_object().unwrap().clone();
+        let issues = config_value_issues(&map, false);
+        for expected in [
+            "trust_policy",
+            "fallback_policy",
+            "install_mode",
+            "installer_kind",
+            "channel",
+            "proxy",
+            "headers.X-Auth",
+            "请求头名",
+            "additional_pubkeys[0]",
+            "installer_args[0]",
+            "wait_timeout_secs",
+            "bundle_type",
+            "windows.installMode",
+            "windows.installerArgs[0]",
+        ] {
+            assert!(
+                issues.iter().any(|issue| issue.contains(expected)),
+                "缺少 {expected} 的错误: {issues:?}"
+            );
+        }
     }
 
     /// 多 capability 项目必须复用已有文件，而不是另建 `default.json`。

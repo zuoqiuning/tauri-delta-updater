@@ -20,6 +20,8 @@
   写入配置，避免手抄长串公钥。
 - `cargo delta init --check` 的 capability 错误点名实际使用的文件
   （`main.json` 等），不再误导到 `default.json`。
+- `cargo delta init --check` 增加配置 schema 校验：字段类型、枚举、代理/
+  请求头、超时、`{{bundle_type}}` 依赖与官方 `windows` 嵌套字段。
 - 新增 `cargo delta doctor --from-config`：直接读取项目配置（含官方
   `plugins.updater` 回退、占位符展开、签名/整包地址、请求头与信任策略），
   发布后无需重复复制 URL/公钥即可体检线上源。
