@@ -18,9 +18,9 @@
   签名走 HTTP 的降级窗口。
 - 插件配置 `proxy` / `headers` 自建客户端时恢复默认连接/读空闲超时
   （15s / 60s），弱网或黑洞端点不再无限挂起。
-- 从官方 updater 迁移时，`windows.installMode` 与
-  `dangerousInsecureTransportProtocol` 不再静默失效：启动警告会指出对应的
-  `install_mode` / `allow_insecure_transport`（HTTPS 部署不产生噪音）。
+- 从官方 updater 迁移时，`windows.installMode` / `windows.installerArgs`
+  自动映射到 `install_mode` / `installer_args`；`dangerousInsecureTransportProtocol`
+  仍只给出警告（HTTPS 部署不产生噪音），不会静默开启明文传输。
 - 新增只读命令 `config_warnings`（TS：`configWarnings()`）：配置警告写入日志
   的同时保留在状态里，诊断页可随时读取，不依赖可能错过的启动事件。
 - Unix 替换在 `cp` 中途失败时无条件用备份还原，半截目标不再被当旧版本启动。
@@ -49,7 +49,10 @@
   与前端类型同步。
 - 新增公共入口：`default_signature_url`、`manifest_version_bindings`、
   `verify_file_signature_multi_with_legacy`、`OsRequirement`、`validate_public_key`、
-  `default_client_builder`、`UpdateConfig::signature_url()`。
+  `default_client_builder`、`UpdateConfig::signature_url()`、
+  `UpdateConfig::installer_args()`、`install_with_mode_kind_and_args`。
+- Windows 全量安装支持额外参数（插件配置 `installer_args`，官方
+  `windows.installerArgs` 自动迁移）；含空格/引号自动加引号，NUL 在构造阶段拒绝。
 - 插件配置新增 `signature_url`：签名可独立托管，缺省仍按清单地址推导。
 - 新增 `UpdateResult::requires_exit()`：`Updated` / `RepairRequired` 为 `true`，
   宿主不必再自行维护需要退出的变体列表。

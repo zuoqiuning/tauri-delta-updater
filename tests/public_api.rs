@@ -31,6 +31,7 @@ const _: () = {
     use tauri_delta_updater::core::downloader::{prepare_resume, resume_fresh};
     use tauri_delta_updater::core::rollout::{bucket, load_or_create_install_id, selected};
     use tauri_delta_updater::host_version;
+    use tauri_delta_updater::platform::full_install::install_with_mode_kind_and_args;
     use tauri_delta_updater::platform::target::current_platform as platform_key;
     use tauri_delta_updater::platform::ScriptTimings as PlatformTimings;
 };

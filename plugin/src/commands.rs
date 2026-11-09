@@ -267,6 +267,7 @@ pub fn init<R: Runtime>(config: UpdateConfig) -> TauriPlugin<R> {
 ///       "fallback_policy": "transport",
 ///       "install_mode": "passive",
 ///       "installer_kind": "inno",
+///       "installer_args": ["/NORESTART"],
 ///       "allow_insecure_transport": false,
 ///       "rollback_notice": true
 ///     }

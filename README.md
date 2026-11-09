@@ -156,7 +156,9 @@ private CDNs, e.g. `{"Authorization": "Bearer ..."}`), `allow_legacy_signatures`
 `fallback_policy` (`transport` / `any`), `install_mode` (`passive` / `basicUi` /
 `quiet`), `installer_kind` (`inno` for Inno Setup builds; NSIS / MSI are inferred
 from the `.exe` / `.msi` suffix, and plain `.exe` files are scanned for
-Inno/NSIS markers before defaulting to NSIS), `allow_insecure_transport` (`false` by default;
+Inno/NSIS markers before defaulting to NSIS), `installer_args` (extra Windows
+installer arguments appended after the engine's flags; spaces are quoted
+automatically), `allow_insecure_transport` (`false` by default;
 non-loopback `http://` is rejected unless explicitly enabled), `bundle_type`,
 `install_id`,
 `install_on_next_launch` (install the staged update on the next start; off by
@@ -273,9 +275,11 @@ same `platforms[].signature`. Known boundaries:
   already running and **must relaunch the app itself**: NSIS receives `/R`; Inno
   must do it in `.iss` via `[Run]` **without** `skipifsilent`. The engine never
   relaunches on this path.
-- Official `windows.installMode` and `dangerousInsecureTransportProtocol` are
-  **not** consumed. The plugin logs a startup warning and keeps its safe defaults;
-  use the top-level `install_mode` / `allow_insecure_transport` instead.
+- Official `windows.installMode` and `windows.installerArgs` are migrated to the
+  top-level `install_mode` / `installer_args` automatically.
+  `dangerousInsecureTransportProtocol` is **not** consumed: the plugin logs a
+  startup warning and keeps its safe default; use `allow_insecure_transport`
+  instead.
 
 **Migration cost vs benefit.** The migration is mostly a **frontend rewrite**:
 this plugin streams `{ stage, ... }` events over a `Channel`, while

@@ -120,13 +120,33 @@ pub fn install_with_mode_and_kind(
     mode: InstallMode,
     kind: Option<InstallerKind>,
 ) -> Result<()> {
+    install_with_mode_kind_and_args(current_exe, installer, work_dir, timings, mode, kind, &[])
+}
+
+/// 与 [`install_with_mode_and_kind`] 相同，但可追加 Windows 安装器的额外参数。
+///
+/// `extra_args` 只对 Windows 的 NSIS / MSI / Inno 生效，其它平台忽略。
+/// 含空格或引号的参数会按 Windows 命令行规则自动加引号。
+pub fn install_with_mode_kind_and_args(
+    current_exe: &Path,
+    installer: &Path,
+    work_dir: &Path,
+    timings: ScriptTimings,
+    mode: InstallMode,
+    kind: Option<InstallerKind>,
+    extra_args: &[String],
+) -> Result<()> {
     let kind = resolve_kind(installer, kind)?;
+    // 先在所有平台完成校验与拼接：NUL 参数在非 Windows 平台也应尽早失败。
+    let extra = render_extra_args(extra_args)?;
+    #[cfg(not(target_os = "windows"))]
+    let _ = extra;
     match kind {
         InstallerKind::Nsis | InstallerKind::Msi | InstallerKind::Inno => {
             #[cfg(target_os = "windows")]
             {
                 let _ = (current_exe, work_dir, timings);
-                windows::launch_with_kind(installer, mode, kind)
+                windows::launch_with_kind(installer, mode, kind, &extra)
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -170,6 +190,62 @@ pub fn install_with_mode_and_kind(
             installer.display()
         ))),
     }
+}
+
+/// 拼接 Windows 安装器的额外参数；含空格或引号的参数自动加引号。
+///
+/// 返回空串表示没有额外参数。NUL 会截断 `ShellExecute` 的命令行，
+/// 因此在这里拒绝（构造阶段已先检查一次，这里是低层 API 的第二道防线）。
+fn render_extra_args(args: &[String]) -> Result<String> {
+    let mut rendered = String::new();
+    for arg in args {
+        if arg.contains('\0') {
+            return Err(crate::error::DeltaError::Config(
+                "installer_args 不能包含 NUL 字符（会截断 Windows 命令行）".into(),
+            ));
+        }
+        if arg.is_empty() {
+            continue;
+        }
+        if !rendered.is_empty() {
+            rendered.push(' ');
+        }
+        if arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
+            rendered.push_str(&quote_windows_arg(arg));
+        } else {
+            rendered.push_str(arg);
+        }
+    }
+    Ok(rendered)
+}
+
+/// 按 Windows `CommandLineToArgvW` 规则给单个参数加引号。
+fn quote_windows_arg(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => {
+                backslashes += 1;
+                out.push('\\');
+            }
+            '"' => {
+                // 已有 n 个反斜杠，再加 n+1 个（共 2n+1）后输出字面引号。
+                out.push_str(&"\\".repeat(backslashes + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.push(ch);
+                backslashes = 0;
+            }
+        }
+    }
+    // 结尾反斜杠必须在右引号前翻倍，否则会被当作转义。
+    out.push_str(&"\\".repeat(backslashes));
+    out.push('"');
+    out
 }
 
 /// 解析最终使用的安装器类型，并校验配置项与文件后缀的一致性。
@@ -287,22 +363,36 @@ mod windows {
     }
 
     /// 用已知类型启动安装器（Inno 与 NSIS 同为 `.exe`，不能重新推断）。
+    ///
+    /// `extra_args` 已由调用方校验并按 Windows 命令行规则加好引号。
     pub fn launch_with_kind(
         installer: &Path,
         mode: InstallMode,
         kind: InstallerKind,
+        extra_args: &str,
     ) -> Result<()> {
+        let append = |base: String| -> String {
+            if extra_args.is_empty() {
+                base
+            } else {
+                format!("{base} {extra_args}")
+            }
+        };
         let (file, params): (PathBuf, String) = match kind {
             // 与官方 updater 一致：默认被动模式 + `/UPDATE` 告诉 Tauri 的
             // NSIS 安装器这是更新而不是首次安装；`/R` 让安装完成后重新启动应用。
-            InstallerKind::Nsis => (installer.to_path_buf(), nsis_parameters(mode)),
+            InstallerKind::Nsis => (installer.to_path_buf(), append(nsis_parameters(mode))),
             // MSI 用相同语义的安装模式，`AUTOLAUNCHAPP` 让安装器重新启动应用。
             InstallerKind::Msi => (
                 PathBuf::from("msiexec.exe"),
-                format!("/i \"{}\" {}", installer.display(), msi_parameters(mode)),
+                append(format!(
+                    "/i \"{}\" {}",
+                    installer.display(),
+                    msi_parameters(mode)
+                )),
             ),
             // Inno 的 `/UPDATE` / `/R` 语义由 `.iss` 脚本承担，没有对应命令行参数。
-            InstallerKind::Inno => (installer.to_path_buf(), inno_parameters(mode)),
+            InstallerKind::Inno => (installer.to_path_buf(), append(inno_parameters(mode))),
             other => {
                 return Err(DeltaError::FullInstallFailed(format!(
                     "不支持的全量安装包类型（{other:?}）：{}",
@@ -488,7 +578,7 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
-    use super::{install, installer_kind, resolve_kind, InstallerKind};
+    use super::{install, installer_kind, render_extra_args, resolve_kind, InstallerKind};
     use crate::error::DeltaError;
     use crate::platform::ScriptTimings;
     use std::path::Path;
@@ -660,6 +750,30 @@ mod tests {
             err.to_string().contains("installer_kind"),
             "错误必须点名字段: {err}"
         );
+    }
+
+    /// 额外参数按 Windows 命令行规则拼接；含空格/引号自动加引号，NUL 拒绝。
+    #[test]
+    fn extra_installer_arguments_are_quoted_and_joined() {
+        assert_eq!(render_extra_args(&[]).unwrap(), "");
+        assert_eq!(
+            render_extra_args(&["/NORESTART".into(), "/LANG=en".into()]).unwrap(),
+            "/NORESTART /LANG=en"
+        );
+        assert_eq!(
+            render_extra_args(&["/D=C:\\Program Files\\App".into()]).unwrap(),
+            "\"/D=C:\\Program Files\\App\""
+        );
+        assert_eq!(
+            render_extra_args(&["/X=\"quoted\"".into()]).unwrap(),
+            "\"/X=\\\"quoted\\\"\""
+        );
+        assert_eq!(
+            render_extra_args(&["".into(), "/A".into()]).unwrap(),
+            "/A",
+            "空参数不得产生多余空格"
+        );
+        assert!(render_extra_args(&["bad\0arg".into()]).is_err());
     }
 
     /// 未知类型绝不执行：宁可报错，也不要把任意文件丢进 ShellExecute。

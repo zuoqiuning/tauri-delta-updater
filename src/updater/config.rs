@@ -168,6 +168,19 @@ pub struct UpdateConfig {
     /// 消费。宿主若继续用官方 `tauri-plugin-updater` 执行全量安装，
     /// 这里配置什么都不会生效：官方插件只会按 NSIS 参数调用安装包。
     pub installer_kind: Option<InstallerKind>,
+    /// Windows 全量安装器的额外命令行参数，默认空。
+    ///
+    /// 追加在引擎固定的静默/重启参数之后（NSIS `/P /UPDATE /R`、MSI
+    /// `AUTOLAUNCHAPP=True`、Inno `/SILENT ...`），只被
+    /// [`crate::DeltaUpdater::install_full`] 消费，增量路径不使用。
+    /// 其它平台忽略该字段。
+    ///
+    /// 含空格的参数会自动按 Windows 命令行规则加引号；包含 NUL 的配置
+    /// 会在构造阶段被拒绝（NUL 会截断传递给安装器的命令行）。
+    ///
+    /// 官方 `tauri-plugin-updater` 的 `windows.installerArgs` 对应本字段；
+    /// 插件配置会自动迁移它。
+    pub installer_args: Vec<String>,
     /// 是否允许明文 HTTP 端点，默认 `false`。
     ///
     /// 默认拒绝非回环地址的 `http://`；本地开发/内网测试可显式设为 `true`。
@@ -217,6 +230,7 @@ impl UpdateConfig {
             headers: Vec::new(),
             install_mode: InstallMode::default(),
             installer_kind: None,
+            installer_args: Vec::new(),
             allow_insecure_transport: false,
             install_on_next_launch: false,
             rollback_notice: true,
@@ -352,6 +366,14 @@ impl UpdateConfig {
     /// 安装阶段会返回 [`crate::DeltaError::Config`]。
     pub fn installer_kind(mut self, kind: InstallerKind) -> Self {
         self.installer_kind = Some(kind);
+        self
+    }
+
+    /// 设置 Windows 全量安装器的额外命令行参数。
+    ///
+    /// 追加在引擎固定的静默/重启参数之后；只在 `install_full()` 生效。
+    pub fn installer_args(mut self, args: Vec<String>) -> Self {
+        self.installer_args = args;
         self
     }
 

@@ -409,6 +409,7 @@ mod tests {
             "headers": { "X-Auth": "token" },
             "install_mode": "quiet",
             "installer_kind": "inno",
+            "installer_args": ["/NORESTART", "/LANG=en"],
             "allow_insecure_transport": false,
             "install_on_next_launch": true,
             "rollback_notice": false,
@@ -449,6 +450,11 @@ mod tests {
             FallbackPolicy::OnAnyFailure
         ));
         assert_eq!(config.install_mode, InstallMode::Quiet);
+        assert_eq!(
+            config.installer_args,
+            vec!["/NORESTART".to_string(), "/LANG=en".to_string()],
+            "额外安装器参数必须能从配置注入"
+        );
         assert_eq!(
             config.installer_kind,
             Some(tauri_delta_updater::InstallerKind::Inno),
@@ -497,30 +503,76 @@ mod tests {
     }
 
     /// 官方配置里的额外字段（windows/dmg 等）必须被忽略而不是报错；
-    /// 语义会影响行为的字段要给出迁移提示，不能静默丢弃。
+    /// `windows.installMode` / `windows.installerArgs` 语义相同，应自动迁移，
+    /// 只有危险的明文开关需要显式提示。
     #[test]
-    fn file_config_ignores_official_extra_fields() {
+    fn file_config_migrates_official_extra_fields() {
         let value = serde_json::json!({
             "endpoints": ["http://cdn.example.com/latest.json"],
             "pubkey": "RWQ...",
-            "windows": { "installMode": "quiet" },
+            "windows": {
+                "installMode": "quiet",
+                "installerArgs": ["/LANG=en", "/D=C:\\Program Files\\App"]
+            },
             "dangerousInsecureTransportProtocol": true
         });
         let file: FileConfig = serde_json::from_value(value).unwrap();
         assert!(file.bundle_endpoint.is_none());
         let warnings = file.unknown_field_warnings();
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(
-            warnings.iter().any(|w| w.contains("installMode")),
-            "官方安装模式必须提示改写: {warnings:?}"
-        );
+        assert_eq!(warnings.len(), 1, "只有明文开关需要提示: {warnings:?}");
         assert!(
             warnings
                 .iter()
                 .any(|w| w.contains("dangerousInsecureTransportProtocol")),
-            "官方明文开关必须提示改写: {warnings:?}"
+            "{warnings:?}"
         );
-        assert!(file.into_update_config("1.0.0").is_ok());
+
+        let config = file.into_update_config("1.0.0").unwrap();
+        assert_eq!(
+            config.install_mode,
+            tauri_delta_updater::InstallMode::Quiet,
+            "官方 windows.installMode 必须自动迁移"
+        );
+        assert_eq!(
+            config.installer_args,
+            vec![
+                "/LANG=en".to_string(),
+                "/D=C:\\Program Files\\App".to_string()
+            ],
+            "官方 windows.installerArgs 必须自动迁移"
+        );
+    }
+
+    /// 顶层字段优先于官方嵌套字段；官方参数类型错误必须在启动阶段报错。
+    #[test]
+    fn flat_fields_override_official_windows_config() {
+        let value = serde_json::json!({
+            "endpoints": ["https://cdn.example.com/latest.json"],
+            "pubkey": "PK",
+            "install_mode": "basicUi",
+            "installer_args": ["/FLAT"],
+            "windows": {
+                "installMode": "quiet",
+                "installerArgs": ["/NESTED"]
+            }
+        });
+        let file: FileConfig = serde_json::from_value(value).unwrap();
+        let config = file.into_update_config("1.0.0").unwrap();
+        assert_eq!(
+            config.install_mode,
+            tauri_delta_updater::InstallMode::BasicUi,
+            "顶层 install_mode 必须优先"
+        );
+        assert_eq!(config.installer_args, vec!["/FLAT".to_string()]);
+
+        let value = serde_json::json!({
+            "endpoints": ["https://cdn.example.com/latest.json"],
+            "pubkey": "PK",
+            "windows": { "installerArgs": [42] }
+        });
+        let file: FileConfig = serde_json::from_value(value).unwrap();
+        let err = file.into_update_config("1.0.0").unwrap_err();
+        assert!(err.contains("installerArgs"), "{err}");
     }
 
     /// 已显式使用本插件字段、或部署为 HTTPS 时，官方字段不得产生噪音。
@@ -555,6 +607,21 @@ mod tests {
         assert!(warnings[0].contains("bundle_endpont"), "{warnings:?}");
     }
 
+    /// 顶层 `installerArgs` 不是官方写法（官方是 `windows.installerArgs`），
+    /// 必须提示改用 `installer_args`，而不是静默忽略。
+    #[test]
+    fn top_level_camel_case_installer_args_is_reported() {
+        let value = serde_json::json!({
+            "endpoints": ["https://cdn.example.com/latest.json"],
+            "pubkey": "PK",
+            "installerArgs": ["/NORESTART"]
+        });
+        let file: FileConfig = serde_json::from_value(value).unwrap();
+        let warnings = file.unknown_field_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("installerArgs"), "{warnings:?}");
+    }
+
     /// endpoints 为空时必须明确报错，而不是静默退化成"永远没有更新"。
     #[test]
     fn empty_endpoints_is_rejected() {
@@ -577,6 +644,7 @@ mod tests {
             headers: None,
             install_mode: None,
             installer_kind: None,
+            installer_args: None,
             allow_insecure_transport: None,
             install_on_next_launch: None,
             rollback_notice: None,

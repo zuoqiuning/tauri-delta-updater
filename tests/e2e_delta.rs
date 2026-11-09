@@ -1292,6 +1292,24 @@ fn test_new_rejects_empty_manifest_url_and_key() {
     }
 }
 
+/// 安装器参数里的 NUL 会截断 Windows 命令行，必须在构造阶段拒绝。
+#[test]
+fn test_new_rejects_nul_in_installer_args() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app");
+    std::fs::write(&exe, b"app").unwrap();
+
+    let err = DeltaUpdater::new(
+        UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
+            .current_version("1.0.0")
+            .executable_path(&exe)
+            .work_dir(dir.path())
+            .installer_args(vec!["bad\0arg".into()]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("installer_args"), "{err}");
+}
+
 /// 平台标识必须与 Tauri 的 target 命名一致。
 #[test]
 fn test_current_platform_matches_tauri_convention() {
@@ -1344,6 +1362,10 @@ fn test_update_config_has_sensible_defaults() {
     );
     assert_eq!(config.wait_timeout_secs, 60);
     assert_eq!(config.confirm_timeout_secs, 60);
+    assert!(
+        config.installer_args.is_empty(),
+        "Windows 安装器额外参数默认应为空"
+    );
 
     // 链式设置
     let config = config

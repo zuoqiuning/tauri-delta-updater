@@ -157,6 +157,12 @@ impl DeltaUpdater {
                 "wait_timeout_secs / confirm_timeout_secs 必须大于 0".into(),
             ));
         }
+        // NUL 会截断最终传给安装器的命令行：提前拒绝，避免参数被悄悄丢掉。
+        if config.installer_args.iter().any(|arg| arg.contains('\0')) {
+            return Err(DeltaError::Config(
+                "installer_args 不能包含 NUL 字符（会截断 Windows 命令行）".into(),
+            ));
+        }
         semver::Version::parse(&config.current_version).map_err(|e| {
             DeltaError::Config(format!(
                 "current_version {:?} 不是合法的语义化版本（应形如 1.2.3）: {e}",

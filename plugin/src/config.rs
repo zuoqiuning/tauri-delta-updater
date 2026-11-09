@@ -9,9 +9,10 @@ use tauri_delta_updater::{FallbackPolicy, InstallMode, InstallerKind, TrustPolic
 /// `tauri.conf.json` 里 `plugins.delta-updater` 的配置。
 ///
 /// 字段与官方 updater 的配置兼容：`endpoints` + `pubkey` 可以直接复用，
-/// 迁移时不必改配置。官方配置里的 `windows` / `dmg` 等字段会被忽略；
-/// 其中语义差异会影响行为的字段（`windows.installMode`、
-/// `dangerousInsecureTransportProtocol`）会在启动警告中提示改写到本插件字段。
+/// 迁移时不必改配置。官方配置里的 `windows.installMode` /
+/// `windows.installerArgs` 会自动迁移到对应的顶层字段；其它官方字段
+/// （`dmg` 等）会被忽略。`dangerousInsecureTransportProtocol` 不会自动开启
+/// 明文传输，启动警告会提示改用 `allow_insecure_transport`。
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct FileConfig {
     /// 清单地址。与官方一致用数组：第一个是主端点，其余作为备用端点。
@@ -74,6 +75,11 @@ pub(crate) struct FileConfig {
     /// `nsis` / `msi` 可省略（按文件后缀推断）。
     #[serde(default)]
     pub(crate) installer_kind: Option<String>,
+    /// 可选：Windows 安装器额外命令行参数，追加在固定静默/重启参数之后。
+    ///
+    /// 官方配置的 `windows.installerArgs` 会自动迁移到本字段。
+    #[serde(default)]
+    pub(crate) installer_args: Option<Vec<String>>,
     /// 可选：是否允许明文 HTTP 端点，默认 `false`（仅本地开发/内网测试可开启）。
     #[serde(default)]
     pub(crate) allow_insecure_transport: Option<bool>,
@@ -89,6 +95,10 @@ pub(crate) struct FileConfig {
 }
 
 /// 官方 `tauri-plugin-updater` 的字段：本插件有意忽略，不应报警告。
+///
+/// `windows` 是官方嵌套配置的载体；`windows.installMode` /
+/// `windows.installerArgs` 会被自动迁移到顶层字段。顶层的 `installerArgs`
+/// 不是官方写法，会按未知字段提示改用 `installer_args`。
 const OFFICIAL_KEYS: &[&str] = &[
     "windows",
     "linux",
@@ -96,16 +106,14 @@ const OFFICIAL_KEYS: &[&str] = &[
     "dmg",
     "nsis",
     "appimage",
-    "installerArgs",
     "dangerousInsecureTransportProtocol",
 ];
 
 impl FileConfig {
     /// 未知字段的启动警告（已排除官方 updater 的合法字段）。
     ///
-    /// 官方字段本身不报错，但**语义不同**的两项会额外提示：它们被忽略后
-    /// 行为会悄悄变化（安装模式丢失、明文端点被拒绝），迁移时必须显式改写。
-    ///
+    /// 官方字段本身不报错；`dangerousInsecureTransportProtocol` 的语义是
+    /// “允许明文传输”，不能静默继承，因此单独提示迁移时必须显式确认。
     /// 排序保证日志稳定，便于测试与 diff。
     pub(crate) fn unknown_field_warnings(&self) -> Vec<String> {
         let mut keys: Vec<&str> = self
@@ -123,19 +131,6 @@ impl FileConfig {
                 )
             })
             .collect();
-
-        // 官方 windows.installMode → 本插件顶层 install_mode。
-        if let Some(windows) = self
-            .extra
-            .get("windows")
-            .and_then(serde_json::Value::as_object)
-        {
-            if windows.get("installMode").is_some() && self.install_mode.is_none() {
-                warnings.push(
-                    "plugins.delta-updater.windows.installMode 不会生效：请改用顶层 install_mode（passive / basicUi / quiet）".into(),
-                );
-            }
-        }
 
         // 官方 dangerousInsecureTransportProtocol → 本插件 allow_insecure_transport。
         // 只在端点确实使用明文 HTTP 时提示：HTTPS 部署不受影响，
@@ -160,6 +155,46 @@ impl FileConfig {
 
     /// 转成库层配置。
     pub(crate) fn into_update_config(self, current_version: &str) -> Result<UpdateConfig, String> {
+        // 官方 windows.installMode / windows.installerArgs 与本插件语义一致，
+        // 直接迁移；顶层同名字段优先。类型错误在启动阶段报错，避免安装器
+        // 收到意料之外的参数。
+        let official_windows = self
+            .extra
+            .get("windows")
+            .and_then(serde_json::Value::as_object);
+        let official_install_mode = match official_windows.and_then(|w| w.get("installMode")) {
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .ok_or_else(|| {
+                        "plugins.delta-updater.windows.installMode 必须是字符串".to_string()
+                    })?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        let official_installer_args = match official_windows.and_then(|w| w.get("installerArgs")) {
+            Some(value) => {
+                let array = value.as_array().ok_or_else(|| {
+                    "plugins.delta-updater.windows.installerArgs 必须是字符串数组".to_string()
+                })?;
+                Some(
+                    array
+                        .iter()
+                        .map(|item| {
+                            item.as_str().map(str::to_string).ok_or_else(|| {
+                                "plugins.delta-updater.windows.installerArgs 必须是字符串数组"
+                                    .to_string()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                )
+            }
+            None => None,
+        };
+        let install_mode = self.install_mode.or(official_install_mode);
+        let installer_args = self.installer_args.or(official_installer_args);
+
         let mut endpoints = self.endpoints.into_iter();
         let primary = endpoints
             .next()
@@ -236,7 +271,7 @@ impl FileConfig {
             };
             config = config.fallback_policy(policy);
         }
-        if let Some(mode) = self.install_mode {
+        if let Some(mode) = install_mode {
             let mode = match mode.trim().to_ascii_lowercase().as_str() {
                 "passive" => InstallMode::Passive,
                 "basicui" | "basic_ui" | "basic" => InstallMode::BasicUi,
@@ -261,6 +296,9 @@ impl FileConfig {
                 }
             };
             config = config.installer_kind(kind);
+        }
+        if let Some(args) = installer_args {
+            config = config.installer_args(args);
         }
         if let Some(allow) = self.allow_insecure_transport {
             config = config.allow_insecure_transport(allow);
