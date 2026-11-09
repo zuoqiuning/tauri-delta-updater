@@ -8,6 +8,7 @@
 | --- | --- | --- | --- |
 | 检查更新（不下载） | `src/updater/flow.rs` (`check`) | `src/updater/fetch.rs`、`src/updater/outcome.rs` | `tests/e2e_delta.rs`、`tests/integration.rs` |
 | 单文件增量（补丁 → 替换） | `src/updater/delta.rs` (`run_locked`) | `src/updater/flow.rs`、`src/core/diff.rs` | `tests/e2e_delta.rs`、`tests/integration.rs` |
+| 补丁容器与并发预算（bsdiff / zstd / TDXB1） | `src/core/diff.rs`、`src/core/block_delta.rs` | `src/release/patches.rs`、`src/release/bundles.rs`、`src/bin/*/args.rs` | `src/core/diff.rs`、`src/core/block_delta.rs` 单测 |
 | 跨重启待安装（pending） | `src/updater/pending.rs` | `src/updater/{delta,bundle_flow}.rs`、`src/core/artifacts.rs` | `src/updater/pending.rs` 单测、`tests/e2e_delta.rs` |
 | 补丁规划（直达 / 多跳链 / 全量） | `src/updater/plan.rs` | `src/models/manifest.rs`、`src/release/patches.rs` | `src/updater/plan.rs` 单测、`src/release/patches.rs` 单测、`tests/e2e_delta.rs` |
 | 系统版本门槛（`min_os`） | `src/platform/os_version.rs` | `src/updater/{flow,delta}.rs`、`src/models/manifest.rs` | `src/platform/os_version.rs` 单测、`tests/e2e_delta.rs` |

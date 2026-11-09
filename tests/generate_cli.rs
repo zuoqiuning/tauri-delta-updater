@@ -452,6 +452,85 @@ fn test_generate_cli_supports_linux_binaries() {
     assert!(old_dir.join("0.1.0_to_0.1.1.patch").exists());
 }
 
+/// 多个基线并行生成：补丁、报告与清单必须完整且稳定。
+#[test]
+fn test_generate_cli_parallel_baselines() {
+    let dir = tempdir();
+    let old_dir = dir.join("old_binaries");
+    std::fs::create_dir_all(&old_dir).unwrap();
+
+    // 三个基线内容各不相同，确保三条补丁都真正生成
+    let versions = ["0.1.0", "0.1.1", "0.1.2"];
+    for (version, modulus) in versions.iter().zip([251u32, 239, 233]) {
+        let data: Vec<u8> = (0..48 * 1024u32).map(|i| (i % modulus) as u8).collect();
+        std::fs::write(old_dir.join(format!("App_{version}_x64.exe")), data).unwrap();
+    }
+    let new_bin = dir.join("App_0.2.0_x64.exe");
+    let new_data: Vec<u8> = (0..48 * 1024u32).map(|i| (i % 229) as u8).collect();
+    std::fs::write(&new_bin, &new_data).unwrap();
+
+    let (_sk, sk_text, _pk) = keypair();
+    let key_file = dir.join("key.msk");
+    std::fs::write(&key_file, sk_text.as_bytes()).unwrap();
+    let report = dir.join("report.json");
+
+    let args = vec![
+        "--old-dir".into(),
+        s(&old_dir),
+        "--app-binary".into(),
+        s(&new_bin),
+        "--version".into(),
+        "0.2.0".into(),
+        "--base-url".into(),
+        "https://cdn.example.com".into(),
+        "--private-key".into(),
+        s(&key_file),
+        "--platform".into(),
+        "windows-x86_64".into(),
+        "--report".into(),
+        s(&report),
+        "--jobs".into(),
+        "3".into(),
+    ];
+    let (code, stdout, stderr) = run_generate(&args, &dir);
+    assert_eq!(
+        code, 0,
+        "多基线并行生成必须成功\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    let patches = manifest["patches"]["windows-x86_64"]
+        .as_array()
+        .expect("清单必须包含补丁数组");
+    let mut from_versions: Vec<&str> = patches
+        .iter()
+        .map(|patch| patch["from_version"].as_str().unwrap())
+        .collect();
+    from_versions.sort_unstable();
+    assert_eq!(from_versions, versions, "三个基线都必须有补丁");
+
+    for version in versions {
+        assert!(
+            old_dir.join(format!("{version}_to_0.2.0.patch")).exists(),
+            "{version} 的补丁文件必须落盘"
+        );
+    }
+
+    let report_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+    assert_eq!(
+        report_json["patches"].as_array().map(|a| a.len()),
+        Some(3),
+        "报告必须完整记录三个基线: {report_json}"
+    );
+    assert_eq!(
+        report_json["skipped"].as_array().map(|a| a.len()),
+        Some(0),
+        "并行生成不应产生跳过记录"
+    );
+}
+
 /// `--dry-run` 只规划与验证，不写任何文件。
 #[test]
 fn test_generate_cli_dry_run_writes_nothing() {

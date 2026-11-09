@@ -62,6 +62,40 @@ rejection, Authenticode downgrade blocking on Windows, and a deterministic
 rollback path. Details and residual risks are documented in the README and this
 file.
 
+## Why the manifest itself is signed (CVE-2026-95625)
+
+`CVE-2026-95625` applies to the official `tauri-plugin-updater`: it verifies the
+downloaded installer with minisign, but the manifest that carries `version`,
+`url` and `signature` is fetched over TLS and never authenticated. Anti-rollback
+compares that **unsigned** version field, so an attacker who can serve a crafted
+manifest (compromised CDN/mirror, TLS-terminating proxy, cache poisoning) can
+force a downgrade to any older *signed* installer without holding the signing
+key.
+
+This crate's manifest is signed as a whole, and the chain is closed in four
+places:
+
+1. `latest.json` bytes are covered by a minisign signature (`.sig`), not just the
+   installer.
+2. The trusted comment carries `tdu:v=<version>`, which is compared against the
+   manifest's own `version`. A manifest cannot be replayed under another
+   version label, and a signature cannot be transplanted between versions.
+3. The downgrade guard runs in Rust (`models/manifest.rs`), not behind an IPC
+   switch reachable from the webview — the class of issue behind
+   `CVE-2026-95624`.
+4. `platforms[].signature`, `patches[].patch_hash` and
+   `patches[].target_hash` are inside the signed manifest. Patch application
+   verifies the downloaded patch hash and the reconstructed artifact hash, so a
+   swapped URL or patch cannot produce bytes the publisher did not sign for.
+
+Consequence for positioning: a wrapper such as `tauri-plugin-updater-delta`
+delegates `check`/`install` to the official plugin and therefore inherits the
+unsigned-manifest boundary. Signing the installer twice does not fix it; the
+manifest has to be signed.
+
+Residual risk: a leaked signing key, or a host that ships an attacker-controlled
+public key, defeats all of the above. See the rotation guidance below.
+
 ## Key rotation (`additional_public_keys` / `TrustPolicy`)
 
 - `AnyOf` (the default) accepts a valid signature from **any** trusted key.

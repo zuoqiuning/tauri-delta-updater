@@ -8,14 +8,99 @@ use tokio::fs;
 /// 补丁计算线程的栈大小。
 ///
 /// bsdiff 系列的差分算法递归深度与文件规模相关，栈不足会直接崩溃。
-/// 本库不支持同进程并发执行多个补丁任务：64 位下每个任务固定占用 512 MB
-/// 虚拟地址空间（提交内存按实际使用增长），并发两个即为 1 GB。
-/// 32 位进程地址空间只有 2–3 GB，预留 512 MB 会让线程创建直接失败，因此下调。
+/// 64 位下每个任务预留 512 MB 虚拟地址空间（**按需提交**，不占 RSS），
+/// 32 位进程地址空间只有 2–3 GB，因此下调到 64 MB。
 const WORKER_STACK_SIZE: usize = if cfg!(target_pointer_width = "64") {
     512 * 1024 * 1024
 } else {
     64 * 1024 * 1024
 };
+
+/// 补丁并发预算的最小分配单位（256 MiB）。
+///
+/// 限流按**预估工作集**加权：一个 20 MB 的可执行文件需要约 340 MB，
+/// 计 2 份；总预算 4 GiB 时最多 8 个任务同时运行。
+const PATCH_MEMORY_UNIT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// 默认内存预算（MiB）。可用 `TDX_PATCH_MEMORY_BUDGET_MB` 或
+/// [`configure_patch_concurrency`] 覆盖。
+const DEFAULT_PATCH_MEMORY_BUDGET_MB: u64 = 4096;
+
+/// 进程级补丁并发限制。
+///
+/// 并发上限由两个维度共同决定：内存（按工作集加权）与 CPU 核数。
+/// 只按 CPU 限流会让多个大基线同时差分、把 CI 机器打爆；只按内存限流
+/// 会让小基线挤占所有核心。两者同时约束才是安全且不浪费吞吐的组合。
+struct PatchLimiter {
+    memory: tokio::sync::Semaphore,
+    cpu: tokio::sync::Semaphore,
+    /// 内存许可总数，用于把单个超大任务钳制为"独占运行"。
+    memory_units: u32,
+}
+
+impl PatchLimiter {
+    fn new(jobs: Option<usize>, budget_mb: Option<u64>) -> Self {
+        let budget_mb = budget_mb
+            .filter(|v| *v > 0)
+            .unwrap_or(DEFAULT_PATCH_MEMORY_BUDGET_MB);
+        let memory_units =
+            ((budget_mb * 1024 * 1024) / PATCH_MEMORY_UNIT_BYTES).clamp(1, 4096) as u32;
+        let jobs = jobs
+            .filter(|v| *v > 0)
+            .unwrap_or_else(default_jobs)
+            .clamp(1, 64);
+        Self {
+            memory: tokio::sync::Semaphore::new(memory_units as usize),
+            cpu: tokio::sync::Semaphore::new(jobs),
+            memory_units,
+        }
+    }
+
+    /// 按预估工作集换算内存许可数；超出总预算时独占运行。
+    fn permits_for(&self, working_set: u64) -> u32 {
+        let units = working_set.div_ceil(PATCH_MEMORY_UNIT_BYTES).max(1);
+        units.min(u64::from(self.memory_units)) as u32
+    }
+}
+
+fn default_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+static PATCH_LIMITER: std::sync::OnceLock<PatchLimiter> = std::sync::OnceLock::new();
+
+fn patch_limiter() -> &'static PatchLimiter {
+    PATCH_LIMITER.get_or_init(|| {
+        PatchLimiter::new(
+            env_usize("TDX_PATCH_JOBS"),
+            env_u64("TDX_PATCH_MEMORY_BUDGET_MB"),
+        )
+    })
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+/// 配置补丁任务的并发上限与内存预算。
+///
+/// 必须在**第一次**补丁操作之前调用（发布 CLI 启动时即调用）；已经初始化后
+/// 返回 `false`，表示本次配置未生效。`None` 表示保留默认值：
+/// 内存 4 GiB、并发数等于 CPU 核数。
+///
+/// 环境变量 `TDX_PATCH_MEMORY_BUDGET_MB` / `TDX_PATCH_JOBS` 提供同等能力，
+/// 适合 CI 直接注入。
+pub fn configure_patch_concurrency(jobs: Option<usize>, memory_budget_mb: Option<u64>) -> bool {
+    PATCH_LIMITER
+        .set(PatchLimiter::new(jobs, memory_budget_mb))
+        .is_ok()
+}
 
 /// 增量更新适用的最大文件大小（单文件）。
 ///
@@ -79,7 +164,7 @@ fn working_set_required(old: u64, new: u64) -> u64 {
 }
 
 /// 把文件只读映射进内存。空文件无法映射，返回 `None` 由调用方用空切片代替。
-fn map_file(path: &Path) -> std::io::Result<Option<Mmap>> {
+pub(crate) fn map_file(path: &Path) -> std::io::Result<Option<Mmap>> {
     let file = std::fs::File::open(path)?;
     if file.metadata()?.len() == 0 {
         return Ok(None);
@@ -93,7 +178,7 @@ fn map_file(path: &Path) -> std::io::Result<Option<Mmap>> {
 }
 
 /// 旧文件或新文件内容的统一视图：映射页或空切片。
-fn mapped(mmap: &Option<Mmap>) -> &[u8] {
+pub(crate) fn mapped(mmap: &Option<Mmap>) -> &[u8] {
     mmap.as_deref().unwrap_or(&[])
 }
 
@@ -135,7 +220,7 @@ async fn is_zstd_file(path: &Path) -> Result<bool> {
 /// 差分任务在独立线程中运行，64 位下预留 **512 MB 栈**（32 位 64 MB；
 /// bsdiff 递归深度与文件规模相关）。预估工作集超过 4 GiB 时直接返回
 /// [`DeltaError::PatchWorkingSetTooLarge`]，由发布端跳过该基线。
-/// **不要在同一进程内并发调用**：每次调用都会预留一份虚拟地址空间。
+/// 同进程内的多个任务由内存预算加权限流，可以安全并发。
 pub async fn create_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     old_file: P1,
     new_file: P2,
@@ -189,7 +274,16 @@ async fn create_patch_with_compression<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsR
     check_file_size(&new_path)?;
     check_working_set(&old_path, &new_path)?;
 
-    run_blocking("生成增量补丁", move || {
+    // 限流按预估工作集加权：两个大基线不会同时把内存拉满。
+    let old_len = std::fs::metadata(&old_path)
+        .map(|m| m.len())
+        .map_err(DeltaError::Io)?;
+    let new_len = std::fs::metadata(&new_path)
+        .map(|m| m.len())
+        .map_err(DeltaError::Io)?;
+    let working_set = working_set_required(old_len, new_len);
+
+    run_blocking("生成增量补丁", working_set, move || {
         let old = map_file(&old_path).map_err(DeltaError::Io)?;
         let new = map_file(&new_path).map_err(DeltaError::Io)?;
 
@@ -388,8 +482,8 @@ fn decompress_to_temp(patch_path: &Path, temp_path: &Path, old_size: u64) -> Res
 ///
 /// # 资源约束
 ///
-/// 合并任务与 [`create_patch`] 共享同一约束：独立线程预留 512 MB 栈（32 位 64 MB），
-/// **不要在同一进程内并发调用**。
+/// 合并任务与 [`create_patch`] 共享同一并发预算：按旧文件大小加权占用，
+/// 客户端通常只有一次更新，不会真正并发；发布端验证补丁时可以并行。
 pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     old_file: P1,
     patch_file: P2,
@@ -404,7 +498,12 @@ pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
         ));
     }
 
-    check_file_size(old_file.as_ref())?;
+    // TDXB1 分块补丁没有 2 GB 单文件限制（内存与文件大小无关），
+    // 其余格式仍按 bsdiff 的适用上限检查，超限直接回退全量。
+    let block_delta = crate::core::block_delta::is_block_delta_file(patch_file.as_ref()).await?;
+    if !block_delta {
+        check_file_size(old_file.as_ref())?;
+    }
 
     // 补丁哈希按流式计算，不把下载形态整体读入内存
     let actual_patch_hash = crate::core::hasher::calculate_hash(patch_file.as_ref()).await?;
@@ -416,7 +515,7 @@ pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     }
 
     // 哈希已通过（锚定到清单签名），此时解压不可能遭遇解压炸弹
-    let compressed = is_zstd_file(patch_file.as_ref()).await?;
+    let compressed = !block_delta && is_zstd_file(patch_file.as_ref()).await?;
 
     let old_path = old_file.as_ref().to_path_buf();
     let patch_path = patch_file.as_ref().to_path_buf();
@@ -427,7 +526,14 @@ pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     // 解压后的临时补丁放在产物旁边，保证同分区
     let temp_patch = new_output_path.with_extension("patch.expanded");
 
-    run_blocking("应用增量补丁", move || {
+    let applied = run_blocking("应用增量补丁", old_size, move || {
+        if block_delta {
+            return crate::core::block_delta::apply_block_delta(
+                &old_path,
+                &patch_path,
+                &target_path,
+            );
+        }
         // 只读映射替代全量读入：按需分页，峰值 RSS 远低于一次性分配
         let old = map_file(&old_path).map_err(DeltaError::Io)?;
 
@@ -467,7 +573,12 @@ pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
             }
         }
     })
-    .await?;
+    .await;
+    if let Err(err) = applied {
+        // 分块差分在写入中途失败时会留下半截产物；统一清掉。
+        let _ = std::fs::remove_file(&new_output_path);
+        return Err(err);
+    }
 
     let actual_hash = crate::core::hasher::calculate_hash(&new_output_path).await?;
     if actual_hash != target_hash {
@@ -484,25 +595,30 @@ pub async fn apply_patch<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
     })
 }
 
-/// 进程级串行化：512 MB 栈预留 + 手动线程在多平台并行发布时可能撞上
-/// 线程创建失败。跨进程由调用方的 `UpdateLock` 负责，这里只约束本进程。
-static PATCH_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
-
 /// 在独立线程中执行阻塞操作。
 ///
 /// - 闭包返回的原始 `DeltaError` **原样透传**，不重新包装，
 ///   调用方才能区分"哈希不匹配"和"线程崩溃"这类完全不同的失败；
 /// - 线程 panic 与线程创建失败（通常是内存不足）转成 `WorkerFailed`；
-/// - 同一进程内的补丁生成/应用会在这里串行排队。
-async fn run_blocking<F>(task: &'static str, f: F) -> Result<()>
+/// - 并发由 [`PatchLimiter`] 按 `working_set` 加权控制：小任务可以并行，
+///   单个超大任务会独占预算运行，而不是被拒绝。
+pub(crate) async fn run_blocking<F>(task: &'static str, working_set: u64, f: F) -> Result<()>
 where
     F: FnOnce() -> Result<()> + Send + 'static,
 {
-    // 等待串行锁时不占用阻塞线程池；真正的重活仍在独立大栈线程里执行。
-    let _permit = PATCH_SEMAPHORE
+    let limiter = patch_limiter();
+    // 先占内存再占 CPU：等待内存的任务不会白占一个核。
+    let _memory = limiter
+        .memory
+        .acquire_many(limiter.permits_for(working_set))
+        .await
+        .map_err(|e| DeltaError::WorkerFailed(format!("{task}等待内存配额失败: {e}")))?;
+    let _cpu = limiter
+        .cpu
         .acquire()
         .await
-        .map_err(|e| DeltaError::WorkerFailed(format!("{task}等待串行锁失败: {e}")))?;
+        .map_err(|e| DeltaError::WorkerFailed(format!("{task}等待并发配额失败: {e}")))?;
+
     tokio::task::spawn_blocking(move || {
         match std::thread::Builder::new()
             .stack_size(WORKER_STACK_SIZE)
@@ -524,7 +640,21 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{check_working_set, working_set_required, MAX_PATCH_WORKING_SET_BYTES};
+    use super::{
+        check_working_set, working_set_required, PatchLimiter, MAX_PATCH_WORKING_SET_BYTES,
+    };
+
+    /// 内存预算按工作集加权：小任务并行，大任务独占，且永不超过预算总量。
+    #[test]
+    fn limiter_shares_budget_by_working_set() {
+        let limiter = PatchLimiter::new(Some(8), Some(1024));
+        assert_eq!(limiter.memory_units, 4);
+        assert_eq!(limiter.permits_for(0), 1, "空任务也要占一份，避免无限并发");
+        assert_eq!(limiter.permits_for(256 * 1024 * 1024), 1);
+        assert_eq!(limiter.permits_for(257 * 1024 * 1024), 2);
+        // 超过总预算的任务被钳制为独占，而不是拒绝执行
+        assert_eq!(limiter.permits_for(64 * 1024 * 1024 * 1024), 4);
+    }
 
     /// 工作集估算必须是纯数学函数：大文件不会走到真正的分配。
     #[test]

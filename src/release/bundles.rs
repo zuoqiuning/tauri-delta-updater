@@ -32,7 +32,9 @@ pub(crate) async fn generate_bundles(
         return Err("--app-binary 必须位于 --new-app-dir 内".into());
     }
 
-    let mut bundles: Vec<BundlePatch> = Vec::new();
+    // 先做纯校验（版本号、同版本跳过），再并行生成：
+    // 校验失败要在任何文件写盘之前暴露。
+    let mut jobs: Vec<(PathBuf, String)> = Vec::new();
     for dir in &options.old_app_dirs {
         let from_version = old_app_version(dir)
             .map(|v| normalize_version(&v).to_string())
@@ -48,30 +50,41 @@ pub(crate) async fn generate_bundles(
             println!("[SKIP] 跳过与本次发布同版本的整包基线: {}", dir.display());
             continue;
         }
+        jobs.push((dir.clone(), from_version));
+    }
 
-        let patch_name = format!("{from_version}_to_{new_version}.bundle.patch");
-        let patch_path = patch_dir.join(&patch_name);
-        let patch_url = format!("{}/{patch_name}", options.base_url.trim_end_matches('/'));
+    // 整包补丁之间互不依赖，并行生成；join_all 保序，结果稳定。
+    let produced =
+        futures_util::future::join_all(jobs.iter().map(|(dir, from_version)| async move {
+            let patch_name = format!("{from_version}_to_{new_version}.bundle.patch");
+            let patch_path = patch_dir.join(&patch_name);
+            let patch_url = format!("{}/{patch_name}", options.base_url.trim_end_matches('/'));
 
-        println!("[INFO] 生成整包补丁: {from_version} -> {new_version}");
-        let bundle = create_bundle_patch(
-            dir,
-            new_dir,
-            &from_version,
-            new_version,
-            patch_url,
-            &patch_path,
-            patch_dir,
-        )
-        .await
-        .map_err(|e| format!("生成整包补丁失败（{from_version}）: {e}"))?;
-        println!(
-            "[OK] 整包补丁 {patch_name}: {} 个文件 -> {} 个文件，{:?} 字节",
-            bundle.base_files.len(),
-            bundle.target_files.len(),
-            bundle.patch_size
-        );
-        bundles.push(bundle);
+            println!("[INFO] 生成整包补丁: {from_version} -> {new_version}");
+            let bundle = create_bundle_patch(
+                dir,
+                new_dir,
+                from_version,
+                new_version,
+                patch_url,
+                &patch_path,
+                patch_dir,
+            )
+            .await
+            .map_err(|e| format!("生成整包补丁失败（{from_version}）: {e}"))?;
+            println!(
+                "[OK] 整包补丁 {patch_name}: {} 个文件 -> {} 个文件，{:?} 字节",
+                bundle.base_files.len(),
+                bundle.target_files.len(),
+                bundle.patch_size
+            );
+            Ok::<BundlePatch, String>(bundle)
+        }))
+        .await;
+
+    let mut bundles: Vec<BundlePatch> = Vec::new();
+    for bundle in produced {
+        bundles.push(bundle?);
     }
 
     bundles.sort_by(|a, b| {

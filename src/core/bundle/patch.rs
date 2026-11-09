@@ -4,7 +4,20 @@ use super::archive::{build_archive, describe_dir, extract_archive, hash_file, ve
 use super::BundleFile;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// 整包临时归档的序号：并行生成时保证每个任务拿到不同文件。
+static ARCHIVE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+fn temp_archive_paths(work_dir: &Path) -> (PathBuf, PathBuf) {
+    let seq = ARCHIVE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let prefix = format!("bundle.{}.{seq}", std::process::id());
+    (
+        work_dir.join(format!("{prefix}.old")),
+        work_dir.join(format!("{prefix}.new")),
+    )
+}
 
 /// 一份整包增量补丁的描述。
 ///
@@ -82,8 +95,9 @@ pub async fn create_bundle_patch(
     let base_files = describe_dir(old_dir)?;
     let target_files = describe_dir(new_dir)?;
 
-    let old_archive = work_dir.join("bundle.old");
-    let new_archive = work_dir.join("bundle.new");
+    // 临时归档必须唯一：多个基线会并行生成整包补丁，
+    // 固定文件名会让并发任务互相覆盖（后写入的归档被另一个任务当成输入）。
+    let (old_archive, new_archive) = temp_archive_paths(work_dir);
     build_archive(old_dir, &base_files, &old_archive)?;
     build_archive(new_dir, &target_files, &new_archive)?;
 
@@ -121,8 +135,7 @@ pub async fn apply_bundle_patch(
     // 本地文件必须与发布端记录完全一致，否则重建出的归档不可信。
     verify_layout(install_dir, &patch.base_files)?;
 
-    let old_archive = work_dir.join("bundle.old");
-    let new_archive = work_dir.join("bundle.new");
+    let (old_archive, new_archive) = temp_archive_paths(work_dir);
     build_archive(install_dir, &patch.base_files, &old_archive)?;
 
     let result = crate::core::diff::apply_patch(

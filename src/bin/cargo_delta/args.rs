@@ -272,6 +272,20 @@ pub(crate) struct ReleaseArgs {
     #[arg(long = "legacy-patch")]
     pub(crate) legacy_patch: bool,
 
+    /// bsdiff 工作集超限时退回分块差分（TDXB1），支持超大单文件。
+    ///
+    /// 只有确认所有客户端都已升级到 0.5.0+ 才能开启。
+    #[arg(long = "large-file-delta")]
+    pub(crate) large_file_delta: bool,
+
+    /// 补丁生成的并发上限（默认 CPU 核数）。
+    #[arg(long, value_name = "N")]
+    pub(crate) jobs: Option<usize>,
+
+    /// 补丁生成的内存预算（MiB，默认 4096）。
+    #[arg(long = "patch-memory-budget-mb", value_name = "MB")]
+    pub(crate) patch_memory_budget_mb: Option<u64>,
+
     /// 一个补丁都没生成时以非零状态退出。
     #[arg(long = "fail-on-empty")]
     pub(crate) fail_on_empty: bool,
@@ -318,6 +332,9 @@ impl ReleaseArgs {
         options.report = self.report;
         options.sha256sums = self.sha256sums;
         options.legacy_patch = self.legacy_patch;
+        options.large_file_delta = self.large_file_delta;
+        options.jobs = self.jobs;
+        options.patch_memory_budget_mb = self.patch_memory_budget_mb;
         options.fail_on_empty = self.fail_on_empty;
         Ok(options)
     }

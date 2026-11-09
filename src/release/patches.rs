@@ -3,8 +3,9 @@
 use super::files::{extract_version, infer_os, is_app_binary_candidate};
 use super::SkipRecord;
 use crate::{
-    apply_patch, calculate_hash, create_patch_uncompressed, create_patch_with_level, detect_arch,
-    normalize_version, DeltaError, PatchInfo, PatchScope, MAX_DELTA_CHAIN_HOPS,
+    apply_patch, calculate_hash, create_patch_block_delta, create_patch_uncompressed,
+    create_patch_with_level, detect_arch, normalize_version, DeltaError, PatchInfo, PatchScope,
+    MAX_DELTA_CHAIN_HOPS,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -30,11 +31,45 @@ pub(crate) struct PatchContext<'a> {
     pub(crate) zstd_level: i32,
     /// 生成未压缩补丁，兼容不认 zstd 容器的旧客户端。
     pub(crate) legacy_patch: bool,
+    /// bsdiff 工作集超限时退回分块差分（TDXB1）。
+    pub(crate) large_file_delta: bool,
     pub(crate) max_patch_ratio: f64,
     pub(crate) dry_run: bool,
 }
 
+/// 单个基线的处理结果：要么产出补丁，要么记录跳过原因。
+struct CandidateOutcome {
+    patch: Option<PatchInfo>,
+    skip: Option<SkipRecord>,
+}
+
+impl CandidateOutcome {
+    fn ignored() -> Self {
+        Self {
+            patch: None,
+            skip: None,
+        }
+    }
+
+    fn skipped(file: String, reason: String) -> Self {
+        Self {
+            patch: None,
+            skip: Some(SkipRecord { file, reason }),
+        }
+    }
+
+    fn patch(patch: PatchInfo) -> Self {
+        Self {
+            patch: Some(patch),
+            skip: None,
+        }
+    }
+}
+
 /// 为每个可用基线生成并验证补丁，返回去重后的补丁信息与跳过记录。
+///
+/// 基线之间互不依赖，因此并行生成；内存与 CPU 由 `core::diff` 的预算限流，
+/// `join_all` 保序，补丁与跳过记录的顺序与串行版本完全一致。
 pub(crate) async fn generate_single_patches(
     ctx: &PatchContext<'_>,
 ) -> Result<(Vec<PatchInfo>, Vec<SkipRecord>), String> {
@@ -45,16 +80,9 @@ pub(crate) async fn generate_single_patches(
         new_version,
         target_os,
         target_arch,
-        new_hash,
-        installer_size,
-        patch_dir,
-        base_url,
-        zstd_level,
-        legacy_patch,
-        max_patch_ratio,
-        dry_run,
+        ..
     } = *ctx;
-    let mut platform_patches: Vec<PatchInfo> = Vec::new();
+
     let mut skipped: Vec<SkipRecord> = Vec::new();
 
     // 基线来源：基线目录扫描 + 显式基线文件。后者校验失败会直接报错。
@@ -71,10 +99,11 @@ pub(crate) async fn generate_single_patches(
         candidates.push((path.clone(), true));
     }
 
+    // 过滤放在并发之前：报错顺序、日志顺序都与输入顺序一致。
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut valid: Vec<(PathBuf, String)> = Vec::new();
 
     for (path, explicit) in candidates {
-        let path = &path;
         let file_name = path
             .file_name()
             .unwrap_or_default()
@@ -92,7 +121,7 @@ pub(crate) async fn generate_single_patches(
         }
 
         // 同一文件只处理一次（目录扫描与显式文件可能重叠）
-        if let Ok(canonical) = std::fs::canonicalize(path) {
+        if let Ok(canonical) = std::fs::canonicalize(&path) {
             if !seen.insert(canonical) {
                 continue;
             }
@@ -100,7 +129,7 @@ pub(crate) async fn generate_single_patches(
 
         // 文件是本次发布的主程序本身时跳过
         if let (Ok(a), Ok(b)) = (
-            std::fs::canonicalize(path),
+            std::fs::canonicalize(&path),
             std::fs::canonicalize(app_binary),
         ) {
             if a == b {
@@ -165,93 +194,25 @@ pub(crate) async fn generate_single_patches(
             continue;
         }
 
-        let patch_name = format!("{old_version}_to_{new_version}.patch");
-        let patch_path = patch_dir.join(&patch_name);
+        valid.push((path, old_version));
+    }
 
-        if dry_run {
-            println!("[DRY] 将生成补丁: {old_version} -> {new_version}（{file_name}）");
-            continue;
+    let outcomes = futures_util::future::join_all(
+        valid
+            .iter()
+            .map(|(path, old_version)| process_candidate(ctx, path, old_version)),
+    )
+    .await;
+
+    let mut platform_patches: Vec<PatchInfo> = Vec::new();
+    for outcome in outcomes {
+        let outcome = outcome?;
+        if let Some(patch) = outcome.patch {
+            platform_patches.push(patch);
         }
-
-        println!("[INFO] 生成补丁: {old_version} -> {new_version}");
-        let created = if legacy_patch {
-            create_patch_uncompressed(path, app_binary, &patch_path).await
-        } else {
-            create_patch_with_level(path, app_binary, &patch_path, zstd_level).await
-        };
-        if let Err(err) = created {
-            match err {
-                // 体积/内存超出增量适用范围：跳过该基线，走全量分发，
-                // 而不是让发布流水线在分配失败时直接 abort。
-                DeltaError::IncrementalNotApplicable { .. }
-                | DeltaError::PatchWorkingSetTooLarge { .. } => {
-                    let reason = err.to_string();
-                    println!("[SKIP] {file_name}: {reason}");
-                    skipped.push(SkipRecord {
-                        file: file_name,
-                        reason,
-                    });
-                    continue;
-                }
-                other => return Err(format!("生成补丁失败: {other}")),
-            }
+        if let Some(skip) = outcome.skip {
+            skipped.push(skip);
         }
-        let patch_hash = calculate_hash(&patch_path)
-            .await
-            .map_err(|e| format!("计算补丁哈希失败: {e}"))?;
-        let patch_size = std::fs::metadata(&patch_path).map(|m| m.len()).ok();
-
-        // 劣质补丁跳过：补丁接近全量时，下载补丁反而更慢
-        if let Some(size) = patch_size {
-            if installer_size > 0 && (size as f64) > (installer_size as f64) * max_patch_ratio {
-                let reason = format!(
-                    "补丁体积 {size} 超过安装包的 {:.0}%",
-                    max_patch_ratio * 100.0
-                );
-                println!("[SKIP] {patch_name}: {reason}，已跳过");
-                let _ = std::fs::remove_file(&patch_path);
-                skipped.push(SkipRecord {
-                    file: file_name,
-                    reason,
-                });
-                continue;
-            }
-        }
-
-        // 发布端验证：把补丁真实应用一遍，证明它能重建出新版本主程序。
-        // "a manifest never describes a patch nobody has proven
-        // reconstructs the release"——坏补丁在发布流水线失败，
-        // 而不是在用户侧表现为"更新→回滚"循环。apply_patch 内部
-        // 会校验产物哈希 == target_hash，任何不符都会报错。
-        let verify_dir = std::env::temp_dir().join(format!(
-            "tdx-verify-{}-{}",
-            std::process::id(),
-            VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&verify_dir).map_err(|e| format!("创建补丁验证目录失败: {e}"))?;
-        let verify_out = verify_dir.join("reconstructed");
-        let verify_result =
-            apply_patch(path, &patch_path, &verify_out, &patch_hash, new_hash).await;
-        let _ = std::fs::remove_file(&verify_out);
-        let _ = std::fs::remove_dir_all(&verify_dir);
-        verify_result.map_err(|e| {
-            format!(
-                "补丁 {patch_name} 无法从旧主程序重建出新版本（发布中止 / patch verification failed）: {e}\n建议：\n  1. 检查 --old-dir / --from 的基线是否与目标架构一致\n  2. 检查 --max-patch-ratio 是否过于严格\n  3. 发布后运行 `cargo delta doctor` 体检线上桶"
-            )
-        })?;
-        println!("[OK] 补丁验证通过: {patch_name}（{patch_size:?} 字节）");
-
-        platform_patches.push(PatchInfo {
-            from_version: old_version,
-            to_version: new_version.to_string(),
-            patch_url: format!("{}/{patch_name}", base_url.trim_end_matches('/')),
-            patch_hash,
-            target_hash: new_hash.to_string(),
-            patch_size,
-            // 补丁基底与产物都是主程序，显式标注覆盖范围。
-            // 使用 sidecar/resources 的应用据此提示"本次增量不覆盖附加资源"。
-            scope: Some(PatchScope::MainExecutableOnly),
-        });
     }
 
     // 同一 from_version 只保留最新的一份补丁（按语义化版本排序）
@@ -263,6 +224,127 @@ pub(crate) async fn generate_single_patches(
     platform_patches.dedup_by(|a, b| a.from_version == b.from_version);
 
     Ok((platform_patches, skipped))
+}
+
+/// 处理一个已通过预检的基线：生成、校验体积、回放验证。
+async fn process_candidate(
+    ctx: &PatchContext<'_>,
+    path: &Path,
+    old_version: &str,
+) -> Result<CandidateOutcome, String> {
+    let PatchContext {
+        app_binary,
+        new_version,
+        new_hash,
+        installer_size,
+        patch_dir,
+        base_url,
+        zstd_level,
+        legacy_patch,
+        large_file_delta,
+        max_patch_ratio,
+        dry_run,
+        ..
+    } = *ctx;
+    let file_name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let patch_name = format!("{old_version}_to_{new_version}.patch");
+    let patch_path = patch_dir.join(&patch_name);
+
+    if dry_run {
+        println!("[DRY] 将生成补丁: {old_version} -> {new_version}（{file_name}）");
+        return Ok(CandidateOutcome::ignored());
+    }
+
+    println!("[INFO] 生成补丁: {old_version} -> {new_version}");
+    let created = if legacy_patch {
+        create_patch_uncompressed(path, app_binary, &patch_path).await
+    } else {
+        create_patch_with_level(path, app_binary, &patch_path, zstd_level).await
+    };
+    if let Err(err) = created {
+        match err {
+            // 体积/内存超出 bsdiff 适用范围：分块差分可以绕开 17n 的内存模型，
+            // 但只有发布者显式开启时才使用（旧客户端不认 TDXB1）。
+            DeltaError::IncrementalNotApplicable { .. }
+            | DeltaError::PatchWorkingSetTooLarge { .. }
+                if large_file_delta && !legacy_patch =>
+            {
+                println!("[INFO] {file_name} 超出 bsdiff 适用范围，改用分块差分");
+                if let Err(fallback) =
+                    create_patch_block_delta(path, app_binary, &patch_path, zstd_level).await
+                {
+                    let reason = fallback.to_string();
+                    println!("[SKIP] {file_name}: {reason}");
+                    return Ok(CandidateOutcome::skipped(file_name, reason));
+                }
+            }
+            // 未开启分块差分时跳过该基线，走全量分发，
+            // 而不是让发布流水线在分配失败时直接 abort。
+            DeltaError::IncrementalNotApplicable { .. }
+            | DeltaError::PatchWorkingSetTooLarge { .. } => {
+                let reason = err.to_string();
+                println!("[SKIP] {file_name}: {reason}");
+                return Ok(CandidateOutcome::skipped(file_name, reason));
+            }
+            other => return Err(format!("生成补丁失败: {other}")),
+        }
+    }
+    let patch_hash = calculate_hash(&patch_path)
+        .await
+        .map_err(|e| format!("计算补丁哈希失败: {e}"))?;
+    let patch_size = std::fs::metadata(&patch_path).map(|m| m.len()).ok();
+
+    // 劣质补丁跳过：补丁接近全量时，下载补丁反而更慢
+    if let Some(size) = patch_size {
+        if installer_size > 0 && (size as f64) > (installer_size as f64) * max_patch_ratio {
+            let reason = format!(
+                "补丁体积 {size} 超过安装包的 {:.0}%",
+                max_patch_ratio * 100.0
+            );
+            println!("[SKIP] {patch_name}: {reason}，已跳过");
+            let _ = std::fs::remove_file(&patch_path);
+            return Ok(CandidateOutcome::skipped(file_name, reason));
+        }
+    }
+
+    // 发布端验证：把补丁真实应用一遍，证明它能重建出新版本主程序。
+    // "a manifest never describes a patch nobody has proven
+    // reconstructs the release"——坏补丁在发布流水线失败，
+    // 而不是在用户侧表现为"更新→回滚"循环。apply_patch 内部
+    // 会校验产物哈希 == target_hash，任何不符都会报错。
+    let verify_dir = std::env::temp_dir().join(format!(
+        "tdx-verify-{}-{}",
+        std::process::id(),
+        VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&verify_dir).map_err(|e| format!("创建补丁验证目录失败: {e}"))?;
+    let verify_out = verify_dir.join("reconstructed");
+    let verify_result = apply_patch(path, &patch_path, &verify_out, &patch_hash, new_hash).await;
+    let _ = std::fs::remove_file(&verify_out);
+    let _ = std::fs::remove_dir_all(&verify_dir);
+    verify_result.map_err(|e| {
+        format!(
+            "补丁 {patch_name} 无法从旧主程序重建出新版本（发布中止 / patch verification failed）: {e}\n建议：\n  1. 检查 --old-dir / --from 的基线是否与目标架构一致\n  2. 检查 --max-patch-ratio 是否过于严格\n  3. 发布后运行 `cargo delta doctor` 体检线上桶"
+        )
+    })?;
+    println!("[OK] 补丁验证通过: {patch_name}（{patch_size:?} 字节）");
+
+    Ok(CandidateOutcome::patch(PatchInfo {
+        from_version: old_version.to_string(),
+        to_version: new_version.to_string(),
+        patch_url: format!("{}/{patch_name}", base_url.trim_end_matches('/')),
+        patch_hash,
+        target_hash: new_hash.to_string(),
+        patch_size,
+        // 补丁基底与产物都是主程序，显式标注覆盖范围。
+        // 使用 sidecar/resources 的应用据此提示"本次增量不覆盖附加资源"。
+        scope: Some(PatchScope::MainExecutableOnly),
+    }))
 }
 
 /// 保留仍能链到目标版本的补丁，并按跳数上限裁剪。

@@ -84,6 +84,15 @@ pub struct ReleaseOptions {
     pub sha256sums: Option<PathBuf>,
     /// 生成未压缩的 `BSDIFF40` 补丁，供旧引擎客户端消费。
     pub legacy_patch: bool,
+    /// bsdiff 工作集超限时退回分块差分（TDXB1）。
+    ///
+    /// 只有确认所有客户端都支持 TDXB1（0.5.0 起）后才能开启：旧客户端
+    /// 无法应用该格式，会下载到"无效补丁"。
+    pub large_file_delta: bool,
+    /// 补丁生成的并发上限；`None` 表示按 CPU 核数。
+    pub jobs: Option<usize>,
+    /// 补丁生成的内存预算（MiB）；`None` 表示 4 GiB。
+    pub patch_memory_budget_mb: Option<u64>,
     /// 一个补丁都没生成时以错误退出。
     pub fail_on_empty: bool,
     /// 只打印将要执行的操作，不写文件。
@@ -130,6 +139,9 @@ impl ReleaseOptions {
             report: None,
             sha256sums: None,
             legacy_patch: false,
+            large_file_delta: false,
+            jobs: None,
+            patch_memory_budget_mb: None,
             fail_on_empty: false,
             dry_run: false,
         }
@@ -524,6 +536,20 @@ fn prepare_manifest(
 pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, String> {
     println!("[INFO] 开始生成更新清单...");
 
+    // 并发预算必须在第一次补丁操作之前确定；显式参数优先于环境变量默认值。
+    let wants_custom_budget = options.jobs.is_some() || options.patch_memory_budget_mb.is_some();
+    if wants_custom_budget
+        && !crate::configure_patch_concurrency(options.jobs, options.patch_memory_budget_mb)
+    {
+        println!("[WARN] 补丁并发配置未生效（本进程已初始化过补丁预算）");
+    }
+    if options.large_file_delta && !options.legacy_patch {
+        println!(
+            "[WARN] 已开启 --large-file-delta：超出 bsdiff 上限的基线会生成 TDXB1 补丁，\
+             只有 0.5.0 起的客户端能应用"
+        );
+    }
+
     // 阶段一：校验参数 + 规范化 + 加载密钥 + 哈希。
     let ctx = prepare_context(&options).await?;
     // 阶段二：旧清单骨架。
@@ -543,6 +569,7 @@ pub async fn run_release(options: ReleaseOptions) -> Result<ReleaseOutputs, Stri
         base_url: &options.base_url,
         zstd_level: options.zstd_level,
         legacy_patch: options.legacy_patch,
+        large_file_delta: options.large_file_delta,
         max_patch_ratio: options.max_patch_ratio,
         dry_run: options.dry_run,
     })

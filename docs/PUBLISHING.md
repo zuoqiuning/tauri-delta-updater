@@ -95,6 +95,23 @@ During a cross-generation transition, `--legacy-patch` writes uncompressed
 `not a valid patch`. Patch size grows noticeably; switch back once the old
 clients have been replaced.
 
+Baselines are generated **in parallel**, bounded by estimated memory rather than
+by a fixed one-at-a-time queue: every job declares its working set
+(`max(17n, 9n+m)` for bsdiff), and the scheduler admits jobs while the sum stays
+under `--patch-memory-budget-mb`. A single oversized job still runs alone instead
+of being rejected. Patch and skip ordering in the report is unchanged, so
+parallelism does not affect the manifest diff.
+
+`--large-file-delta` extends coverage past bsdiff's ceiling. For a baseline that
+would need more than the budget (roughly a single file over 240 MB), the
+publisher falls back to a TDXB1 block delta: the old file is split on
+content-defined boundaries, matching chunks become `COPY` instructions, and each
+gap between matches is re-diffed with a bounded (≤4 MiB) bsdiff against the
+corresponding old region before falling back to a compressed literal. Memory is
+therefore independent of total file size, so multi-gigabyte installers can still
+ship a delta with patch sizes close to the regular path. The flag is off by
+default because TDXB1 is a new container that only 0.5.0+ clients understand.
+
 `generate` also **retains chainable history**: patch entries from previous
 manifests are kept when they form a path to the new version within
 `MAX_DELTA_CHAIN_HOPS` (default 3), and everything else is pruned. That lets a
@@ -162,6 +179,9 @@ Key arguments:
 | `--max-patch-ratio` | Skip patches larger than this fraction of the installer (default `1.0`: only skip when the patch has no benefit). |
 | `--zstd-level` | Patch compression level, 1–22 (default 19). Lower it to 15–17 when CI time matters for large patches. |
 | `--legacy-patch` | Write uncompressed `BSDIFF40` patches for clients still running an older engine that rejects zstd containers. Larger patches; use only during the transition. |
+| `--large-file-delta` | When bsdiff's working set exceeds the budget, fall back to a TDXB1 block delta instead of skipping the baseline. Supports single files far beyond the 2 GB bsdiff limit. **Only enable after every client is on a version that can apply TDXB1**; older clients would download a patch they cannot apply. |
+| `--jobs` | Upper bound for concurrent patch generation (default: CPU count). Memory is budgeted separately, so this rarely needs changing. |
+| `--patch-memory-budget-mb` | Memory budget for patch generation in MiB (default `4096`). Baselines are scheduled in parallel while the estimated working set stays under this budget. |
 | `--existing` | Previous `latest.json`, to preserve other platforms' entries and patches. |
 | `--password` | Private-key password (or `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). |
 | `--secondary-private-key` | Second minisign key; signs the manifest **and** the installer with both keys (`.sig` gets two blocks). Use during key rotation. |

@@ -259,9 +259,10 @@ macro_rules! host_version {
     };
 }
 
+pub use core::block_delta::create_patch_block_delta;
 pub use core::diff::{
-    apply_patch, create_patch, create_patch_uncompressed, create_patch_with_level,
-    VerifiedArtifact, MAX_INCREMENTAL_FILE_BYTES,
+    apply_patch, configure_patch_concurrency, create_patch, create_patch_uncompressed,
+    create_patch_with_level, VerifiedArtifact, MAX_INCREMENTAL_FILE_BYTES,
 };
 pub use core::disk::{check_disk_space, cleanup_previous_updates};
 pub use core::downloader::download_patch_with_progress;

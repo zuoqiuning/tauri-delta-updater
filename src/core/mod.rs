@@ -5,6 +5,9 @@
 /// 更新流程在磁盘上的产物文件名。
 pub mod artifacts;
 
+/// 大文件分块差分（TDXB1），绕开 bsdiff 的 17n 内存模型。
+pub mod block_delta;
+
 /// 整包（多文件）更新的确定性容器。
 pub mod bundle;
 

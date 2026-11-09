@@ -184,6 +184,23 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) legacy_patch: bool,
 
+    /// bsdiff 工作集超限时退回分块差分（TDXB1），支持超大单文件。
+    ///
+    /// 只有确认所有客户端都已升级到 0.5.0+ 才能开启：旧客户端无法应用
+    /// 该格式，会下载到"无效补丁"。
+    #[arg(long)]
+    pub(crate) large_file_delta: bool,
+
+    /// 补丁生成的并发上限（默认 CPU 核数）。
+    ///
+    /// 多基线发布时按内存预算并行生成；内存不足的 CI 可调低。
+    #[arg(long, value_name = "N")]
+    pub(crate) jobs: Option<usize>,
+
+    /// 补丁生成的内存预算（MiB，默认 4096）。
+    #[arg(long, value_name = "MB")]
+    pub(crate) patch_memory_budget_mb: Option<u64>,
+
     /// 一个补丁都没生成时以非零状态退出（防止 CI 静默发布空清单）。
     #[arg(long)]
     pub(crate) fail_on_empty: bool,
@@ -233,6 +250,9 @@ impl Args {
         options.report = self.report;
         options.sha256sums = self.sha256sums;
         options.legacy_patch = self.legacy_patch;
+        options.large_file_delta = self.large_file_delta;
+        options.jobs = self.jobs;
+        options.patch_memory_budget_mb = self.patch_memory_budget_mb;
         options.fail_on_empty = self.fail_on_empty;
         options.dry_run = self.dry_run;
         options
