@@ -9,9 +9,8 @@
 
 ---
 
-> 三平台发布命令、命令规范与发布说明写作规范见
-> [`RELEASE_STANDARD.md`](RELEASE_STANDARD.md)。本文件只保留发布前置条件、
-> 门禁、顺序、失败补救与授权边界。
+> **操作步骤、门禁与补救**。三平台命令、命令规范与发布说明写作规范都在
+> 本文件内；不再单独维护第二份发布文档。
 
 ---
 
@@ -173,7 +172,7 @@ gh release create v0.5.0 \
 
 ### 2.2 发布说明
 
-写作规范见 [`RELEASE_STANDARD.md`](RELEASE_STANDARD.md) §3。每次发布必须从
+写作规范见本文 §6。每次发布必须从
 [`releases/TEMPLATE.md`](releases/TEMPLATE.md) 复制出 `releases/vX.Y.Z.md`，
 正文面向使用者；GitHub Release 与该文件保持一致。
 
@@ -253,3 +252,57 @@ cd /tmp && npm init -y && npm install tauri-plugin-delta-updater@0.5.0
 | clippy / fmt | 两个 crate `-D warnings` 全绿 |
 | MSRV | 1.88 |
 | 下一版本前提 | 项目所有者明确书面授权（版本 + 内容摘要 + 时间）；`0.5.0` 已发布且不可覆盖 |
+
+---
+
+## 6. 发布说明写作规范
+
+`CHANGELOG.md` 给维护者；`docs/releases/vX.Y.Z.md` 与 GitHub Release 给使用者。
+同一版本两份文档视角不同，不能直接复制。
+
+命名规则：`docs/releases/vX.Y.Z.md`，tag `vX.Y.Z`（annotated），
+GitHub Release 标题为 `vX.Y.Z — <一句用户可感知的变化>`。
+
+### 6.1 结构（必须）
+
+```markdown
+# vX.Y.Z — <一句用户可感知的变化>
+
+发布日期：YYYY-MM-DD
+对比基线：vA.B.C
+
+## 升级注意
+- <破坏性变更 / 默认行为变化 / 必须执行的迁移；没有则写“无”>
+
+## 新增
+- <用户能做什么、行为怎么变；必要时给配置示例>
+
+## 修复
+- <现象 → 修复后的行为>
+
+## 验证边界
+- <未真机验证的平台或场景；没有则写“无”>
+```
+
+### 6.2 写什么
+
+- **行为变化**：更新前怎样、更新后怎样。
+- **用户需要做什么**：改配置、换依赖、验证哪条路径。
+- **可执行示例**：配置片段、命令、迁移步骤。
+- **已知边界**：哪些平台/场景还没真机验证，不用 CI 绿替代结论。
+
+### 6.3 不写什么
+
+- commit、分支、文件路径、模块名、内部函数名。
+- 测试数量、clippy/fmt、CI job 名、构建耗时。
+- “重构 / 优化发布端 / 代码质量提升”这类维护者视角总结。
+- 内部枚举属性（`#[non_exhaustive]`）、内部协议字段、实现细节。
+
+### 6.4 发布检查清单
+
+- [ ] 版本四处一致：核心、插件、npm、CHANGELOG 顶部
+- [ ] `docs/releases/vX.Y.Z.md` 已按模板填写，且没有内部语言
+- [ ] annotated tag `vX.Y.Z` 已创建并推送
+- [ ] `release.yml` 三个 job 全绿（或手动三步均成功）
+- [ ] crates.io 核心/插件、npm 均可访问；docs.rs 已确认
+- [ ] GitHub Release 正文与 `docs/releases/vX.Y.Z.md` 一致

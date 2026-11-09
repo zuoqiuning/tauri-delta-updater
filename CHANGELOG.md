@@ -521,11 +521,10 @@
   新增灰度分桶单测与"0% 灰度不下载补丁"的端到端测试。
 - **Zucchini A/B 工具**：独立的 `tools/zucchini-ab` crate（不进入主依赖），
   真实 PE/ELF 上对比 bsdiff+zstd / Zucchini raw / Zucchini+zstd；
-  采集门槛与数据记录格式见 `docs/proposals/zucchini-ab-plan.md`。
-- **Web bundle 威胁模型**：`docs/proposals/web-bundle-threat-model.md` 定义准入条件，
-  在签名覆盖 URL、路径穿越、原子激活与独立状态机评审通过前不写替换代码；
-  新增 8 个 open questions、Review log 与可直接粘贴的 issue 草稿；
-  并加入与 `tauri-plugin-hot-update` 的逐项对照，明确“不再以三态回滚作为差异化卖点”。
+  采集门槛与数据格式写在工具源码与 `sample.sh` 中。
+- **Web bundle 威胁模型**：评审了签名覆盖 URL、路径穿越、原子激活与独立
+  状态机四类风险，在全部通过前不写替换代码；并完成与
+  `tauri-plugin-hot-update` 的逐项对照，明确“不再以三态回滚作为差异化卖点”。
 - **CI**：插件 job 扩展到 Windows + Ubuntu 矩阵（示例应用只在 Windows 检查，
   Linux 构建需要额外的 webkit2gtk 系统依赖）。
 
