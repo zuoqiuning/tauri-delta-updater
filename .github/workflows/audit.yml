@@ -1,10 +1,10 @@
-name: Dependency audit
+name: Security audit
 
-# 依赖审计独立于主 CI：安全公告是异步出现的，不应该让一次数据库更新把
-# 所有正在开发的 PR 变红。每周跑一次 + 支持手动触发，失败会创建/更新 issue。
+# 每周扫描 Cargo.lock 的 RustSec advisory，并在发现问题时创建 issue。
+# 不阻塞 PR：漏洞修复通常需要升级依赖，应单独安排而不是卡住日常改动。
 on:
   schedule:
-    - cron: '0 3 * * 1'
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -13,11 +13,10 @@ permissions:
 
 jobs:
   audit:
-    name: cargo audit
+    name: RustSec advisories
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-
-    - uses: rustsec/audit-check@v2.0.0
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
