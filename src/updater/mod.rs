@@ -60,6 +60,18 @@ pub struct DeltaUpdater {
     client: reqwest::Client,
 }
 
+/// 校验端点必须是带主机名的 http(s) URL。
+fn validate_http_url(field: &str, url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| DeltaError::Config(format!("{field} 不是合法 URL（{url}）: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(DeltaError::Config(format!(
+            "{field} 必须是带主机名的 http(s) URL: {url}"
+        )));
+    }
+    Ok(())
+}
+
 impl DeltaUpdater {
     /// 按配置创建更新器。
     ///
@@ -140,6 +152,17 @@ impl DeltaUpdater {
         if config.signature_url.trim().is_empty() {
             config.signature_url =
                 crate::updater::config::default_signature_url(&config.manifest_url);
+        }
+
+        // 所有会发起请求的端点都必须是带主机名的 http(s) URL。
+        // 错 scheme 在第一次请求时只会变成难懂的 builder error，必须提前拒绝。
+        validate_http_url("manifest_url", &config.manifest_url)?;
+        validate_http_url("signature_url", &config.signature_url)?;
+        for (index, url) in config.fallback_manifest_urls.iter().enumerate() {
+            validate_http_url(&format!("fallback_endpoints[{index}]"), url)?;
+        }
+        if let Some(url) = &config.bundle_manifest_url {
+            validate_http_url("bundle_manifest_url", url)?;
         }
 
         // current_version 为空时 find_patch 永远返回 None，会静默退化成全量下载；

@@ -1310,6 +1310,41 @@ fn test_new_rejects_nul_in_installer_args() {
     assert!(err.to_string().contains("installer_args"), "{err}");
 }
 
+/// 非 http(s) 端点必须在构造阶段拒绝，而不是第一次请求才失败。
+#[test]
+fn test_new_rejects_non_http_endpoints() {
+    let dir = tempdir().unwrap();
+    let exe = dir.path().join("app");
+    std::fs::write(&exe, b"app").unwrap();
+    let base = || {
+        UpdateConfig::new("https://cdn.example.com/latest.json", "PK")
+            .current_version("1.0.0")
+            .executable_path(&exe)
+            .work_dir(dir.path())
+    };
+
+    let mut config = base();
+    config.manifest_url = "ftp://cdn.example.com/latest.json".into();
+    config.signature_url = "ftp://cdn.example.com/latest.json.sig".into();
+    let err = DeltaUpdater::new(config).unwrap_err();
+    assert!(err.to_string().contains("http(s)"), "{err}");
+
+    let mut config = base();
+    config.signature_url = "not-a-url".into();
+    let err = DeltaUpdater::new(config).unwrap_err();
+    assert!(err.to_string().contains("signature_url"), "{err}");
+
+    let mut config = base();
+    config.fallback_manifest_urls = vec!["ftp://mirror.example.com/latest.json".into()];
+    let err = DeltaUpdater::new(config).unwrap_err();
+    assert!(err.to_string().contains("fallback_endpoints[0]"), "{err}");
+
+    let mut config = base();
+    config.bundle_manifest_url = Some("not-a-url".into());
+    let err = DeltaUpdater::new(config).unwrap_err();
+    assert!(err.to_string().contains("bundle_manifest_url"), "{err}");
+}
+
 /// 平台标识必须与 Tauri 的 target 命名一致。
 #[test]
 fn test_current_platform_matches_tauri_convention() {

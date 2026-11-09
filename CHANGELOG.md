@@ -31,6 +31,8 @@
   签名走 HTTP 的降级窗口。
 - 插件配置 `proxy` / `headers` 自建客户端时恢复默认连接/读空闲超时
   （15s / 60s），弱网或黑洞端点不再无限挂起。
+- `DeltaUpdater::new` 在构造阶段拒绝非 http(s) 端点（清单、签名、备用与整包
+  地址），不再等到第一次请求才返回难懂的 builder error。
 - 从官方 updater 迁移时，`windows.installMode` / `windows.installerArgs`
   自动映射到 `install_mode` / `installer_args`；`dangerousInsecureTransportProtocol`
   仍只给出警告（HTTPS 部署不产生噪音），不会静默开启明文传输。
