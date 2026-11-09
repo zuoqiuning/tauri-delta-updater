@@ -176,3 +176,61 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_rel_path;
+    use proptest::prelude::*;
+    use std::path::Component;
+
+    // 通过校验的路径必须是纯相对路径，不能逃逸出暂存目录。
+    proptest! {
+        #[test]
+        fn accepted_paths_stay_relative(path in "\\PC*") {
+            if validate_rel_path(&path).is_ok() {
+                prop_assert!(!path.contains('\\'));
+                prop_assert!(!path.contains(':'));
+                prop_assert!(!path.contains('\0'));
+                prop_assert!(!path.starts_with('/'));
+                prop_assert!(
+                    path.split('/')
+                        .all(|part| !part.is_empty() && part != "." && part != ".."),
+                    "合法路径不能含空段/./..: {path:?}"
+                );
+                prop_assert!(
+                    std::path::Path::new(&path)
+                        .components()
+                        .all(|component| matches!(component, Component::Normal(_))),
+                    "合法路径的每个组件都必须是普通组件: {path:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn traversal_patterns_are_rejected(prefix in "\\PC{0,8}", suffix in "\\PC{0,8}") {
+            for bad in [
+                format!("../{suffix}"),
+                format!("{prefix}/../{suffix}"),
+                format!("/{prefix}"),
+                format!("{prefix}\\{suffix}"),
+                format!("C:/{prefix}"),
+                format!("{prefix}//{suffix}"),
+                format!("{prefix}/./{suffix}"),
+                format!("{prefix}/\0{suffix}"),
+            ] {
+                prop_assert!(validate_rel_path(&bad).is_err(), "{bad:?} 必须被拒绝");
+            }
+        }
+
+        #[test]
+        fn safe_segments_are_accepted(
+            segments in prop::collection::vec(
+                prop::string::string_regex("[A-Za-z0-9][A-Za-z0-9._-]{0,7}").unwrap(),
+                1..4,
+            ),
+        ) {
+            let path = segments.join("/");
+            prop_assert!(validate_rel_path(&path).is_ok(), "{path:?} 必须是合法相对路径");
+        }
+    }
+}
