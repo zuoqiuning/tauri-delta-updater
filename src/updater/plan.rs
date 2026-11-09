@@ -169,7 +169,9 @@ mod tests {
     use crate::models::{
         PatchInfo, PatchScope, PlatformInfo, UpdateManifest, MAX_DELTA_CHAIN_HOPS,
     };
+    use crate::platform::target::normalize_version;
     use crate::updater::FallbackReason;
+    use proptest::prelude::*;
 
     /// 回退原因的组合必须与 check/update 共用同一语义。
     #[test]
@@ -235,6 +237,68 @@ mod tests {
             patches: grouped,
             notes_i18n: Default::default(),
             extra: Default::default(),
+        }
+    }
+
+    // 随机版本边 + 随机跳数上限：规划结果必须始终是一条合法链。
+    //
+    // 不变量：
+    // - 链非空且不超过上限；
+    // - 第一跳从当前版本出发，最后一跳到达目标版本；
+    // - 相邻两跳首尾相接，且版本严格递增；
+    // - 存在直达边时优先返回 1 跳；
+    // - 跳数上限为 0 时永远没有链。
+    proptest! {
+        #[test]
+        fn planned_chain_is_well_formed(
+            edges in prop::collection::vec((0u16..6, 0u16..6), 0..12),
+            start in 0u16..5,
+            target in 1u16..6,
+            max_hops in 0usize..4,
+        ) {
+            let patches: Vec<PatchInfo> = edges
+                .iter()
+                .filter(|(from, to)| from < to)
+                .map(|(from, to)| {
+                    patch(
+                        &format!("0.0.{from}"),
+                        &format!("0.0.{to}"),
+                        None,
+                    )
+                })
+                .collect();
+            let current = format!("0.0.{start}");
+            let goal = format!("0.0.{target}");
+
+            let chain = plan_chain(&patches, &current, &goal, max_hops);
+
+            if max_hops == 0 {
+                prop_assert!(chain.is_none());
+                return Ok(());
+            }
+
+            let has_direct = patches.iter().any(|patch| {
+                patch.from_version == current && patch.to_version == goal
+            });
+            if has_direct {
+                prop_assert!(chain.as_ref().is_some_and(|chain| chain.len() == 1));
+            }
+
+            if let Some(chain) = chain {
+                prop_assert!(!chain.is_empty());
+                prop_assert!(chain.len() <= max_hops);
+                prop_assert_eq!(&chain.first().unwrap().from_version, &current);
+                prop_assert_eq!(&chain.last().unwrap().to_version, &goal);
+                for window in chain.windows(2) {
+                    prop_assert_eq!(&window[0].to_version, &window[1].from_version);
+                }
+                let mut previous = semver::Version::parse(normalize_version(&current)).unwrap();
+                for hop in &chain {
+                    let next = semver::Version::parse(normalize_version(&hop.to_version)).unwrap();
+                    prop_assert!(next > previous);
+                    previous = next;
+                }
+            }
         }
     }
 

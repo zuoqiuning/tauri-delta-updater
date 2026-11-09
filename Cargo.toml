@@ -137,6 +137,8 @@ required-features = ["generator"]
 
 [dev-dependencies]
 tempfile = "3.8"
+# 补丁链规划/路径校验的关键不变量用 property-based 测试覆盖随机组合
+proptest = "1"
 # 与主依赖保持同一精确版本，保证测试与生成工具行为一致
 minisign = "=0.7.9"
 base64 = "0.21"
