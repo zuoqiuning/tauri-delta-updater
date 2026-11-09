@@ -130,6 +130,10 @@ pub(crate) struct DoctorArgs {
     #[arg(long = "bundle-url", value_name = "URL")]
     pub(crate) bundle_url: Option<String>,
 
+    /// 备用清单地址（可重复）；`--from-config` 时默认读取配置中的其余端点。
+    #[arg(long = "fallback-url", value_name = "URL")]
+    pub(crate) fallback_urls: Vec<String>,
+
     /// 下载安装包并校验 minisign 签名（较慢，但能证明全量回退真的可用）。
     #[arg(long)]
     pub(crate) deep: bool,

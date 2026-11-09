@@ -92,7 +92,7 @@ official key without renaming it still passes the guard. It also validates
 field types and enums (`install_mode`, `trust_policy`, …), proxy/header shapes,
 timeouts and `{{bundle_type}}` dependencies. After publishing,
 `cargo delta doctor --from-config` reuses the same config to validate the live
-bucket without copying URLs or keys.
+bucket and every configured fallback endpoint without copying URLs or keys.
 
 > [!IMPORTANT]
 > **Replacing the official updater is a decision, not an automatic default.**

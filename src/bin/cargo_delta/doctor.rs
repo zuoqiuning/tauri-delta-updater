@@ -29,6 +29,13 @@ struct Verdict {
     allow_legacy: bool,
 }
 
+/// 体检用的清单来源：主端点或备用端点。
+#[derive(Clone, Copy)]
+struct ManifestSource<'a> {
+    endpoint: &'a str,
+    signature_url: Option<&'a str>,
+}
+
 /// 执行体检并决定退出码：有任何错误时返回 `Err`。
 pub(crate) fn run(mut args: DoctorArgs, project_root: Option<&Path>) -> Result<(), String> {
     resolve_from_config(&mut args, project_root)?;
@@ -120,6 +127,22 @@ fn resolve_from_config(args: &mut DoctorArgs, project_root: Option<&Path>) -> Re
                 )
             })
             .transpose()?;
+    }
+    if args.fallback_urls.is_empty() {
+        args.fallback_urls = config
+            .endpoints
+            .iter()
+            .skip(1)
+            .map(|url| {
+                expand_endpoint(
+                    url,
+                    platform,
+                    &version,
+                    &config.channel,
+                    config.bundle_type.as_deref(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
     }
     if args.trust_policy.is_none() {
         if let Some(policy) = config.trust_policy.as_deref() {
@@ -463,7 +486,10 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
     let keys: Vec<&str> = args.pubkey.iter().map(String::as_str).collect();
     check_manifest_signature(
         &client,
-        &args,
+        ManifestSource {
+            endpoint: &endpoint,
+            signature_url: args.signature_url.as_deref(),
+        },
         &manifest_bytes,
         &manifest,
         &keys,
@@ -474,6 +500,12 @@ async fn check(args: DoctorArgs) -> Result<Report, String> {
 
     check_platforms(&client, &manifest, &keys, verdict, args.deep, &mut report).await;
     check_patches(&client, &manifest, &mut report).await;
+
+    // 备用端点只在主源故障时才被使用；发布后必须提前确认它们真的可用、
+    // 且版本与主端点一致，否则“切换”会变成 404 / 降级重放失败。
+    for fallback in &args.fallback_urls {
+        check_fallback(&client, fallback, &manifest, &keys, verdict, &mut report).await;
+    }
 
     if let Some(bundle_url) = &args.bundle_url {
         check_bundle(&client, &manifest, bundle_url, &keys, verdict, &mut report).await;
@@ -503,7 +535,7 @@ fn build_client(args: &DoctorArgs) -> Result<reqwest::Client, String> {
 
 async fn check_manifest_signature(
     client: &reqwest::Client,
-    args: &DoctorArgs,
+    source: ManifestSource<'_>,
     manifest_bytes: &[u8],
     manifest: &UpdateManifest,
     keys: &[&str],
@@ -512,12 +544,10 @@ async fn check_manifest_signature(
 ) {
     // 与客户端同一条推导规则：把 `.sig` 追加在路径末尾，查询参数保留；
     // 配置了独立签名地址时优先使用它。
-    let endpoint = args.endpoint.as_deref().unwrap_or_default();
-    let sig_url = args
+    let sig_url = source
         .signature_url
-        .as_deref()
         .map(str::to_string)
-        .unwrap_or_else(|| default_signature_url(endpoint));
+        .unwrap_or_else(|| default_signature_url(source.endpoint));
     let Some(signature_bytes) =
         fetch_or_fail(client, &sig_url, MAX_SIGNATURE_BYTES, "清单签名", report).await
     else {
@@ -538,8 +568,8 @@ async fn check_manifest_signature(
         verdict.policy,
         verdict.allow_legacy,
     ) {
-        Ok(()) => report.ok("清单签名有效"),
-        Err(err) => report.fail(format!("清单签名校验失败: {err}")),
+        Ok(()) => report.ok(format!("清单签名有效: {}", source.endpoint)),
+        Err(err) => report.fail(format!("清单签名校验失败（{}）: {err}", source.endpoint)),
     }
 
     match manifest_version_binding(&signature) {
@@ -551,6 +581,78 @@ async fn check_manifest_signature(
             manifest.version
         )),
         None => report.warn("签名没有版本绑定（tdu:v=…），无法发现版本与清单漂移"),
+    }
+}
+
+async fn check_fallback(
+    client: &reqwest::Client,
+    url: &str,
+    primary: &UpdateManifest,
+    keys: &[&str],
+    verdict: Verdict,
+    report: &mut Report,
+) {
+    if !is_http_url(url) {
+        report.fail(format!("备用清单地址不是 http(s) URL: {url}"));
+        return;
+    }
+    if url.starts_with("http://") && !is_loopback(url) {
+        report.warn(format!(
+            "备用清单使用明文 HTTP: {url}（生产环境应使用 HTTPS）"
+        ));
+    }
+
+    let Some(bytes) = fetch_or_fail(client, url, MAX_MANIFEST_BYTES, "备用清单", report).await
+    else {
+        return;
+    };
+    let manifest: UpdateManifest = match serde_json::from_slice(&bytes) {
+        Ok(manifest) => {
+            report.ok(format!("备用清单可下载并解析: {url}"));
+            manifest
+        }
+        Err(err) => {
+            report.fail(format!("备用清单 JSON 解析失败（{url}）: {err}"));
+            return;
+        }
+    };
+
+    check_manifest_signature(
+        client,
+        ManifestSource {
+            endpoint: url,
+            signature_url: None,
+        },
+        &bytes,
+        &manifest,
+        keys,
+        verdict,
+        report,
+    )
+    .await;
+
+    // 镜像最常见的两类事故：补丁/清单没同步（404）与镜像停在旧版本。
+    // 后者不会让客户端装回旧版本（版本单调性会拒绝），但会让更新直接失败。
+    let primary_version = semver::Version::parse(normalize_version(&primary.version));
+    let fallback_version = semver::Version::parse(normalize_version(&manifest.version));
+    match (primary_version, fallback_version) {
+        (Ok(primary), Ok(fallback)) if primary == fallback => {
+            report.ok(format!("主/备用清单版本一致（{fallback}）"));
+        }
+        (Ok(primary), Ok(fallback)) if fallback < primary => {
+            report.fail(format!(
+                "备用清单版本 {fallback} 低于主端点 {primary}：切源后会因版本单调性拒绝更新"
+            ));
+        }
+        (Ok(primary), Ok(fallback)) => {
+            report.warn(format!(
+                "备用清单版本 {fallback} 高于主端点 {primary}：主端点可能未发布最新版本"
+            ));
+        }
+        _ => report.warn(format!(
+            "无法比较主/备用清单版本（主 {:?}，备 {:?}）",
+            primary.version, manifest.version
+        )),
     }
 }
 

@@ -667,8 +667,10 @@ fn doctor_reads_project_config() {
     });
     let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
     let signature = common::sign_bound(&sk, &manifest_bytes, "tdu:v=0.1.1");
-    server.set("/stable/latest.json", manifest_bytes);
-    server.set("/stable/latest.json.sig", signature.into_bytes());
+    server.set("/stable/latest.json", manifest_bytes.clone());
+    server.set("/stable/latest.json.sig", signature.clone().into_bytes());
+    server.set("/fallback/latest.json", manifest_bytes);
+    server.set("/fallback/latest.json.sig", signature.into_bytes());
     server.set("/full.exe", b"installer".to_vec());
 
     let tauri = root.join("src-tauri");
@@ -677,7 +679,10 @@ fn doctor_reads_project_config() {
         "productName": "Demo",
         "plugins": {
             "updater": {
-                "endpoints": [server.url("/{{channel}}/latest.json")],
+                "endpoints": [
+                    server.url("/{{channel}}/latest.json"),
+                    server.url("/fallback/latest.json")
+                ],
                 "pubkey": pk,
                 "channel": "stable"
             }
@@ -698,6 +703,32 @@ fn doctor_reads_project_config() {
     let (code, stdout, stderr) = run(root, &["doctor", "--from-config", "--project", "."]);
     assert_eq!(code, 0, "体检必须通过: {stdout}\n{stderr}");
     assert!(stdout.contains("清单签名有效"), "{stdout}");
+    assert!(
+        stdout.contains("主/备用清单版本一致"),
+        "备用端点必须被体检: {stdout}"
+    );
+
+    // 镜像停在旧版本是切源时最常见的事故；体检必须直接失败。
+    let stale = serde_json::json!({
+        "version": "0.1.0",
+        "notes": "stale mirror",
+        "pub_date": "2026-01-01T00:00:00Z",
+        "platforms": {
+            platform: { "signature": "dummy", "url": server.url("/full.exe") }
+        },
+        "patches": {}
+    });
+    let stale_bytes = serde_json::to_vec_pretty(&stale).unwrap();
+    let stale_sig = common::sign_bound(&sk, &stale_bytes, "tdu:v=0.1.0");
+    server.set("/fallback/latest.json", stale_bytes);
+    server.set("/fallback/latest.json.sig", stale_sig.into_bytes());
+
+    let (code, stdout, stderr) = run(root, &["doctor", "--from-config", "--project", "."]);
+    assert_ne!(code, 0, "落后镜像必须让体检失败: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("低于主端点"),
+        "错误必须指出镜像版本落后: {stdout}"
+    );
 }
 
 /// 全局参数被无关子命令接受但静默忽略，会让用户误以为它生效。

@@ -25,6 +25,8 @@
 - 新增 `cargo delta doctor --from-config`：直接读取项目配置（含官方
   `plugins.updater` 回退、占位符展开、签名/整包地址、请求头与信任策略），
   发布后无需重复复制 URL/公钥即可体检线上源。
+- `cargo delta doctor` 现在也体检备用端点：验证镜像清单签名与主/备版本
+  一致性；镜像版本落后或 404 会直接失败。新增 `--fallback-url` 可显式测试镜像。
 - 明文 HTTP 检查覆盖 `signature_url` 与 `bundle_endpoint`，避免清单走 HTTPS、
   签名走 HTTP 的降级窗口。
 - 插件配置 `proxy` / `headers` 自建客户端时恢复默认连接/读空闲超时

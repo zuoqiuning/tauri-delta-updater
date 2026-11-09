@@ -26,7 +26,9 @@ cargo delta doctor --from-config --project ./my-app
 (`release::run_release`); `cargo delta doctor` validates a published bucket
 (signature, sizes, patch hashes, chain reachability). `--from-config` reads
 `plugins.delta-updater` (falling back to `plugins.updater`), expands official
-placeholders and uses the configured trust policy. `--help` is always the
+placeholders, uses the configured trust policy and checks every configured
+fallback endpoint (manifest signature plus primary/fallback version consistency).
+`--fallback-url` tests extra mirrors explicitly. `--help` is always the
 authoritative argument list; the reference below is kept for offline reading.
 
 ## Publisher CLI
