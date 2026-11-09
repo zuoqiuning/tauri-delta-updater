@@ -454,6 +454,51 @@ impl DeltaUpdater {
         diagnosis.warning_keys = diagnosis.warning_keys();
         diagnosis
     }
+
+    /// 诊断包：`diagnose()` 快照 + 脚本日志尾部 + 原始事件流，一份 JSON 文本。
+    ///
+    /// 用户报障时只需把这段文本写入文件发过来，维护者不必再逐个目录找日志。
+    /// 不包含密钥、补丁内容或安装包字节；[`Diagnosis::insecure_endpoint`]
+    /// 可能含 CDN token，公开展示前请自行脱敏。
+    ///
+    /// ```no_run
+    /// # async fn example(updater: &tauri_delta_updater::DeltaUpdater) {
+    /// let bundle = updater.diagnostic_bundle().await;
+    /// std::fs::write("diagnostics.json", bundle).unwrap();
+    /// # }
+    /// ```
+    pub async fn diagnostic_bundle(&self) -> String {
+        let diagnosis = self.diagnose().await;
+        let log_tail = tail_lines(&self.work_dir.join(crate::core::artifacts::LOG_FILE), 200);
+        let events_tail = tail_lines(
+            &self.work_dir.join(crate::core::artifacts::EVENTS_FILE),
+            200,
+        );
+        let generated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let bundle = serde_json::json!({
+            "schema": 1,
+            "generated_at": generated_at,
+            "engine_version": env!("CARGO_PKG_VERSION"),
+            "current_version": self.config.current_version,
+            "diagnosis": diagnosis,
+            "log_tail": log_tail,
+            "events_tail": events_tail,
+        });
+        serde_json::to_string_pretty(&bundle).unwrap_or_else(|_| bundle.to_string())
+    }
+}
+
+/// 文件最后 `max` 行；文件不存在或不可读时为空。
+fn tail_lines(path: &std::path::Path, max: usize) -> Vec<String> {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = content.lines().collect();
+    lines[lines.len().saturating_sub(max)..]
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -490,5 +535,38 @@ mod tests {
         );
         assert_eq!(events[1].reason.as_deref(), Some("startup_timeout"));
         assert_eq!(events[1].time, None);
+    }
+
+    /// 诊断包必须自带快照与两份尾部日志，用户只发一个文件就能排障。
+    #[tokio::test]
+    async fn diagnostic_bundle_contains_diagnosis_and_tails() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let updater = crate::updater::DeltaUpdater::new(
+            crate::updater::UpdateConfig::new("https://cdn.example.com/latest.json", "dGVzdA==")
+                .current_version("0.1.0")
+                .executable_path(&exe)
+                .work_dir(dir.path()),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(crate::core::artifacts::LOG_FILE),
+            "line1\nline2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(crate::core::artifacts::EVENTS_FILE),
+            "{\"event\":\"delta.x\"}\n",
+        )
+        .unwrap();
+
+        let bundle: serde_json::Value =
+            serde_json::from_str(&updater.diagnostic_bundle().await).unwrap();
+        assert_eq!(bundle["schema"], 1);
+        assert_eq!(bundle["current_version"], "0.1.0");
+        assert_eq!(bundle["log_tail"][1], "line2");
+        assert_eq!(bundle["events_tail"][0], "{\"event\":\"delta.x\"}");
+        assert!(bundle["diagnosis"]["work_dir"].is_string());
     }
 }

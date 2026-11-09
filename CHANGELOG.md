@@ -18,6 +18,8 @@
 - 新增 `tdx-testkit` crate：把仓库内部的 mock 更新服务（含 `Range` 续传）、
   minisign 助手与签名清单构造器开放给接入方，写集成测试不再需要重造夹具。
   它只依赖签名/JSON 库，不进入生产构建，与核心同版本发布。
+- 新增 `DeltaUpdater::diagnostic_bundle()`：把诊断快照、脚本日志尾部与原始
+  事件流打包成一份 JSON，用户报障只发一个文件即可。
 
 ### 文档
 
