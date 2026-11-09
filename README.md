@@ -8,10 +8,11 @@ signed and every fallback is a typed reason.
 
 Version semantics: [VERSIONING.md](VERSIONING.md) · Docs index: [docs/README.md](docs/README.md) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
-**Maturity: early (0.5.x).** Single maintainer. Run one full update cycle on
-each platform ([DEVICE_TESTS.md](docs/DEVICE_TESTS.md)) before production use;
-CI covers static checks, synthetic scripts and end-to-end mocks, not code
-signing, UAC or Gatekeeper.
+**Maturity: early (0.5.x).** Single maintainer. Windows is the most exercised
+platform; macOS and Linux paths are functional but less battle-tested. Run one
+full update cycle on each platform ([DEVICE_TESTS.md](docs/DEVICE_TESTS.md))
+before production use; CI covers static checks, synthetic scripts and
+end-to-end mocks, not code signing, UAC or Gatekeeper.
 
 ## Measured on Windows
 
@@ -81,6 +82,11 @@ Keep the guard in CI:
     cargo install tauri-delta-updater --features generator
     cargo delta init --check
 ```
+
+For production, pin the exact version with `--registry` and read the
+`升级注意` section of [CHANGELOG.md](CHANGELOG.md) before every minor upgrade:
+defaults can tighten between minors (0.4.0 narrowed the default permissions,
+for example).
 
 ### 2. Register it
 
@@ -198,6 +204,31 @@ Wondering whether a patch is worth it? No network or key needed:
 ```bash
 cargo run --example simulate_update -- old.exe new.exe target/delta-sim
 ```
+
+For cancellable sessions with stage events, use `UpdateSession`:
+`updater.session()` → `run(on_event)` + `cancel()` (see
+[USAGE.md](docs/USAGE.md#cancellable-updates-session)).
+
+## Which track?
+
+| | Tauri plugin | Rust library |
+|---|---|---|
+| Tauri app with a webview | recommended | possible, you own the wiring |
+| Non-Tauri Rust host | — | yes |
+| Configuration | `tauri.conf.json` + capabilities | `UpdateConfig` builder |
+| Progress / cancel | `install` events + `cancel` command | `UpdateSession` + `CancelToken` |
+| Install on next launch | `install_on_next_launch` | `pending()` + `install_pending()` |
+| Official-updater migration | `checkCompat()` from npm | manual |
+
+Both tracks run the same engine, outcomes and safe-mode logic; the plugin only
+adds IPC, permissions and config loading.
+
+## Examples
+
+- [examples/tauri-app](examples/tauri-app) — minimal plugin app with capabilities and config.
+- [examples/migration-example](examples/migration-example) — official-updater frontend, before/after `checkCompat()`.
+- [examples/full_cycle.rs](examples/full_cycle.rs) — local end-to-end harness (generate → apply → verify).
+- [examples/simulate_update.rs](examples/simulate_update.rs) — measure a real patch for your own binaries.
 
 ## What it handles
 

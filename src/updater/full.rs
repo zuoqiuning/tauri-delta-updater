@@ -245,8 +245,9 @@ impl DeltaUpdater {
     /// - **Linux**：AppImage 走单文件替换脚本；`.deb` / `.rpm` 明确拒绝，
     ///   交给包管理器处理。
     ///
-    /// 与增量路径不同，全量安装的失败回滚由安装器负责：我们只负责
-    /// "下载对的文件、验签、以正确参数启动安装器"。
+    /// 与增量路径不同，文件层面的失败回滚由安装器负责；引擎在启动安装器前
+    /// 写入 `tdx_full_pending.json`，下次启动对比版本确认是否真的生效：
+    /// 超过 1 小时仍未升级会计入失败次数，与增量路径共用安全模式。
     pub async fn install_full(&self) -> Result<UpdateResult> {
         let cancel = crate::core::cancel::CancelToken::new();
         self.install_full_with_events(&cancel, |_| {}).await
@@ -267,7 +268,9 @@ impl DeltaUpdater {
 
         match outcome {
             FullDownloadOutcome::Downloaded { installer } => {
-                crate::platform::full_install::install_with_mode_kind_and_args(
+                // 先记录待确认：安装器由平台启动，是否真的装上都只能下次启动判断。
+                super::full_pending::write(&self.work_dir, installer.version());
+                let launched = crate::platform::full_install::install_with_mode_kind_and_args(
                     &self.executable_path,
                     installer.path(),
                     &self.work_dir,
@@ -275,10 +278,22 @@ impl DeltaUpdater {
                     self.config.install_mode,
                     self.config.installer_kind,
                     &self.config.installer_args,
-                )?;
-                Ok(UpdateResult::Updated {
-                    version: installer.version().to_string(),
-                })
+                );
+                match launched {
+                    Ok(()) => Ok(UpdateResult::Updated {
+                        version: installer.version().to_string(),
+                    }),
+                    Err(err) => {
+                        // 安装器根本没起来：清除待确认，并计入失败次数。
+                        super::full_pending::clear(&self.work_dir);
+                        let _ = crate::core::safety::record_failed_attempt_with_reason(
+                            &self.work_dir,
+                            crate::updater::SafeModeReason::EnvironmentFailure,
+                        )
+                        .await;
+                        Err(err)
+                    }
+                }
             }
             FullDownloadOutcome::UpToDate { version } => Ok(UpdateResult::UpToDate { version }),
             FullDownloadOutcome::Deferred {

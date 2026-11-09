@@ -24,6 +24,7 @@ mod diagnosis;
 mod fetch;
 mod flow;
 mod full;
+pub(crate) mod full_pending;
 mod outcome;
 mod pending;
 mod plan;

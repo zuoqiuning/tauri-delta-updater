@@ -143,6 +143,9 @@ pub const PENDING_FILE: &str = "tdx_pending.json";
 /// 上一次更新尝试的结构化结果（`diagnose().last_attempt` 读取）。
 pub const LAST_ATTEMPT_FILE: &str = "tdx_last_attempt.json";
 
+/// 全量安装器的待确认记录：下次启动时对比版本，判断安装是否生效。
+pub const FULL_PENDING_FILE: &str = "tdx_full_pending.json";
+
 /// 启动状态指针：`staged` → `booting` → `committed`，回滚时写 `rolled_back`。
 ///
 /// 替换脚本在启动新版本前写 `staged`；新版本启动早期写 `booting`；

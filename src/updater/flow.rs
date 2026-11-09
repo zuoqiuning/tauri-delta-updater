@@ -480,14 +480,35 @@ impl DeltaUpdater {
     /// # }
     /// ```
     pub fn confirm_startup_success_if_pending(&self) -> Result<bool> {
-        let Some(dir) = self.executable_path.parent() else {
+        // 替换证据优先：它代表刚刚完成的一次增量/目录切换，必须立即确认，
+        // 否则替换脚本会等到超时后回滚一个好版本。确认会顺带清掉可能残留的
+        // 全量待确认记录（那次全量安装已被本次替换取代，不应再计失败）。
+        if let Some(dir) = self.executable_path.parent() {
+            if crate::platform::shared::has_replacement_evidence(dir) {
+                self.confirm_startup_success()?;
+                return Ok(true);
+            }
+        }
+        // 全量安装由平台安装器执行，没有替换脚本证据；用"目标版本 + 宽限期"
+        // 判断是否真的生效，并把未生效计入失败次数（与增量路径共用安全模式）。
+        let Some(pending) = super::full_pending::read(&self.work_dir) else {
             return Ok(false);
         };
-        if !crate::platform::shared::has_replacement_evidence(dir) {
-            return Ok(false);
+        match super::full_pending::evaluate(&self.config.current_version, &pending) {
+            super::full_pending::PendingState::Confirmed => {
+                self.confirm_startup_success()?;
+                Ok(true)
+            }
+            super::full_pending::PendingState::Waiting => Ok(false),
+            super::full_pending::PendingState::Failed => {
+                super::full_pending::clear(&self.work_dir);
+                crate::core::safety::record_failed_attempt_sync(
+                    &self.work_dir,
+                    crate::updater::SafeModeReason::EnvironmentFailure,
+                );
+                Ok(false)
+            }
         }
-        self.confirm_startup_success()?;
-        Ok(true)
     }
 
     /// 手动退出安全模式（宿主提供"重试"按钮时使用）。

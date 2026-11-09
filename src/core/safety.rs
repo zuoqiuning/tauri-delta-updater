@@ -33,6 +33,18 @@ pub async fn record_failed_attempt_with_reason(
     Ok(count)
 }
 
+/// 同步记录一次失败（启动确认阶段使用，调用方不在 async 上下文）。
+///
+/// 语义与 [`record_failed_attempt_with_reason`] 一致；返回累计失败次数。
+pub(crate) fn record_failed_attempt_sync(base_dir: &Path, reason: SafeModeReason) -> u32 {
+    let fail_file = base_dir.join(artifacts::FAILURE_COUNTER);
+    let state = read_state_sync(&fail_file);
+    let count = state.count.saturating_add(1);
+    let content = format!("{count}\n{}\n{}", now_secs(), reason_key(reason));
+    let _ = std::fs::write(&fail_file, content);
+    count
+}
+
 /// 最近一次失败的类型；没有记录或旧格式文件只有计数时为 `None`。
 pub async fn last_failure_reason(base_dir: &Path) -> Option<SafeModeReason> {
     read_state(&base_dir.join(artifacts::FAILURE_COUNTER))
@@ -136,7 +148,15 @@ struct SafetyState {
 
 /// 读取失败计数状态，文件不存在或内容损坏时视为 0。
 async fn read_state(path: &Path) -> SafetyState {
-    let content = fs::read_to_string(path).await.unwrap_or_default();
+    parse_state(&fs::read_to_string(path).await.unwrap_or_default())
+}
+
+/// 同步版本，供启动确认路径使用。
+fn read_state_sync(path: &Path) -> SafetyState {
+    parse_state(&std::fs::read_to_string(path).unwrap_or_default())
+}
+
+fn parse_state(content: &str) -> SafetyState {
     let mut lines = content.lines();
     SafetyState {
         count: lines
@@ -162,6 +182,21 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 启动确认阶段用同步写入；异步读取必须看到同一份状态。
+    #[tokio::test]
+    async fn sync_recorder_matches_async_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            record_failed_attempt_sync(dir.path(), SafeModeReason::EnvironmentFailure),
+            1
+        );
+        assert_eq!(get_failed_attempts(dir.path()).await, 1);
+        assert_eq!(
+            last_failure_reason(dir.path()).await,
+            Some(SafeModeReason::EnvironmentFailure)
+        );
+    }
 
     #[tokio::test]
     async fn cooldown_expires_and_resets_counter() {
