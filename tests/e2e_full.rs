@@ -132,6 +132,33 @@ async fn test_full_download_verifies_installer() {
     assert!(server.was_requested("/full.exe"));
 }
 
+/// 全量下载同样有断点续传：预置半截安装包时只补齐剩余字节。
+///
+/// 与补丁路径对齐——全量包更大、更怕弱网，从头重下是最贵的回退。
+#[tokio::test]
+async fn test_full_download_resumes_from_partial_file() {
+    let installer: Vec<u8> = (0..8192u32).map(|i| (i % 251) as u8).collect();
+    let (dir, updater, server) = full_fixture(&installer, "0.1.0").await;
+
+    // 与引擎内部的 full_installer_path 命名一致：前缀 + 版本 + URL 后缀
+    let partial = dir.path().join(format!(
+        "{}_0.2.0.exe",
+        tauri_delta_updater::core::artifacts::FULL_INSTALLER_PREFIX
+    ));
+    std::fs::write(&partial, &installer[..3000]).unwrap();
+
+    let outcome = updater.download_full().await.unwrap();
+    let FullDownloadOutcome::Downloaded { installer: staged } = outcome else {
+        panic!("半截安装包必须能续传完成: {outcome:?}");
+    };
+    assert_eq!(std::fs::read(staged.path()).unwrap(), installer);
+    assert_eq!(
+        server.request_count("/full.exe"),
+        1,
+        "续传命中时只应请求一次；忽略 Range 的实现会丢弃残留再请求第二次"
+    );
+}
+
 /// 安装包签名不匹配必须拒绝并删除下载内容（不能被替换后的安装器利用）。
 #[tokio::test]
 async fn test_full_download_rejects_tampered_installer() {
