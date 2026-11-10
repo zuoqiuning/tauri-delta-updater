@@ -5,8 +5,11 @@
 //!
 //! - 已达到目标版本 → 确认成功，清掉记录；
 //! - 未达到且仍在宽限期内 → 安装器可能还在运行，保持等待；
-//! - 未达到且已超过宽限期 → 视为安装未生效，计入一次失败，让连续失败
-//!   能像增量路径一样进入安全模式。
+//! - 未达到且已超过宽限期 → 视为安装未生效，计入一次**全量专用失败计数**。
+//!
+//! 全量失败与增量安全模式**隔离**：用户取消安装器、拒绝提权、安装包缺失都是
+//! 合法或可预期的情况，不应该冻结增量通道。计数只通过
+//! `diagnose().full_failures` 暴露给 UI 与排障。
 
 use crate::core::artifacts;
 use crate::platform::target::normalize_version;
@@ -160,7 +163,7 @@ mod tests {
         );
     }
 
-    /// 超过宽限期仍是旧版本：清记录并计入一次失败，连续失败可进安全模式。
+    /// 超过宽限期仍是旧版本：清记录、计入全量专用计数，但**不**进增量安全模式。
     #[tokio::test]
     async fn stale_install_counts_a_failure() {
         let dir = tempfile::tempdir().unwrap();
@@ -175,16 +178,25 @@ mod tests {
         assert!(!updater.confirm_startup_success_if_pending().unwrap());
         assert!(super::read(dir.path()).is_none(), "失败判定后必须清记录");
         assert_eq!(
+            crate::core::safety::full_failures(dir.path()).await,
+            1,
+            "全量未生效必须记入专用计数"
+        );
+        assert_eq!(
             crate::core::safety::get_failed_attempts(dir.path()).await,
-            1
+            0,
+            "全量失败不得污染增量安全模式"
         );
     }
 
-    /// 版本已达到目标：确认成功（写成功标志、清失败计数与记录）。
+    /// 版本已达到目标：确认成功（写成功标志、清两类失败计数与记录）。
     #[tokio::test]
     async fn reached_version_confirms_and_clears() {
         let dir = tempfile::tempdir().unwrap();
-        crate::core::safety::record_failed_attempt_sync(
+        crate::core::safety::record_failed_attempt(dir.path())
+            .await
+            .unwrap();
+        crate::core::safety::record_full_failure_sync(
             dir.path(),
             crate::updater::SafeModeReason::EnvironmentFailure,
         );
@@ -197,6 +209,11 @@ mod tests {
         assert_eq!(
             crate::core::safety::get_failed_attempts(dir.path()).await,
             0
+        );
+        assert_eq!(
+            crate::core::safety::full_failures(dir.path()).await,
+            0,
+            "全量确认成功后必须清零全量失败计数"
         );
     }
 

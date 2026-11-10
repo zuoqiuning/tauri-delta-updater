@@ -659,6 +659,7 @@ mod ui_result_tests {
             bundle_capable: false,
             safe_mode: false,
             safe_mode_reason: None,
+            full_failures: 0,
             needs_repair: false,
             startup_state: None,
             last_rollback: None,

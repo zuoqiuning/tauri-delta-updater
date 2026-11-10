@@ -490,19 +490,21 @@ impl DeltaUpdater {
             }
         }
         // 全量安装由平台安装器执行，没有替换脚本证据；用"目标版本 + 宽限期"
-        // 判断是否真的生效，并把未生效计入失败次数（与增量路径共用安全模式）。
+        // 判断是否真的生效。未生效只计入全量专用计数（诊断用），不进增量安全模式：
+        // 用户取消安装器或拒绝提权都是合法操作，不能让增量更新一起被冻结。
         let Some(pending) = super::full_pending::read(&self.work_dir) else {
             return Ok(false);
         };
         match super::full_pending::evaluate(&self.config.current_version, &pending) {
             super::full_pending::PendingState::Confirmed => {
+                crate::core::safety::clear_full_failures_sync(&self.work_dir);
                 self.confirm_startup_success()?;
                 Ok(true)
             }
             super::full_pending::PendingState::Waiting => Ok(false),
             super::full_pending::PendingState::Failed => {
                 super::full_pending::clear(&self.work_dir);
-                crate::core::safety::record_failed_attempt_sync(
+                crate::core::safety::record_full_failure_sync(
                     &self.work_dir,
                     crate::updater::SafeModeReason::EnvironmentFailure,
                 );

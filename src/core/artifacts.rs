@@ -28,6 +28,12 @@ pub const LEGACY_SUCCESS_FLAG: &str = "sereno_start_success.flag";
 /// 反而可能在某个持续失败的环境里重新触发一轮失败。
 pub const FAILURE_COUNTER: &str = "update_failures.txt";
 
+/// 连续全量安装未生效的次数（与增量安全模式隔离，只用于诊断）。
+///
+/// 全量安装是用户显式选择或回退路径：安装器被用户取消、提权被拒绝都不该
+/// 冻结增量通道，因此单独计数、单独展示，不参与 `should_abort`。
+pub const FULL_FAILURE_COUNTER: &str = "full_update_failures.txt";
+
 /// 增量补丁文件。
 pub const PATCH_FILE: &str = "tdx_update.patch";
 

@@ -247,7 +247,8 @@ impl DeltaUpdater {
     ///
     /// 与增量路径不同，文件层面的失败回滚由安装器负责；引擎在启动安装器前
     /// 写入 `tdx_full_pending.json`，下次启动对比版本确认是否真的生效：
-    /// 超过 1 小时仍未升级会计入失败次数，与增量路径共用安全模式。
+    /// 超过 1 小时仍未升级会计入一次**全量失败计数**（`diagnose().full_failures`）。
+    /// 该计数与增量安全模式隔离——用户取消安装器、拒绝提权都不会冻结增量通道。
     pub async fn install_full(&self) -> Result<UpdateResult> {
         let cancel = crate::core::cancel::CancelToken::new();
         self.install_full_with_events(&cancel, |_| {}).await
@@ -286,7 +287,7 @@ impl DeltaUpdater {
                     Err(err) => {
                         // 安装器根本没起来：清除待确认，并计入失败次数。
                         super::full_pending::clear(&self.work_dir);
-                        let _ = crate::core::safety::record_failed_attempt_with_reason(
+                        let _ = crate::core::safety::record_full_failure(
                             &self.work_dir,
                             crate::updater::SafeModeReason::EnvironmentFailure,
                         )

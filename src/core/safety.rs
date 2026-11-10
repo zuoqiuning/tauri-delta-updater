@@ -26,23 +26,53 @@ pub async fn record_failed_attempt_with_reason(
     reason: SafeModeReason,
 ) -> Result<u32> {
     let fail_file = base_dir.join(artifacts::FAILURE_COUNTER);
-    let state = read_state(&fail_file).await;
-    let count = state.count.saturating_add(1);
-    let content = format!("{count}\n{}\n{}", now_secs(), reason_key(reason));
-    let _ = fs::write(&fail_file, content).await;
+    let count = read_state(&fail_file).await.count.saturating_add(1);
+    write_failure(&fail_file, count, reason).await;
     Ok(count)
 }
 
-/// 同步记录一次失败（启动确认阶段使用，调用方不在 async 上下文）。
+/// 记录一次全量安装未生效，返回累计次数。
 ///
-/// 语义与 [`record_failed_attempt_with_reason`] 一致；返回累计失败次数。
-pub(crate) fn record_failed_attempt_sync(base_dir: &Path, reason: SafeModeReason) -> u32 {
-    let fail_file = base_dir.join(artifacts::FAILURE_COUNTER);
-    let state = read_state_sync(&fail_file);
-    let count = state.count.saturating_add(1);
-    let content = format!("{count}\n{}\n{}", now_secs(), reason_key(reason));
-    let _ = std::fs::write(&fail_file, content);
+/// **与增量失败完全隔离**：全量安装是用户显式选择或回退路径，安装器被取消、
+/// 提权被拒绝、安装包缺失都不应冻结增量通道。本计数只用于诊断展示，
+/// 不参与 [`should_abort`] / [`is_safe_mode_active`]。
+pub(crate) async fn record_full_failure(base_dir: &Path, reason: SafeModeReason) -> u32 {
+    let path = base_dir.join(artifacts::FULL_FAILURE_COUNTER);
+    let count = read_state(&path).await.count.saturating_add(1);
+    write_failure(&path, count, reason).await;
     count
+}
+
+/// [`record_full_failure`] 的同步版本（启动确认阶段使用）。
+pub(crate) fn record_full_failure_sync(base_dir: &Path, reason: SafeModeReason) -> u32 {
+    let path = base_dir.join(artifacts::FULL_FAILURE_COUNTER);
+    let count = read_state_sync(&path).count.saturating_add(1);
+    write_failure_sync(&path, count, reason);
+    count
+}
+
+/// 连续全量安装未生效的次数；只用于诊断，不影响增量安全模式。
+pub(crate) async fn full_failures(base_dir: &Path) -> u32 {
+    read_state(&base_dir.join(artifacts::FULL_FAILURE_COUNTER))
+        .await
+        .count
+}
+
+/// 全量安装确认成功后清零。
+pub(crate) fn clear_full_failures_sync(base_dir: &Path) {
+    let _ = std::fs::remove_file(base_dir.join(artifacts::FULL_FAILURE_COUNTER));
+}
+
+/// 写入失败计数文件（尽力而为）。
+async fn write_failure(path: &Path, count: u32, reason: SafeModeReason) {
+    let content = format!("{count}\n{}\n{}", now_secs(), reason_key(reason));
+    let _ = fs::write(path, content).await;
+}
+
+/// [`write_failure`] 的同步版本。
+fn write_failure_sync(path: &Path, count: u32, reason: SafeModeReason) {
+    let content = format!("{count}\n{}\n{}", now_secs(), reason_key(reason));
+    let _ = std::fs::write(path, content);
 }
 
 /// 最近一次失败的类型；没有记录或旧格式文件只有计数时为 `None`。
@@ -183,18 +213,19 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
-    /// 启动确认阶段用同步写入；异步读取必须看到同一份状态。
+    /// 启动确认阶段用同步写入全量失败；异步读取必须看到同一份状态。
     #[tokio::test]
-    async fn sync_recorder_matches_async_reads() {
+    async fn sync_full_recorder_matches_async_reads() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            record_failed_attempt_sync(dir.path(), SafeModeReason::EnvironmentFailure),
+            record_full_failure_sync(dir.path(), SafeModeReason::EnvironmentFailure),
             1
         );
-        assert_eq!(get_failed_attempts(dir.path()).await, 1);
+        assert_eq!(full_failures(dir.path()).await, 1);
         assert_eq!(
-            last_failure_reason(dir.path()).await,
-            Some(SafeModeReason::EnvironmentFailure)
+            get_failed_attempts(dir.path()).await,
+            0,
+            "同步写入也必须落在全量计数，不能污染增量计数"
         );
     }
 
@@ -272,5 +303,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(last_failure_reason(dir.path()).await, None);
+    }
+
+    /// 全量失败是独立失败域：达到阈值也只记录，不冻结增量通道。
+    #[tokio::test]
+    async fn full_failures_do_not_enter_delta_safe_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        for _ in 0..artifacts::MAX_FAILED_ATTEMPTS {
+            record_full_failure_sync(dir.path(), SafeModeReason::EnvironmentFailure);
+        }
+
+        assert_eq!(full_failures(dir.path()).await, 3);
+        assert_eq!(
+            get_failed_attempts(dir.path()).await,
+            0,
+            "全量失败不能写入增量计数"
+        );
+        assert!(
+            !should_abort(dir.path()).await,
+            "取消安装器/拒绝提权不能冻结增量更新"
+        );
+        assert!(!is_safe_mode_active(dir.path()).await);
+    }
+
+    /// 反向隔离：增量失败也不应污染全量计数。
+    #[tokio::test]
+    async fn delta_failures_keep_full_counter_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        record_failed_attempt(dir.path()).await.unwrap();
+
+        assert_eq!(get_failed_attempts(dir.path()).await, 1);
+        assert_eq!(full_failures(dir.path()).await, 0);
     }
 }

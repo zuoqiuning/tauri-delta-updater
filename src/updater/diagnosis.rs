@@ -90,6 +90,12 @@ pub struct Diagnosis {
     /// UI 可据此区分“可能被攻击（`security_block`）”与“磁盘/权限问题
     /// （`environment_failure`）”，给出不同的操作建议。
     pub safe_mode_reason: Option<SafeModeReason>,
+    /// 连续全量安装未生效的次数（安装器启动失败，或下次启动超过宽限期仍未达标）。
+    ///
+    /// 与 [`Self::safe_mode`] **无关**：全量安装是用户显式选择或回退路径，
+    /// 用户取消安装器、拒绝提权只会累计本字段，不会冻结增量通道。
+    /// UI 可据此提示"全量安装未生效，请检查安装器或权限"。
+    pub full_failures: u32,
     /// 是否需要先修复上次中断的整包替换（备份仍在）。
     pub needs_repair: bool,
     /// 上次替换的启动状态指针（`staged` / `booting` / `committed` / `failed` / `rolled_back`）。
@@ -425,6 +431,7 @@ impl DeltaUpdater {
                 && PlatformUpdater::bundle_supported_for(&self.executable_path),
             safe_mode,
             safe_mode_reason,
+            full_failures: crate::core::safety::full_failures(&self.work_dir).await,
             needs_repair: self.needs_bundle_repair(),
             startup_state: crate::core::startup::read(&self.work_dir),
             last_rollback: read_rollback_reason(&self.work_dir),
@@ -560,6 +567,10 @@ mod tests {
             "{\"event\":\"delta.x\"}\n",
         )
         .unwrap();
+        crate::core::safety::record_full_failure_sync(
+            dir.path(),
+            crate::updater::SafeModeReason::EnvironmentFailure,
+        );
 
         let bundle: serde_json::Value =
             serde_json::from_str(&updater.diagnostic_bundle().await).unwrap();
@@ -567,6 +578,10 @@ mod tests {
         assert_eq!(bundle["current_version"], "0.1.0");
         assert_eq!(bundle["log_tail"][1], "line2");
         assert_eq!(bundle["events_tail"][0], "{\"event\":\"delta.x\"}");
+        assert_eq!(
+            bundle["diagnosis"]["full_failures"], 1,
+            "全量失败计数必须进入诊断快照"
+        );
         assert!(bundle["diagnosis"]["work_dir"].is_string());
     }
 }
