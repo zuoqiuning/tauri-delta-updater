@@ -149,6 +149,15 @@ fn generate_updater_for_pid_with_options(
                     .to_string(),
             ),
         )
+        .replace(
+            "__IN_PROGRESS__",
+            &ps_literal(
+                &work_dir
+                    .join(artifacts::UPDATE_IN_PROGRESS_FILE)
+                    .display()
+                    .to_string(),
+            ),
+        )
         .replace("__OLD_PID__", &old_pid.to_string())
         .replace("__WAIT_TIMEOUT__", &timings.wait_secs.to_string())
         .replace("__CONFIRM_TIMEOUT__", &timings.confirm_secs.to_string())
@@ -361,6 +370,15 @@ fn generate_bundle_updater_for_pid_with_options(
             &ps_literal(
                 &work_dir
                     .join(artifacts::UPDATE_STATE_FILE)
+                    .display()
+                    .to_string(),
+            ),
+        )
+        .replace(
+            "__IN_PROGRESS__",
+            &ps_literal(
+                &work_dir
+                    .join(artifacts::UPDATE_IN_PROGRESS_FILE)
                     .display()
                     .to_string(),
             ),

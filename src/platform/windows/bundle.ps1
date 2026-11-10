@@ -19,6 +19,7 @@ $self         = __SELF__
 $journalFile  = __JOURNAL__
 $stateFile    = __STATE__
 $eventsFile   = __EVENTS__
+$inProgress   = __IN_PROGRESS__
 $noticeEnabled = __NOTICE_ENABLED__
 
 $copies = @(
@@ -117,31 +118,75 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # 提权进程启动的子进程会继承管理员令牌。经 explorer 拉起可回到登录用户身份。
-function Start-App([string]$path) {
-    if (-not (Test-Path -LiteralPath $path)) { return }
-    $isPe = $false
+# explorer 代理可能静默不启动（真实事故），因此要确认进程真的出现，
+# 没有就退回直接启动并记录，否则只会在超时后得到一个没有原因的 startup_not_started。
+function Test-PeFile([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
     try {
         $fs = [System.IO.File]::OpenRead($path)
         try {
             $buf = New-Object byte[] 2
             $fs.Read($buf, 0, 2) | Out-Null
-            $isPe = ($buf[0] -eq 0x4D -and $buf[1] -eq 0x5A)
+            return ($buf[0] -eq 0x4D -and $buf[1] -eq 0x5A)
         } finally { $fs.Dispose() }
-    } catch { $isPe = $false }
+    } catch { return $false }
+}
 
+function Wait-AppProcess([string]$path) {
+    for ($i = 0; $i -lt 20; $i++) {
+        $proc = Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $path } | Select-Object -First 1
+        if ($proc) { return $proc }
+        Start-Sleep -Milliseconds 500
+    }
+    return $null
+}
+
+function Start-App([string]$path) {
+    $script:launchProcess = $null
+    if (-not (Test-Path -LiteralPath $path)) {
+        Write-Log ('启动目标不存在: ' + $path)
+        return 'via=none seen=false'
+    }
+    $via = 'direct'
+    if ($isAdmin -and (Test-PeFile $path)) { $via = 'explorer' }
+    $proc = $null
     try {
-        if ($isAdmin -and $isPe) {
-            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $path + '"')
-        } else {
+        if ($via -eq 'explorer') {
+            Write-Log ('请求通过 explorer 启动: ' + $path)
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $path + '"') -ErrorAction Stop
+            $proc = Wait-AppProcess $path
+            if (-not $proc) {
+                $state = ''
+                try { $state = ([System.IO.File]::ReadAllText($stateFile)).Trim() } catch { }
+                if ((Test-Path -LiteralPath $flag) -or ($state -eq 'booting')) {
+                    Write-Log '未找到进程，但新版本已写入启动状态，跳过兜底启动。'
+                    $via = 'explorer-late'
+                } else {
+                    Write-Log 'explorer 代理未启动应用，改为直接启动。'
+                    $via = 'direct'
+                }
+            }
+        }
+        if (-not $proc -and ($via -eq 'direct')) {
+            Write-Log ('直接启动应用: ' + $path)
             # 工作目录用可执行文件所在目录：用缓存目录会让依赖相对路径的应用
             # 在新版本首次启动时读到错误的位置。
-            Start-Process -FilePath $path -WorkingDirectory (Split-Path -Parent $path)
+            $proc = Start-Process -FilePath $path -WorkingDirectory (Split-Path -Parent $path) -PassThru -ErrorAction Stop
         }
     } catch {
         # Start-Process 对无效 PE 会抛终止性错误。在回滚路径中抛出时，
         # PowerShell 5.1 会跳过调用方的 exit，脚本继续走成功流程并清掉回滚原因。
-        Write-Log ('无法启动应用: ' + $path + ' - ' + $_.Exception.Message)
+        Write-Log ('启动应用失败（' + $via + '）: ' + $path + ' - ' + $_.Exception.Message)
+        return ('via=' + $via + ' seen=false error=' + $_.Exception.Message)
     }
+    $script:launchProcess = $proc
+    if ($proc) {
+        Write-Log ('应用进程已启动: PID=' + $proc.Id)
+        return ('via=' + $via + ' pid=' + $proc.Id + ' seen=true')
+    }
+    Write-Log '未能确认应用进程已启动。'
+    return ('via=' + $via + ' pid=none seen=false')
 }
 
 # 记录本次新增的文件：崩溃/回滚后要删除它们，旧版本没有这些路径。
@@ -196,6 +241,8 @@ function Restore-Backup {
 
 # 所有失败路径的统一收口：还原备份，再把旧版本拉起来。
 function Restart-Old {
+    # 回滚完成：上一次替换已经结束（以失败告终），“进行中”标记不能留到下次启动。
+    Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue
     # 已经有明确原因（超时/健康检查失败）时不要覆盖成笼统的 update_failed。
     $existing = ''
     try { $existing = ([System.IO.File]::ReadAllText($rollbackFlag)).Trim() } catch { }
@@ -214,14 +261,28 @@ function Restart-Old {
             Write-Log '旧进程仍在运行，跳过重新启动。'
         } else {
             Write-Log '更新中止，重新启动旧版本。'
-            Start-App $target
+            $null = Start-App $target
         }
     }
     Show-RollbackNotice
 }
 
-if (-not $isAdmin) {
-    Write-Log '权限不足，正在请求管理员权限...'
+# 只有安装目录真的不可写时才提权：per-user 安装不需要 UAC。
+function Test-DirWritable([string]$dir) {
+    if (-not (Test-Path -LiteralPath $dir)) { return $false }
+    $probe = Join-Path $dir ('.tdx_write_probe_' + [Guid]::NewGuid().ToString('N'))
+    try {
+        [System.IO.File]::WriteAllText($probe, 'x')
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
+if (-not $isAdmin -and -not (Test-DirWritable (Split-Path -Parent $target))) {
+    Write-Log '安装目录不可写，正在请求管理员权限...'
     try {
         $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WorkingDirectory $workDir -ErrorAction Stop -PassThru `
             -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $self + '"')
@@ -231,6 +292,9 @@ if (-not $isAdmin) {
         Restart-Old
     }
     exit 0
+}
+if (-not $isAdmin) {
+    Write-Log '安装目录可写，无需管理员权限。'
 }
 
 Write-Log '开始整包更新流程...'
@@ -312,7 +376,7 @@ Set-Content -LiteralPath $marker -Value $workDir -Encoding UTF8
 Remove-Item -LiteralPath $rollbackFlag -Force -ErrorAction SilentlyContinue
 [System.IO.File]::WriteAllText($stateFile, 'staged')
 Write-Stage 'delta.stage.replace_started'
-Start-App $target
+$launchNote = Start-App $target
 
 $deadline = (Get-Date).AddSeconds($confirmTimeout)
 while ((Get-Date) -lt $deadline) {
@@ -327,6 +391,7 @@ if (Test-Path -LiteralPath $flag) {
     try { [System.IO.Directory]::Delete($backupDir, $true) } catch { }
     Remove-Item -LiteralPath $journalFile -Force -ErrorAction SilentlyContinue
     try { [System.IO.Directory]::Delete($stagingDir, $true) } catch { }
+    Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue
 } else {
     $reason = 'startup_timeout'
     if (Test-Path -LiteralPath $rollbackFlag) {
@@ -345,7 +410,16 @@ if (Test-Path -LiteralPath $flag) {
             if (-not $running) { $reason = 'startup_crashed' }
         }
     }
-    Write-Log ('新版本未完成启动确认（' + $reason + '），回滚...')
+    Write-Log ('新版本未完成启动确认（' + $reason + '），回滚... 启动记录: ' + $launchNote)
+    if ($script:launchProcess) {
+        try {
+            if ($script:launchProcess.HasExited) {
+                Write-Log ('新版本进程已退出: PID=' + $script:launchProcess.Id + ' exit=' + $script:launchProcess.ExitCode)
+            } else {
+                Write-Log ('新版本进程仍在运行但未确认: PID=' + $script:launchProcess.Id)
+            }
+        } catch { }
+    }
     Write-Rollback $reason
     # 按可执行文件完整路径结束进程，而不是按进程名：
     # 按名字结束会连同用户手动打开的同名实例一起杀掉。

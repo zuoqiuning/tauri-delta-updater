@@ -232,6 +232,14 @@ export interface UpdateAttempt {
   error_code: string | null;
 }
 
+/** 一次已启动、但尚未确认完成的替换。 */
+export interface UpdateInProgress {
+  /** 目标版本。 */
+  version: string;
+  /** 启动替换脚本的 Unix 时间戳（秒）。 */
+  started_at: number;
+}
+
 /** `diagnose()` 的只读快照（不发起网络请求）。 */
 export interface Diagnosis {
   executable: string;
@@ -244,6 +252,10 @@ export interface Diagnosis {
   safe_mode: boolean;
   /** Why safe mode was entered; `null` when not in safe mode. */
   safe_mode_reason: SafeModeReason | null;
+  /** 连续全量安装未生效的次数；只用于诊断，不影响增量安全模式。 */
+  full_failures: number;
+  /** 一次尚未确认完成的替换；`null` 表示上次更新正常结束。 */
+  update_in_progress: UpdateInProgress | null;
   needs_repair: boolean;
   startup_state: StartupState | null;
   last_rollback: string | null;

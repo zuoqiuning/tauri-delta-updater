@@ -155,7 +155,11 @@ impl DeltaUpdater {
         let Some(record) = self.pending_update().await? else {
             return Ok(false);
         };
-        PlatformUpdater::launch_updater(&record.script_path)?;
+        super::swap_marker::write(self.work_dir(), &record.version);
+        if let Err(e) = PlatformUpdater::launch_updater(&record.script_path) {
+            super::swap_marker::clear(self.work_dir());
+            return Err(e);
+        }
         let _ = tokio::fs::remove_file(self.work_dir().join(artifacts::PENDING_FILE)).await;
         crate::core::events::launch();
         Ok(true)

@@ -290,6 +290,31 @@ async fn test_script_contains_required_commands() {
         content.contains("event=delta.rollback.triggered"),
         "回滚必须写入结构化事件行"
     );
+
+    // explorer 代理可能静默不启动（真实事故）：必须确认进程出现并兜底直启。
+    assert!(
+        content.contains("explorer 代理未启动应用，改为直接启动"),
+        "explorer 未能启动应用时必须回退为直接启动"
+    );
+    assert!(
+        content.contains("Wait-AppProcess"),
+        "启动后必须确认进程真的出现"
+    );
+    // 失败时日志要能回答“为什么没起来”，而不是只有 startup_not_started。
+    assert!(
+        content.contains("启动记录: "),
+        "启动超时必须把启动方式与进程信息写进日志"
+    );
+    // “替换进行中”标记必须在成功/回滚后清理，避免下一次启动误报。
+    assert!(
+        content.contains(tauri_delta_updater::core::artifacts::UPDATE_IN_PROGRESS_FILE),
+        "脚本必须清理替换进行中标记"
+    );
+    // per-user 安装不需要 UAC：只有安装目录不可写时才提权。
+    assert!(
+        content.contains("Test-DirWritable"),
+        "必须按安装目录可写性决定是否提权，而不是无条件 RunAs"
+    );
 }
 
 /// 端到端：修复脚本删除本次新增文件、还原备份并重启旧版本。

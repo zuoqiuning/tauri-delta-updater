@@ -144,7 +144,11 @@ impl Staged {
     /// 之后任何线程（包括之前失败的）都可以重试；
     /// 需要串行化重试时序的调用方应自行加锁。
     pub fn launch(&self) -> Result<()> {
-        launch_script_once(&self.launched, &self.script_path)
+        launch_script_once(
+            &self.launched,
+            &self.script_path,
+            Some(&self.manifest.version),
+        )
     }
 }
 
@@ -198,7 +202,11 @@ impl StagedBundle {
     ///
     /// 幂等语义与 [`Staged::launch`] 相同：只能成功启动一次，失败可以重试。
     pub fn launch(&self) -> Result<()> {
-        launch_script_once(&self.launched, &self.script_path)
+        launch_script_once(
+            &self.launched,
+            &self.script_path,
+            Some(&self.manifest.version),
+        )
     }
 }
 
@@ -239,12 +247,19 @@ impl StagedRepair {
     /// 幂等语义与 [`Staged::launch`] 相同：只能成功启动一次，失败可以重试。
     /// 调用后主进程必须尽快退出，否则脚本会等待超时。
     pub fn launch(&self) -> Result<()> {
-        launch_script_once(&self.launched, &self.script_path)
+        launch_script_once(&self.launched, &self.script_path, None)
     }
 }
 
 /// 启动替换脚本，并保证同一份产物只启动一次。
-fn launch_script_once(launched: &std::sync::Arc<AtomicBool>, script_path: &Path) -> Result<()> {
+///
+/// `version` 存在时先写“替换进行中”标记：脚本崩溃/被杀后，下一次启动
+/// 的 `diagnose()` 能明确告诉用户“上次更新没有走完”，而不是只看到版本没变。
+fn launch_script_once(
+    launched: &std::sync::Arc<AtomicBool>,
+    script_path: &Path,
+    version: Option<&str>,
+) -> Result<()> {
     if launched
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_err()
@@ -253,13 +268,20 @@ fn launch_script_once(launched: &std::sync::Arc<AtomicBool>, script_path: &Path)
             "替换脚本已经启动过，不能再次启动：重复启动会让两个脚本竞争替换，导致回滚误判".into(),
         ));
     }
+    let work_dir = script_path.parent();
+    if let (Some(version), Some(dir)) = (version, work_dir) {
+        super::swap_marker::write(dir, version);
+    }
     match PlatformUpdater::launch_updater(script_path) {
         Ok(()) => {
             crate::core::events::launch();
             Ok(())
         }
-        // 启动失败不占名额，允许重试
+        // 启动失败不占名额，允许重试；标记也不能留下，否则下一次启动会误报。
         Err(e) => {
+            if let Some(dir) = work_dir {
+                super::swap_marker::clear(dir);
+            }
             launched.store(false, Ordering::Relaxed);
             Err(e)
         }

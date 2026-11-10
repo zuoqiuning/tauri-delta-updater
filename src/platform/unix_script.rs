@@ -231,6 +231,15 @@ launch_app() {
                     .to_string(),
             ),
         )
+        .replace(
+            "__IN_PROGRESS__",
+            &shell_quote(
+                &work_dir
+                    .join(artifacts::UPDATE_IN_PROGRESS_FILE)
+                    .display()
+                    .to_string(),
+            ),
+        )
         .replace("__DEMOTE__", demote_block)
         .replace("__ELEVATION__", elevation_block);
     crate::platform::shared::assert_rendered(&script)?;

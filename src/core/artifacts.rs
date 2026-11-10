@@ -152,6 +152,12 @@ pub const LAST_ATTEMPT_FILE: &str = "tdx_last_attempt.json";
 /// 全量安装器的待确认记录：下次启动时对比版本，判断安装是否生效。
 pub const FULL_PENDING_FILE: &str = "tdx_full_pending.json";
 
+/// 替换进行中标记：宿主启动替换脚本前写入，新版本确认启动或脚本回滚完成时清除。
+///
+/// 正常启动不存在该文件；存在说明上一次替换没有走完（脚本崩溃/被杀/卡住），
+/// `diagnose().update_in_progress` 据此提示用户。
+pub const UPDATE_IN_PROGRESS_FILE: &str = "tdx_update_in_progress.json";
+
 /// 启动状态指针：`staged` → `booting` → `committed`，回滚时写 `rolled_back`。
 ///
 /// 替换脚本在启动新版本前写 `staged`；新版本启动早期写 `booting`；

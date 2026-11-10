@@ -9,6 +9,7 @@ ROLLBACK_FILE=__ROLLBACK__
 EVENTS_FILE=__EVENTS__
 SUCCESS_FLAG=__FLAG__
 STATE_FILE=__STATE__
+IN_PROGRESS=__IN_PROGRESS__
 NOTICE_ENABLED=__NOTICE_ENABLED__
 TARGET_EXE=__TARGET__
 TARGET_CMD=__TARGET_CMD__
@@ -74,6 +75,8 @@ __DEMOTE__
 # 一切失败路径的统一收口：还原残留备份，再把旧版本拉起来。
 # 少了这一步，用户在"提权被拒/复制失败"后会看到应用直接消失。
 restart_old() {
+    # 回滚完成：上一次替换已经结束（以失败告终），“进行中”标记不能留到下次启动。
+    rm -f "$IN_PROGRESS" 2>/dev/null
     # 已经有明确原因（超时/健康检查失败）时不要覆盖成笼统的 update_failed。
     EXISTING=''
     [ -f "$ROLLBACK_FILE" ] && EXISTING=$(cat "$ROLLBACK_FILE" 2>/dev/null)
@@ -195,6 +198,7 @@ while [ "$WAITED" -lt "$CONFIRM_TIMEOUT" ]; do
         log '新版本启动成功，清理备份。'
         write_stage 'delta.stage.startup_confirmed'
         rm -f "$BACKUP"
+        rm -f "$IN_PROGRESS" 2>/dev/null
         # 脚本不删除自身：执行期间删除正在被读取的脚本有竞态，
         # 残留脚本由下一次更新的清理逻辑回收。
         exit 0

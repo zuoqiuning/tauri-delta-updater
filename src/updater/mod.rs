@@ -31,6 +31,7 @@ mod plan;
 mod rollout;
 mod simulate;
 mod staged;
+pub(crate) mod swap_marker;
 
 pub use attempt::{AttemptOutcome, UpdateAttempt};
 pub use config::{default_signature_url, FallbackPolicy, LockScope, UpdateConfig};
@@ -44,6 +45,7 @@ pub use simulate::{simulate_update, SimulationReport};
 pub use staged::{
     FullDownload, FullDownloadOutcome, Staged, StagedBundle, StagedFullInstaller, StagedRepair,
 };
+pub use swap_marker::UpdateInProgress;
 
 /// 版本/系统/灰度门槛的统一结果（见 [`DeltaUpdater::evaluate_gates`]）。
 #[derive(Debug, Default)]
@@ -660,6 +662,7 @@ mod ui_result_tests {
             safe_mode: false,
             safe_mode_reason: None,
             full_failures: 0,
+            update_in_progress: None,
             needs_repair: false,
             startup_state: None,
             last_rollback: None,

@@ -6,7 +6,7 @@ use crate::platform::PlatformUpdater;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::{DeltaUpdater, SafeModeReason};
+use super::{DeltaUpdater, SafeModeReason, UpdateInProgress};
 
 /// 替换脚本写入的结构化事件（`tdx_events.jsonl` 的一行）。
 ///
@@ -96,6 +96,12 @@ pub struct Diagnosis {
     /// 用户取消安装器、拒绝提权只会累计本字段，不会冻结增量通道。
     /// UI 可据此提示"全量安装未生效，请检查安装器或权限"。
     pub full_failures: u32,
+    /// 一次尚未确认完成的替换（引擎启动了替换脚本，但新版本没有确认启动）。
+    ///
+    /// 正常启动为 `None`。`Some` 表示上一次更新没有走完：脚本崩溃、被杀或替换
+    /// 卡住。UI 应提示用户"上次更新未完成"，并建议重新安装或等待下一次更新；
+    /// 替换脚本在成功或回滚完成时会清除该标记。
+    pub update_in_progress: Option<UpdateInProgress>,
     /// 是否需要先修复上次中断的整包替换（备份仍在）。
     pub needs_repair: bool,
     /// 上次替换的启动状态指针（`staged` / `booting` / `committed` / `failed` / `rolled_back`）。
@@ -432,6 +438,7 @@ impl DeltaUpdater {
             safe_mode,
             safe_mode_reason,
             full_failures: crate::core::safety::full_failures(&self.work_dir).await,
+            update_in_progress: crate::updater::swap_marker::read(&self.work_dir),
             needs_repair: self.needs_bundle_repair(),
             startup_state: crate::core::startup::read(&self.work_dir),
             last_rollback: read_rollback_reason(&self.work_dir),
@@ -571,6 +578,7 @@ mod tests {
             dir.path(),
             crate::updater::SafeModeReason::EnvironmentFailure,
         );
+        crate::updater::swap_marker::write(dir.path(), "0.2.0");
 
         let bundle: serde_json::Value =
             serde_json::from_str(&updater.diagnostic_bundle().await).unwrap();
@@ -581,6 +589,10 @@ mod tests {
         assert_eq!(
             bundle["diagnosis"]["full_failures"], 1,
             "全量失败计数必须进入诊断快照"
+        );
+        assert_eq!(
+            bundle["diagnosis"]["update_in_progress"]["version"], "0.2.0",
+            "未完成的替换必须进入诊断快照"
         );
         assert!(bundle["diagnosis"]["work_dir"].is_string());
     }

@@ -214,6 +214,8 @@ pub fn confirm_startup_success_in(work_dir: &Path) -> Result<()> {
     safety::clear_failed_attempts_sync(work_dir);
     // 全量安装的待确认记录已经完成使命。
     crate::updater::full_pending::clear(work_dir);
+    // 上一次替换已经确认成功，“进行中”标记完成使命。
+    crate::updater::swap_marker::clear(work_dir);
 
     std::fs::create_dir_all(work_dir).map_err(DeltaError::Io)?;
     std::fs::write(work_dir.join(artifacts::SUCCESS_FLAG), "ok").map_err(DeltaError::Io)?;

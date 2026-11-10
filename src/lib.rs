@@ -295,5 +295,5 @@ pub use updater::{
     FallbackPolicy, FallbackReason, FullDownload, FullDownloadOutcome, LockScope, MessageKey,
     OsRequirement, PendingArtifact, PendingUpdate, SafeModeReason, ScriptEvent, SimulationReport,
     Staged, StagedBundle, StagedFullInstaller, StagedRepair, UpdateAttempt, UpdateCheck,
-    UpdateConfig, UpdateOutcome, UpdateResult, WarningKey,
+    UpdateConfig, UpdateInProgress, UpdateOutcome, UpdateResult, WarningKey,
 };

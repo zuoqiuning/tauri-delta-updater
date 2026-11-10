@@ -151,6 +151,15 @@ fn generate_with_options(
             ),
         )
         .replace(
+            "__IN_PROGRESS__",
+            &shell_quote(
+                &work_dir
+                    .join(artifacts::UPDATE_IN_PROGRESS_FILE)
+                    .display()
+                    .to_string(),
+            ),
+        )
+        .replace(
             "__APP_ROOT__",
             &shell_quote(&app_root.display().to_string()),
         )

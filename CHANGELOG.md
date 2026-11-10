@@ -22,6 +22,19 @@
 - 新增 `DeltaUpdater::diagnostic_bundle()`：把诊断快照、脚本日志尾部与原始
   事件流打包成一份 JSON，用户报障只发一个文件即可。
 
+### 修复
+
+- Windows 替换脚本：`explorer` 代理在部分提权/无桌面会话里会静默不启动应用，
+  过去只能等到 60 秒超时后拿到 `startup_not_started`。现在启动后会确认进程
+  真的出现，没有就回退为直接启动；超时日志会记录启动方式、是否见到进程、
+  PID 与退出码，不再出现“只有原因、没有证据”的回滚。
+- Windows 替换脚本不再无条件请求管理员权限：只有安装目录不可写时才提权
+  （与 Unix 的 `[ ! -w "$TARGET_DIR" ]` 对齐）。per-user 安装不再每次更新
+  都弹 UAC。
+- 新增“替换进行中”标记（`tdx_update_in_progress.json`）：启动替换脚本前写入，
+  新版本确认或脚本回滚完成时清除；`diagnose().update_in_progress` 让宿主在
+  下一次启动时提示“上次更新未完成”，而不是只看到版本没变。
+
 ### 文档
 
 - README 增加 Windows 实测增量数据、插件/库选型表、examples 索引，并建议
