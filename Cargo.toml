@@ -10,7 +10,7 @@ resolver = "2"
 exclude = ["examples/tauri-app/src-tauri", "tools/zucchini-ab"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 # 实际下限由依赖决定：reqwest 0.13 → url → idna → icu_* 系列声明要求 1.88。
 # 声明低版本会让 `cargo +1.81 check` 直接失败，是虚假的兼容承诺；

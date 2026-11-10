@@ -1,6 +1,6 @@
 {
   "name": "tauri-plugin-delta-updater",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Typed frontend bindings for tauri-plugin-delta-updater: delta updates, full-installer fallback, stage events and diagnostics.",
   "license": "MIT",
   "author": "丘屿知宁 (zuoqiuning)",

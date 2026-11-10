@@ -140,7 +140,7 @@ timeouts, installer args, trust policy, rollout and fallback endpoints.
 ### 3. Call it from the frontend
 
 ```bash
-npm install tauri-plugin-delta-updater   # typed bindings; current: 0.5.0
+npm install tauri-plugin-delta-updater   # typed bindings; current: 0.5.1
 ```
 
 ```ts

@@ -21,7 +21,7 @@ tauri-plugin = { version = "2", features = ["build"] }
 # 插件只需要 core API（命令、事件、Channel），不拉 wry/webview 依赖；
 # 宿主自己的 tauri 依赖会把需要的 feature 补齐。
 tauri = { version = "2", default-features = false, features = [] }
-tauri-delta-updater = { version = "0.5.0", path = ".." }
+tauri-delta-updater = { version = "0.5.1", path = ".." }
 # 仅用于 plugins.delta-updater.proxy：与核心库共用同一版本区间，避免双版本共存。
 reqwest = { version = ">=0.13, <0.14", default-features = false, features = ["rustls-no-provider"] }
 serde = { version = "1", features = ["derive"] }

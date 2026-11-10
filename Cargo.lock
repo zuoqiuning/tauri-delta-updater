@@ -3409,7 +3409,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-delta-updater"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.21.7",
  "chrono",
@@ -3472,7 +3472,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-delta-updater"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "reqwest",
  "serde",
@@ -3558,7 +3558,7 @@ dependencies = [
 
 [[package]]
 name = "tdx-testkit"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.21.7",
  "minisign",
